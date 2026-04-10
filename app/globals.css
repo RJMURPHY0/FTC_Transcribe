@@ -87,7 +87,7 @@
   border-radius: 9999px;
 }
 
-/* ── Two-column transcript layout ── */
+/* ── Three-column layout: chat | notes | transcript ── */
 .detail-grid {
   display: grid;
   grid-template-columns: 1fr;
@@ -95,10 +95,16 @@
 }
 @media (min-width: 1024px) {
   .detail-grid {
-    grid-template-columns: 3fr 2fr;
+    grid-template-columns: 1.1fr 2fr 1.2fr;
     align-items: start;
   }
   .transcript-panel {
+    position: sticky;
+    top: 5rem;
+    max-height: calc(100vh - 6rem);
+    overflow-y: auto;
+  }
+  .chat-panel-col {
     position: sticky;
     top: 5rem;
     max-height: calc(100vh - 6rem);

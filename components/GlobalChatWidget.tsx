@@ -18,6 +18,7 @@ const SUGGESTIONS = [
 
 export default function GlobalChatWidget() {
   const [open, setOpen] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -85,12 +86,16 @@ export default function GlobalChatWidget() {
       {/* Chat panel */}
       {open && (
         <div
-          className="fixed bottom-20 right-4 z-50 w-80 sm:w-96 rounded-2xl border border-surface-border bg-surface-card shadow-2xl flex flex-col overflow-hidden"
-          style={{ height: '500px' }}
+          className={`fixed z-50 border border-surface-border bg-surface-card shadow-2xl flex flex-col overflow-hidden transition-all duration-200 ${
+            fullscreen
+              ? 'inset-4 rounded-2xl'
+              : 'bottom-20 right-4 w-80 sm:w-96 rounded-2xl'
+          }`}
+          style={fullscreen ? undefined : { height: '500px' }}
         >
           {/* Header */}
-          <div className="px-4 py-3 border-b border-surface-border flex items-center gap-3 flex-shrink-0 bg-surface-raised">
-            <div className="flex-1 min-w-0" style={{ display: 'flex', alignItems: 'center' }}>
+          <div className="px-4 py-3 border-b border-surface-border flex items-center gap-2 flex-shrink-0 bg-surface-raised">
+            <div className="flex-1 min-w-0 flex items-center">
               <img src="/chatbot-logo.png" alt="FTC Chat Bot" style={{ height: '36px', objectFit: 'contain' }} />
             </div>
             {messages.length > 0 && (
@@ -102,9 +107,26 @@ export default function GlobalChatWidget() {
                 Clear
               </button>
             )}
+            {/* Fullscreen toggle */}
             <button
               type="button"
-              onClick={() => setOpen(false)}
+              onClick={() => setFullscreen((f) => !f)}
+              className="text-ftc-mid hover:text-ftc-gray transition-colors ml-1"
+              aria-label={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+            >
+              {fullscreen ? (
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 9V4.5M9 9H4.5M9 9L3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9h4.5M15 9V4.5M15 9l5.25-5.25M15 15h4.5M15 15v4.5m0-4.5l5.25 5.25" />
+                </svg>
+              ) : (
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+                </svg>
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={() => { setOpen(false); setFullscreen(false); }}
               className="text-ftc-mid hover:text-ftc-gray transition-colors ml-1"
               aria-label="Close"
             >
