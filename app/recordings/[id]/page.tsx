@@ -5,6 +5,8 @@ import DeleteButton from './DeleteButton';
 import EditableTitle from './EditableTitle';
 import ChatPanel from './ChatPanel';
 
+export const dynamic = 'force-dynamic';
+
 function formatDate(date: Date) {
   return new Intl.DateTimeFormat('en-GB', {
     weekday: 'short', day: 'numeric', month: 'long',
