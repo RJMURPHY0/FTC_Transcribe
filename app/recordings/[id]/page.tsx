@@ -69,6 +69,9 @@ export default async function RecordingPage({ params }: { params: { id: string }
           }`}>
             {recording.status}
           </span>
+
+          {/* Delete — tucked in header, requires 2 clicks */}
+          <DeleteButton id={recording.id} />
         </div>
       </header>
 
@@ -167,9 +170,6 @@ export default async function RecordingPage({ params }: { params: { id: string }
               </div>
             ) : null}
 
-            <div className="pt-2 pb-safe">
-              <DeleteButton id={recording.id} />
-            </div>
           </div>
 
           {/* ── RIGHT: Transcript ── */}

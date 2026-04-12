@@ -18,6 +18,7 @@ export default function ChatPanel({ recordingId }: { recordingId: string }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -25,7 +26,6 @@ export default function ChatPanel({ recordingId }: { recordingId: string }) {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, loading]);
 
-  // Auto-resize textarea
   useEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
@@ -67,8 +67,10 @@ export default function ChatPanel({ recordingId }: { recordingId: string }) {
     }
   };
 
-  return (
-    <div className="rounded-2xl border border-surface-border bg-surface-card flex flex-col" style={{ height: '520px' }}>
+  const panel = (
+    <div className={`rounded-2xl border border-surface-border bg-surface-card flex flex-col ${
+      fullscreen ? 'fixed inset-4 z-50 shadow-2xl' : ''
+    }`} style={fullscreen ? undefined : { height: '520px' }}>
 
       {/* Header */}
       <div className="px-5 py-3.5 border-b border-surface-border flex items-center gap-2.5 flex-shrink-0">
@@ -76,21 +78,39 @@ export default function ChatPanel({ recordingId }: { recordingId: string }) {
         <h3 className="text-xs font-semibold uppercase tracking-widest text-ftc-mid">
           Ask about this meeting
         </h3>
-        {messages.length > 0 && (
+        <div className="ml-auto flex items-center gap-2">
+          {messages.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setMessages([])}
+              className="text-xs text-ftc-mid hover:text-ftc-gray transition-colors touch-manipulation"
+            >
+              Clear
+            </button>
+          )}
+          {/* Fullscreen toggle */}
           <button
             type="button"
-            onClick={() => setMessages([])}
-            className="ml-auto text-xs text-ftc-mid hover:text-ftc-gray transition-colors touch-manipulation"
+            onClick={() => setFullscreen((f) => !f)}
+            className="text-ftc-mid hover:text-ftc-gray transition-colors"
+            aria-label={fullscreen ? 'Exit fullscreen' : 'Expand'}
           >
-            Clear
+            {fullscreen ? (
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 9V4.5M9 9H4.5M9 9L3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9h4.5M15 9V4.5M15 9l5.25-5.25M15 15h4.5M15 15v4.5m0-4.5l5.25 5.25" />
+              </svg>
+            ) : (
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+              </svg>
+            )}
           </button>
-        )}
+        </div>
       </div>
 
       {/* Messages area */}
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4 min-h-0">
 
-        {/* Empty state with suggestions */}
         {messages.length === 0 && (
           <div className="flex flex-col gap-4 h-full">
             <div className="flex flex-col items-center justify-center gap-3 py-6">
@@ -105,7 +125,6 @@ export default function ChatPanel({ recordingId }: { recordingId: string }) {
               </div>
             </div>
 
-            {/* Suggestion chips */}
             <div className="flex flex-col gap-2">
               {SUGGESTIONS.map((s) => (
                 <button
@@ -121,7 +140,6 @@ export default function ChatPanel({ recordingId }: { recordingId: string }) {
           </div>
         )}
 
-        {/* Chat bubbles */}
         {messages.map((msg, i) => (
           <div key={i} className={`flex items-end gap-2 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
             {msg.role === 'assistant' && (
@@ -139,7 +157,6 @@ export default function ChatPanel({ recordingId }: { recordingId: string }) {
           </div>
         ))}
 
-        {/* Thinking indicator */}
         {loading && (
           <div className="flex items-end gap-2 justify-start">
             <div className="w-6 h-6 rounded-full bg-brand/15 border border-brand/20 flex items-center justify-center flex-shrink-0 mb-0.5">
@@ -187,4 +204,6 @@ export default function ChatPanel({ recordingId }: { recordingId: string }) {
       </div>
     </div>
   );
+
+  return panel;
 }

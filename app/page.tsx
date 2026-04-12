@@ -38,7 +38,7 @@ export default async function Home() {
       {/* Nav */}
       <header className="sticky top-0 z-20 border-b border-surface-border bg-surface/80 backdrop-blur-md">
         <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
-          <div className="flex items-center h-8">
+          <div className="flex items-center h-12">
             <img src="/logo.png" alt="FTC Transcribe" className="h-full object-contain" />
           </div>
           <Link href="/record" className="btn-brand flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white touch-manipulation">
