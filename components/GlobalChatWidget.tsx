@@ -243,23 +243,25 @@ export default function GlobalChatWidget() {
         </div>
       )}
 
-      {/* Floating button */}
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="fixed bottom-4 right-4 z-50 w-14 h-14 rounded-full btn-brand shadow-xl flex items-center justify-center touch-manipulation transition-transform active:scale-95"
-        aria-label={open ? 'Close chat' : 'Open chat'}
-      >
-        {open ? (
-          <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-          </svg>
-        ) : (
-          <svg className="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 24 24">
-            <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z" />
-          </svg>
-        )}
-      </button>
+      {/* Floating button — hidden when fullscreen so it doesn't cover the input */}
+      {!fullscreen && (
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          className="fixed bottom-4 right-4 z-50 w-14 h-14 rounded-full btn-brand shadow-xl flex items-center justify-center touch-manipulation transition-transform active:scale-95"
+          aria-label={open ? 'Close chat' : 'Open chat'}
+        >
+          {open ? (
+            <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          ) : (
+            <svg className="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z" />
+            </svg>
+          )}
+        </button>
+      )}
     </>
   );
 }

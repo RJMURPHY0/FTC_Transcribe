@@ -92,6 +92,8 @@
 .bounce-delay-0   { animation-delay: 0ms; }
 .bounce-delay-120 { animation-delay: 120ms; }
 .bounce-delay-240 { animation-delay: 240ms; }
+.chat-fullscreen-backdrop { z-index: 9998; }
+.chat-fullscreen-panel    { z-index: 9999; }
 
 /* ── Three-column layout: chat | notes | transcript ── */
 .detail-grid {

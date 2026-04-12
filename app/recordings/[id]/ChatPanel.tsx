@@ -69,16 +69,16 @@ export default function ChatPanel({ recordingId }: { recordingId: string }) {
 
   const panel = (
     <>
-      {/* Backdrop — blocks transcript + floating button when fullscreen */}
+      {/* Backdrop — covers transcript + global chat button when fullscreen */}
       {fullscreen && (
         <div
-          className="fixed inset-0 z-[55] bg-black/70"
+          className="fixed inset-0 bg-black/80 chat-fullscreen-backdrop"
           onClick={() => setFullscreen(false)}
         />
       )}
 
       <div className={`rounded-2xl border border-surface-border bg-surface-card flex flex-col ${
-        fullscreen ? 'fixed inset-4 z-[60] shadow-2xl' : 'chat-panel-default-height'
+        fullscreen ? 'fixed inset-4 shadow-2xl chat-fullscreen-panel' : 'chat-panel-default-height'
       }`}>
 
       {/* Header */}
