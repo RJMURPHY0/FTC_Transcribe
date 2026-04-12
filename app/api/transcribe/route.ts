@@ -3,7 +3,7 @@ import { writeFile, unlink } from 'fs/promises';
 import path from 'path';
 import os from 'os';
 import { prisma } from '@/lib/db';
-import { transcribeAudio, analyzeTranscript } from '@/lib/ai';
+import { transcribeAudio, diarizeSegments, analyzeTranscript } from '@/lib/ai';
 
 export const dynamic = 'force-dynamic';
 
@@ -41,8 +41,11 @@ export async function POST(request: NextRequest) {
     });
     recordingId = recording.id;
 
-    // Transcribe
-    const transcriptText = await transcribeAudio(tempPath);
+    // Transcribe (returns full text + timestamped segments)
+    const { text: transcriptText, rawSegments } = await transcribeAudio(tempPath);
+
+    // Diarise: assign speaker labels to each timestamped segment
+    const segments = await diarizeSegments(rawSegments);
 
     // Analyse
     const analysis = await analyzeTranscript(transcriptText);
@@ -52,7 +55,7 @@ export async function POST(request: NextRequest) {
       data: {
         recordingId: recording.id,
         fullText: transcriptText,
-        segments: JSON.stringify([]),
+        segments: JSON.stringify(segments),
       },
     });
 

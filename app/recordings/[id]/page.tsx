@@ -4,6 +4,7 @@ import { prisma } from '@/lib/db';
 import DeleteButton from './DeleteButton';
 import EditableTitle from './EditableTitle';
 import ChatPanel from './ChatPanel';
+import type { TranscriptSegment } from '@/lib/ai';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,6 +13,43 @@ function formatDate(date: Date) {
     weekday: 'short', day: 'numeric', month: 'long',
     year: 'numeric', hour: '2-digit', minute: '2-digit',
   }).format(new Date(date));
+}
+
+// Colours cycle through speakers consistently
+const SPEAKER_COLOURS = [
+  { label: 'text-blue-400',   dot: 'bg-blue-400',   border: 'border-blue-400/20',   bg: 'bg-blue-400/5'   },
+  { label: 'text-violet-400', dot: 'bg-violet-400', border: 'border-violet-400/20', bg: 'bg-violet-400/5' },
+  { label: 'text-emerald-400',dot: 'bg-emerald-400',border: 'border-emerald-400/20',bg: 'bg-emerald-400/5' },
+  { label: 'text-amber-400',  dot: 'bg-amber-400',  border: 'border-amber-400/20',  bg: 'bg-amber-400/5'  },
+  { label: 'text-rose-400',   dot: 'bg-rose-400',   border: 'border-rose-400/20',   bg: 'bg-rose-400/5'   },
+];
+
+function speakerIndex(speaker: string): number {
+  const match = speaker.match(/\d+/);
+  return match ? (parseInt(match[0], 10) - 1) % SPEAKER_COLOURS.length : 0;
+}
+
+function formatTimestamp(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function SpeakerBlock({ seg }: { seg: { speaker: string; start: number; end: number; text: string } }) {
+  const idx = speakerIndex(seg.speaker);
+  const c = SPEAKER_COLOURS[idx];
+  return (
+    <div className={`rounded-xl border ${c.border} ${c.bg} px-4 py-3`}>
+      <div className="flex items-center gap-2 mb-1.5">
+        <span className={`w-2 h-2 rounded-full flex-shrink-0 ${c.dot}`} />
+        <span className={`text-xs font-semibold ${c.label}`}>{seg.speaker}</span>
+        <span className="text-[10px] text-ftc-mid ml-auto tabular-nums">
+          {formatTimestamp(seg.start)}
+        </span>
+      </div>
+      <p className="text-sm text-ftc-gray leading-relaxed">{seg.text.trim()}</p>
+    </div>
+  );
 }
 
 function SectionCard({ title, children }: { title: string; children: React.ReactNode }) {
@@ -33,6 +71,11 @@ export default async function RecordingPage({ params }: { params: { id: string }
   const actions:   string[] = recording.summary ? JSON.parse(recording.summary.actionItems) : [];
   const points:    string[] = recording.summary ? JSON.parse(recording.summary.keyPoints)   : [];
   const decisions: string[] = recording.summary ? JSON.parse(recording.summary.decisions)   : [];
+
+  const rawSegments: TranscriptSegment[] = recording.transcript?.segments
+    ? JSON.parse(recording.transcript.segments as string)
+    : [];
+  const hasSpeakers = rawSegments.length > 0;
   const isComplete = recording.status === 'completed';
   const isFailed   = recording.status === 'failed';
 
@@ -182,10 +225,16 @@ export default async function RecordingPage({ params }: { params: { id: string }
             </p>
 
             {recording.transcript ? (
-              <div className="rounded-2xl border border-surface-border bg-surface-card p-5">
-                <p className="text-sm text-ftc-gray leading-8 whitespace-pre-wrap">
-                  {recording.transcript.fullText}
-                </p>
+              <div className="rounded-2xl border border-surface-border bg-surface-card p-5 space-y-4">
+                {hasSpeakers ? (
+                  rawSegments.map((seg, i) => (
+                    <SpeakerBlock key={i} seg={seg} />
+                  ))
+                ) : (
+                  <p className="text-sm text-ftc-gray leading-8 whitespace-pre-wrap">
+                    {recording.transcript.fullText}
+                  </p>
+                )}
               </div>
             ) : (
               <div className="rounded-2xl border border-surface-border bg-surface-card p-8 text-center text-ftc-mid text-sm">
