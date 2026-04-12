@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -19,8 +20,11 @@ export default function ChatPanel({ recordingId }: { recordingId: string }) {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
+  const [mounted, setMounted] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => { setMounted(true); }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -67,20 +71,9 @@ export default function ChatPanel({ recordingId }: { recordingId: string }) {
     }
   };
 
-  const panel = (
+  // Shared inner content used in both normal and fullscreen modes
+  const inner = (
     <>
-      {/* Backdrop — covers transcript + global chat button when fullscreen */}
-      {fullscreen && (
-        <div
-          className="fixed inset-0 bg-black/80 chat-fullscreen-backdrop"
-          onClick={() => setFullscreen(false)}
-        />
-      )}
-
-      <div className={`rounded-2xl border border-surface-border bg-surface-card flex flex-col ${
-        fullscreen ? 'fixed inset-4 shadow-2xl chat-fullscreen-panel' : 'chat-panel-default-height'
-      }`}>
-
       {/* Header */}
       <div className="px-5 py-3.5 border-b border-surface-border flex items-center gap-2.5 flex-shrink-0">
         <div className="w-2 h-2 rounded-full bg-brand" />
@@ -97,7 +90,6 @@ export default function ChatPanel({ recordingId }: { recordingId: string }) {
               Clear
             </button>
           )}
-          {/* Expand / collapse */}
           <button
             type="button"
             onClick={() => setFullscreen((f) => !f)}
@@ -114,13 +106,12 @@ export default function ChatPanel({ recordingId }: { recordingId: string }) {
               </svg>
             )}
           </button>
-          {/* Close (only visible in fullscreen) */}
           {fullscreen && (
             <button
               type="button"
               onClick={() => setFullscreen(false)}
               className="text-ftc-mid hover:text-ftc-gray transition-colors"
-              aria-label="Close fullscreen"
+              aria-label="Close"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
@@ -130,9 +121,8 @@ export default function ChatPanel({ recordingId }: { recordingId: string }) {
         </div>
       </div>
 
-      {/* Messages area */}
+      {/* Messages */}
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4 min-h-0">
-
         {messages.length === 0 && (
           <div className="flex flex-col gap-4 h-full">
             <div className="flex flex-col items-center justify-center gap-3 py-6">
@@ -146,7 +136,6 @@ export default function ChatPanel({ recordingId }: { recordingId: string }) {
                 <p className="text-xs text-ftc-mid mt-0.5">Claude will answer using the transcript and notes</p>
               </div>
             </div>
-
             <div className="flex flex-col gap-2">
               {SUGGESTIONS.map((s) => (
                 <button
@@ -191,11 +180,10 @@ export default function ChatPanel({ recordingId }: { recordingId: string }) {
             </div>
           </div>
         )}
-
         <div ref={bottomRef} />
       </div>
 
-      {/* Input bar */}
+      {/* Input */}
       <div className="px-4 py-3 border-t border-surface-border flex-shrink-0">
         <div className="flex items-end gap-2">
           <textarea
@@ -224,9 +212,31 @@ export default function ChatPanel({ recordingId }: { recordingId: string }) {
           Enter to send · Shift+Enter for new line
         </p>
       </div>
-    </div>
     </>
   );
 
-  return panel;
+  // Fullscreen: portal directly into document.body — escapes all ancestor overflow/stacking constraints
+  if (fullscreen && mounted) {
+    return createPortal(
+      <>
+        <div
+          className="fixed inset-0 bg-black/85 chat-fullscreen-backdrop"
+          onClick={() => setFullscreen(false)}
+        />
+        <div
+          className="fixed inset-4 rounded-2xl border border-surface-border bg-surface-card shadow-2xl flex flex-col chat-fullscreen-panel"
+        >
+          {inner}
+        </div>
+      </>,
+      document.body,
+    );
+  }
+
+  // Normal inline panel
+  return (
+    <div className="rounded-2xl border border-surface-border bg-surface-card flex flex-col chat-panel-default-height">
+      {inner}
+    </div>
+  );
 }
