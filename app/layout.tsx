@@ -3,14 +3,17 @@ import './globals.css';
 import GlobalChatWidget from '@/components/GlobalChatWidget';
 
 export const metadata: Metadata = {
-  title: 'Transcribe – AI Meeting Notes',
+  title: 'FTC Transcribe – AI Meeting Notes',
   description: 'Record any conversation and get an instant transcript, summary, and action items powered by AI.',
   manifest: '/manifest.json',
-  icons: { apple: '/icon-192.png' },
+  icons: {
+    apple: [{ url: '/apple-touch-icon.png', sizes: '180x180', type: 'image/png' }],
+    icon: [{ url: '/icon-512.png', sizes: '512x512', type: 'image/png' }],
+  },
   appleWebApp: {
     capable: true,
     statusBarStyle: 'black-translucent',
-    title: 'Transcribe',
+    title: 'FTC Transcribe',
   },
 };
 
