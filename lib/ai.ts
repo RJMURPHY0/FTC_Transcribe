@@ -43,6 +43,11 @@ export interface AnalysisResult {
   decisions: string[];
 }
 
+export interface TopicSection {
+  time: number;  // seconds from start
+  title: string;
+}
+
 function formatTime(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = Math.floor(seconds % 60);
@@ -186,6 +191,55 @@ ${transcript.slice(0, 600)}`,
     return text;
   } catch {
     return null;
+  }
+}
+
+export async function generateTopics(rawSegments: RawSegment[]): Promise<TopicSection[]> {
+  if (!rawSegments.length || isMockAnthropic || !anthropic) return [];
+
+  // Sample up to ~80 evenly-spaced segments so the prompt stays short
+  const step = Math.max(1, Math.floor(rawSegments.length / 80));
+  const timeline = rawSegments
+    .filter((_, i) => i % step === 0)
+    .map((s) => `[${Math.round(s.start)}s] ${s.text.trim()}`)
+    .join('\n');
+
+  try {
+    const message = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 512,
+      messages: [
+        {
+          role: 'user',
+          content: `Identify distinct topic sections in this meeting transcript.
+
+Return a JSON array where each item is {"time": <start in seconds, as a number>, "title": "<3-5 word topic name>"}.
+
+Rules:
+- Return [] if the meeting has fewer than 3 clearly distinct topics (e.g. short chats, single-subject calls, casual conversations).
+- 3–8 topics maximum.
+- "time" must be the exact second value shown in brackets (e.g. [270s] → 270).
+
+Timeline:
+${timeline}
+
+Return ONLY the JSON array, nothing else.`,
+        },
+      ],
+    });
+
+    const content = message.content[0];
+    if (content.type !== 'text') return [];
+
+    const jsonMatch = content.text.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) return [];
+
+    const parsed = JSON.parse(jsonMatch[0]) as TopicSection[];
+    if (!Array.isArray(parsed) || parsed.length < 3) return [];
+
+    return parsed.filter((t) => typeof t.time === 'number' && typeof t.title === 'string');
+  } catch {
+    return [];
   }
 }
 

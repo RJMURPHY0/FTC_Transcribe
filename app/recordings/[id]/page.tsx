@@ -4,7 +4,7 @@ import { prisma } from '@/lib/db';
 import DeleteButton from './DeleteButton';
 import EditableTitle from './EditableTitle';
 import ChatPanel from './ChatPanel';
-import type { TranscriptSegment } from '@/lib/ai';
+import type { TranscriptSegment, TopicSection } from '@/lib/ai';
 
 export const dynamic = 'force-dynamic';
 
@@ -68,9 +68,10 @@ export default async function RecordingPage({ params }: { params: { id: string }
 
   if (!recording) notFound();
 
-  const actions:   string[] = recording.summary ? JSON.parse(recording.summary.actionItems) : [];
-  const points:    string[] = recording.summary ? JSON.parse(recording.summary.keyPoints)   : [];
-  const decisions: string[] = recording.summary ? JSON.parse(recording.summary.decisions)   : [];
+  const actions:   string[]       = recording.summary ? JSON.parse(recording.summary.actionItems) : [];
+  const points:    string[]       = recording.summary ? JSON.parse(recording.summary.keyPoints)   : [];
+  const decisions: string[]       = recording.summary ? JSON.parse(recording.summary.decisions)   : [];
+  const topics:    TopicSection[] = recording.summary ? JSON.parse(recording.summary.topics ?? '[]') : [];
 
   const rawSegments: TranscriptSegment[] = recording.transcript?.segments
     ? JSON.parse(recording.transcript.segments as string)
@@ -204,6 +205,21 @@ export default async function RecordingPage({ params }: { params: { id: string }
                         </li>
                       ))}
                     </ul>
+                  </SectionCard>
+                )}
+
+                {topics.length > 0 && (
+                  <SectionCard title="Topics">
+                    <ol className="space-y-0">
+                      {topics.map((t, i) => (
+                        <li key={i} className="flex items-center gap-3 py-2 border-b border-surface-border last:border-0">
+                          <span className="tabular-nums text-xs font-mono text-ftc-mid w-10 flex-shrink-0">
+                            {formatTimestamp(t.time)}
+                          </span>
+                          <span className="text-sm text-ftc-gray">{t.title}</span>
+                        </li>
+                      ))}
+                    </ol>
                   </SectionCard>
                 )}
               </>

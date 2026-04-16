@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
-import { diarizeSegments, analyzeTranscript, generateTitle } from '@/lib/ai';
+import { diarizeSegments, analyzeTranscript, generateTitle, generateTopics } from '@/lib/ai';
 import type { RawSegment } from '@/lib/ai';
 
 export const dynamic = 'force-dynamic';
@@ -27,11 +27,12 @@ export async function POST(
 
     const rawSegments: RawSegment[] = JSON.parse(transcript.segments);
 
-    // Run all three AI calls in parallel
-    const [diarized, analysis, shortTitle] = await Promise.all([
+    // Run all AI calls in parallel (diarization is the slowest — batched internally)
+    const [diarized, analysis, shortTitle, topics] = await Promise.all([
       diarizeSegments(rawSegments),
       analyzeTranscript(transcript.fullText),
       generateTitle(transcript.fullText),
+      generateTopics(rawSegments),
     ]);
 
     // Build title: "Q3 Budget Review – 13 Apr 2026"
@@ -54,12 +55,14 @@ export async function POST(
         keyPoints: JSON.stringify(analysis.keyPoints),
         actionItems: JSON.stringify(analysis.actionItems),
         decisions: JSON.stringify(analysis.decisions),
+        topics: JSON.stringify(topics),
       },
       update: {
         overview: analysis.overview,
         keyPoints: JSON.stringify(analysis.keyPoints),
         actionItems: JSON.stringify(analysis.actionItems),
         decisions: JSON.stringify(analysis.decisions),
+        topics: JSON.stringify(topics),
       },
     });
 
