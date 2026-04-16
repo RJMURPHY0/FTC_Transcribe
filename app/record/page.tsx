@@ -4,7 +4,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 
-type State = 'idle' | 'recording' | 'processing' | 'error';
+type State = 'idle' | 'recording' | 'uploading' | 'queued' | 'error';
 
 // Auto-rotate every 2 minutes — keeps each chunk well within file size & timeout limits
 const CHUNK_MS = 2 * 60 * 1000;
@@ -26,26 +26,25 @@ function getBestMime() {
 
 export default function RecordPage() {
   const [state, setState] = useState<State>('idle');
-  const [seconds, setSeconds] = useState(0);
-  const [errorMsg, setErrorMsg] = useState('');
-  const [chunksTranscribed, setChunksTranscribed] = useState(0);
-  const [statusMsg, setStatusMsg] = useState('');
+  const [seconds,     setSeconds]     = useState(0);
+  const [errorMsg,    setErrorMsg]    = useState('');
+  const [chunksSaved, setChunksSaved] = useState(0);
 
   const router = useRouter();
 
   // Persistent refs (survive re-renders without causing them)
-  const streamRef = useRef<MediaStream | null>(null);
-  const recorderRef = useRef<MediaRecorder | null>(null);
-  const chunkBlobsRef = useRef<Blob[]>([]);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const chunkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const mimeRef = useRef('audio/webm');
-  const recordingIdRef = useRef<string | null>(null);
-  const timeOffsetRef = useRef(0);     // cumulative seconds transcribed so far
-  const chunkStartRef = useRef(0);     // Date.now() when current recorder started
-  const isActiveRef = useRef(false);   // false once user hits stop
+  const streamRef       = useRef<MediaStream | null>(null);
+  const recorderRef     = useRef<MediaRecorder | null>(null);
+  const chunkBlobsRef   = useRef<Blob[]>([]);
+  const timerRef        = useRef<ReturnType<typeof setInterval> | null>(null);
+  const chunkTimerRef   = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mimeRef         = useRef('audio/webm');
+  const recordingIdRef  = useRef<string | null>(null);
+  const timeOffsetRef   = useRef(0);
+  const chunkStartRef   = useRef(0);
+  const isActiveRef     = useRef(false);
 
-  // Timer
+  // Timer — only runs during recording
   useEffect(() => {
     if (state === 'recording') {
       timerRef.current = setInterval(() => setSeconds((s) => s + 1), 1000);
@@ -62,10 +61,9 @@ export default function RecordPage() {
     const ext = mimeRef.current.includes('mp4') ? 'mp4' : 'webm';
 
     let lastErr: Error = new Error('Upload failed');
-    for (let attempt = 0; attempt < 3; attempt++) {
-      if (attempt > 0) await new Promise((r) => setTimeout(r, 1000 * attempt));
+    for (let attempt = 0; attempt < 4; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, 1500 * attempt));
       try {
-        // Rebuild FormData each attempt — a consumed body can't be re-sent
         const fd = new FormData();
         fd.append('audio', blob, `chunk.${ext}`);
         fd.append('offset', String(offset));
@@ -98,7 +96,6 @@ export default function RecordPage() {
       const blob = new Blob(chunkBlobsRef.current, { type: mime });
       chunkBlobsRef.current = [];
       const offset = timeOffsetRef.current;
-      // Measure actual duration of this chunk
       const chunkDuration = (Date.now() - chunkStartRef.current) / 1000;
       timeOffsetRef.current += chunkDuration;
 
@@ -106,8 +103,8 @@ export default function RecordPage() {
         await uploadChunk(blob, offset);
 
         if (isActiveRef.current) {
-          // User is still recording — restart and schedule next rotation
-          setChunksTranscribed((n) => n + 1);
+          // Still recording — rotate to next chunk
+          setChunksSaved((n) => n + 1);
           startRecorder(stream, mime);
           chunkTimerRef.current = setTimeout(() => {
             if (recorderRef.current?.state === 'recording') {
@@ -115,17 +112,21 @@ export default function RecordPage() {
             }
           }, CHUNK_MS);
         } else {
-          // User stopped — upload was the final chunk, now finalize
+          // User stopped — final chunk uploaded successfully.
+          // Update state to show "queued" so user knows processing will happen.
+          setChunksSaved((n) => n + 1);
+          setState('queued');
+
+          // Fire-and-forget finalize — the recording page will poll for status.
+          // We navigate immediately so the user can see progress there.
           const id = recordingIdRef.current;
           if (!id) return;
 
-          setStatusMsg('Identifying speakers…');
-          const finRes = await fetch(`/api/recordings/${id}/finalize`, { method: 'POST' });
-          if (!finRes.ok) {
-            const data = await finRes.json().catch(() => ({})) as { error?: string };
-            throw new Error(data.error ?? 'Finalization failed');
-          }
+          // Kick off finalize in the background (no await — server does the work)
+          fetch(`/api/recordings/${id}/finalize`, { method: 'POST' }).catch(() => {});
 
+          // Navigate to the recording page — it will show "processing" status
+          // and automatically reflect completion when the user refreshes.
           router.push(`/recordings/${id}`);
         }
       } catch (err) {
@@ -141,11 +142,9 @@ export default function RecordPage() {
   const start = useCallback(async () => {
     setErrorMsg('');
     setSeconds(0);
-    setChunksTranscribed(0);
-    setStatusMsg('');
+    setChunksSaved(0);
 
     try {
-      // Create the recording in the DB first so we have an ID
       const createRes = await fetch('/api/recordings/create', { method: 'POST' });
       const createData = await createRes.json() as { id?: string; error?: string };
       if (!createRes.ok || !createData.id) throw new Error(createData.error ?? 'Could not create recording');
@@ -161,7 +160,6 @@ export default function RecordPage() {
 
       startRecorder(stream, mime);
 
-      // Schedule first chunk rotation
       chunkTimerRef.current = setTimeout(() => {
         if (recorderRef.current?.state === 'recording') {
           recorderRef.current.stop();
@@ -179,16 +177,13 @@ export default function RecordPage() {
     if (state !== 'recording') return;
 
     isActiveRef.current = false;
-    setState('processing');
-    setStatusMsg('Transcribing final segment…');
+    setState('uploading');
 
-    // Cancel the next scheduled rotation
     if (chunkTimerRef.current) {
       clearTimeout(chunkTimerRef.current);
       chunkTimerRef.current = null;
     }
 
-    // Stop the recorder — onstop will upload the final chunk then finalize
     if (recorderRef.current?.state === 'recording') {
       recorderRef.current.stop();
     }
@@ -199,13 +194,15 @@ export default function RecordPage() {
 
   const handleClick = () => {
     if (state === 'recording') stop();
-    else if (state !== 'processing') start();
+    else if (state === 'idle') start();
   };
 
   const btnClass =
-    state === 'recording'  ? 'btn-record-active' :
-    state === 'processing' ? 'btn-record-processing' :
+    state === 'recording' ? 'btn-record-active' :
+    state === 'uploading' || state === 'queued' ? 'btn-record-processing' :
     'btn-record-idle';
+
+  const isProcessing = state === 'uploading' || state === 'queued';
 
   return (
     <div className="min-h-screen flex flex-col bg-surface">
@@ -271,13 +268,13 @@ export default function RecordPage() {
           <button
             type="button"
             onClick={handleClick}
-            disabled={state === 'processing'}
+            disabled={isProcessing}
             aria-label={state === 'recording' ? 'Stop recording' : 'Start recording'}
             className={`relative w-32 h-32 rounded-full flex items-center justify-center transition-all duration-200 touch-manipulation select-none ${btnClass}`}
           >
             {state === 'recording' ? (
               <div className="w-10 h-10 rounded-2xl bg-white" />
-            ) : state === 'processing' ? (
+            ) : isProcessing ? (
               <div className="w-9 h-9 rounded-full border-[3px] border-surface-border border-t-brand animate-spin" />
             ) : (
               <svg className="w-14 h-14 text-white" fill="currentColor" viewBox="0 0 24 24">
@@ -291,21 +288,22 @@ export default function RecordPage() {
         {/* Status */}
         <div className="text-center space-y-1.5 max-w-xs">
           <p className="font-medium text-ftc-gray">
-            {state === 'idle'       && 'Tap to start recording'}
-            {state === 'recording'  && 'Recording — tap to stop'}
-            {state === 'processing' && (statusMsg || 'Finishing up…')}
-            {state === 'error'      && 'Something went wrong'}
+            {state === 'idle'      && 'Tap to start recording'}
+            {state === 'recording' && 'Recording — tap to stop'}
+            {state === 'uploading' && 'Saving final segment…'}
+            {state === 'queued'    && 'Sending for analysis…'}
+            {state === 'error'     && 'Something went wrong'}
           </p>
 
-          {state === 'recording' && chunksTranscribed > 0 && (
+          {state === 'recording' && chunksSaved > 0 && (
             <p className="text-sm text-ftc-mid">
-              {chunksTranscribed * 2} min transcribed and saved
+              {chunksSaved} segment{chunksSaved !== 1 ? 's' : ''} saved safely
             </p>
           )}
 
-          {state === 'processing' && (
+          {(state === 'uploading' || state === 'queued') && (
             <p className="text-sm text-ftc-mid">
-              Longer meetings may take a minute or two
+              Redirecting you to your recording…
             </p>
           )}
 
@@ -321,7 +319,7 @@ export default function RecordPage() {
 
         {state === 'idle' && (
           <p className="text-xs text-center max-w-xs text-surface-muted">
-            Works for meetings of any length. Audio is processed in 2-minute segments as you record.
+            Works for meetings of any length. Audio is saved in 2-minute segments as you record, then transcribed when you stop.
           </p>
         )}
       </main>

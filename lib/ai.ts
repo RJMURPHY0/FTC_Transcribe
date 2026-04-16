@@ -54,6 +54,8 @@ function formatTime(seconds: number): string {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
 export async function transcribeAudio(filePath: string): Promise<{ text: string; rawSegments: RawSegment[] }> {
   if (isMockTranscription || !transcriptionClient) {
     return {
@@ -62,38 +64,56 @@ export async function transcribeAudio(filePath: string): Promise<{ text: string;
     };
   }
 
-  try {
-    const transcription = await transcriptionClient.audio.transcriptions.create({
-      file: fs.createReadStream(filePath),
-      model: transcriptionModel,
-      response_format: 'verbose_json',
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    }) as any;
-
-    const rawSegments: RawSegment[] = (transcription.segments ?? []).map((s: RawSegment) => ({
-      start: s.start,
-      end: s.end,
-      text: s.text,
-    }));
-
-    return { text: transcription.text as string, rawSegments };
-  } catch (err: unknown) {
-    if (err && typeof err === 'object') {
-      const e = err as { status?: number; code?: string; message?: string };
-      if (e.status === 429 || e.code === 'insufficient_quota') {
-        throw new Error(
-          isGroqReady
-            ? 'Groq rate limit hit. Wait a moment and try again.'
-            : 'OpenAI quota exceeded. Add billing at platform.openai.com/billing, or add a free GROQ_API_KEY to .env.local.',
-        );
-      }
-      if (e.status === 401) {
-        throw new Error('Invalid API key. Check your key in .env.local.');
-      }
-      if (e.message) throw new Error(e.message);
-    }
-    throw err;
+  // Build candidate list: primary client first; if Groq is primary and OpenAI is also available,
+  // add OpenAI as an automatic fallback so a Groq rate-limit never kills a chunk.
+  type Candidate = { client: OpenAI; model: string; label: string };
+  const candidates: Candidate[] = [
+    { client: transcriptionClient, model: transcriptionModel, label: isGroqReady ? 'Groq' : 'OpenAI' },
+  ];
+  if (isGroqReady && isOpenAIReady) {
+    candidates.push({ client: new OpenAI({ apiKey: OPENAI_KEY! }), model: 'whisper-1', label: 'OpenAI fallback' });
   }
+
+  let lastErr: Error = new Error('Transcription failed');
+
+  for (const { client, model, label } of candidates) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) await sleep(2000 * attempt); // 2 s, 4 s back-off
+
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const transcription = await client.audio.transcriptions.create({
+          file: fs.createReadStream(filePath),
+          model,
+          response_format: 'verbose_json',
+        }) as any;
+
+        const rawSegments: RawSegment[] = (transcription.segments ?? []).map((s: RawSegment) => ({
+          start: s.start,
+          end: s.end,
+          text: s.text,
+        }));
+
+        return { text: transcription.text as string, rawSegments };
+      } catch (err: unknown) {
+        const e = err as { status?: number; code?: string; message?: string };
+
+        if (e.status === 429 || e.code === 'insufficient_quota') {
+          // Rate-limited — retry this candidate with back-off
+          lastErr = new Error(`${label} rate limit — retrying`);
+          continue;
+        }
+        if (e.status === 401) {
+          throw new Error('Invalid API key. Check your key in .env.local.');
+        }
+        // Any other error: skip to next candidate
+        lastErr = new Error(e.message ?? `${label} transcription failed`);
+        break;
+      }
+    }
+  }
+
+  throw lastErr;
 }
 
 // Process at most this many segments per Claude call to stay well within context/timeout limits

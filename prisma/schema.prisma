@@ -15,10 +15,26 @@ model Recording {
   fileSize   Int      @default(0)
   mimeType   String   @default("")
   audioPath  String   @default("")
-  status     String   @default("processing")
+  status     String   @default("uploading")
 
+  chunks     ChunkBlob[]
   transcript Transcript?
   summary    Summary?
+}
+
+// Raw audio chunks stored during recording — transcribed in bulk at finalize time.
+// Storing audio here (instead of transcribing inline) means the upload phase
+// can never fail due to AI API errors, rate limits, or timeouts.
+model ChunkBlob {
+  id          String    @id @default(cuid())
+  recordingId String
+  recording   Recording @relation(fields: [recordingId], references: [id], onDelete: Cascade)
+  audioData   Bytes
+  offset      Float     @default(0)
+  mimeType    String    @default("audio/webm")
+  createdAt   DateTime  @default(now())
+
+  @@index([recordingId, offset])
 }
 
 model Transcript {

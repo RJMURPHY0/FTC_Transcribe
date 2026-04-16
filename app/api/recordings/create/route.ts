@@ -11,7 +11,7 @@ export async function POST() {
         month: 'short',
         year: 'numeric',
       })}`,
-      status: 'processing',
+      status: 'uploading',
     },
   });
   return NextResponse.json({ id: recording.id });

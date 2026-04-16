@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { prisma } from '@/lib/db';
 import DeleteButton from './DeleteButton';
+import RetryButton from './RetryButton';
 import EditableTitle from './EditableTitle';
 import ChatPanel from './ChatPanel';
 import EditableAINotes from './EditableAINotes';
@@ -70,8 +71,10 @@ export default async function RecordingPage({ params }: { params: { id: string }
     ? JSON.parse(recording.transcript.segments as string)
     : [];
   const hasSpeakers = rawSegments.length > 0;
-  const isComplete = recording.status === 'completed';
-  const isFailed   = recording.status === 'failed';
+  const isComplete   = recording.status === 'completed';
+  const isFailed     = recording.status === 'failed';
+  const isUploading  = recording.status === 'uploading' || recording.status === 'queued';
+  const isProcessing = recording.status === 'processing';
 
   return (
     <div className="min-h-screen flex flex-col bg-surface">
@@ -100,11 +103,12 @@ export default async function RecordingPage({ params }: { params: { id: string }
           </div>
 
           <span className={`text-xs px-2.5 py-1 rounded-full font-medium flex-shrink-0 whitespace-nowrap ${
-            isComplete ? 'bg-emerald-500/10 text-emerald-400'
-            : isFailed  ? 'bg-red-500/10 text-red-400'
+            isComplete   ? 'bg-emerald-500/10 text-emerald-400'
+            : isFailed   ? 'bg-red-500/10 text-red-400'
+            : isUploading ? 'bg-blue-500/10 text-blue-400'
             : 'bg-amber-500/10 text-amber-400'
           }`}>
-            {recording.status}
+            {isUploading ? 'queued' : recording.status === 'processing' ? 'analysing' : recording.status}
           </span>
 
           {/* Delete — tucked in header, requires 2 clicks */}
@@ -119,13 +123,26 @@ export default async function RecordingPage({ params }: { params: { id: string }
             <svg className="w-4 h-4 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
               <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
             </svg>
-            <span>Processing failed — likely an API key issue. Delete this recording and try again once the API key is fixed.</span>
+            <div className="flex-1 space-y-3">
+              <span>Analysis failed — you can retry below. If it keeps failing, check your API keys.</span>
+              <RetryButton id={recording.id} />
+            </div>
           </div>
         )}
-        {!isComplete && !isFailed && (
+        {isUploading && (
+          <div className="flex items-center gap-3 rounded-2xl border border-blue-500/20 bg-blue-500/5 p-4 mb-4 text-blue-300 text-sm">
+            <div className="w-4 h-4 rounded-full border-2 border-blue-400/30 border-t-blue-400 animate-spin flex-shrink-0" />
+            <div className="flex-1">
+              Your recording is queued for transcription. This page will update automatically — no need to stay here.
+            </div>
+          </div>
+        )}
+        {isProcessing && (
           <div className="flex items-center gap-3 rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4 mb-4 text-amber-300 text-sm">
             <div className="w-4 h-4 rounded-full border-2 border-amber-400/30 border-t-amber-400 animate-spin flex-shrink-0" />
-            Still processing — refresh in a moment to see your transcript and summary.
+            <div className="flex-1">
+              Analysing your recording — this may take a minute or two for long meetings. Refresh to check progress.
+            </div>
           </div>
         )}
 

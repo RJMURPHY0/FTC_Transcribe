@@ -112,9 +112,12 @@ export default async function Home() {
                       <span className={`text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0 ${
                         rec.status === 'completed' ? 'bg-emerald-500/10 text-emerald-400'
                         : rec.status === 'failed'  ? 'bg-red-500/10 text-red-400'
+                        : (rec.status === 'uploading' || rec.status === 'queued') ? 'bg-blue-500/10 text-blue-400'
                         : 'bg-amber-500/10 text-amber-400'
                       }`}>
-                        {rec.status}
+                        {rec.status === 'processing' ? 'analysing'
+                        : (rec.status === 'uploading' || rec.status === 'queued') ? 'queued'
+                        : rec.status}
                       </span>
                     </div>
 
