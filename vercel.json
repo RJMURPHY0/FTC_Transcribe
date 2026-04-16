@@ -19,7 +19,7 @@
   "crons": [
     {
       "path": "/api/jobs/finalize",
-      "schedule": "*/1 * * * *"
+      "schedule": "0 2 * * *"
     }
   ]
 }
