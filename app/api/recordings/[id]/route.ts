@@ -35,18 +35,30 @@ export async function PATCH(
     return NextResponse.json({ error: 'Invalid recording ID.' }, { status: 400 });
   }
   try {
-    const body = await request.json() as { title?: unknown };
-    const title = typeof body.title === 'string' ? body.title.trim().slice(0, MAX_TITLE_LEN) : '';
-    if (!title) {
-      return NextResponse.json({ error: 'Title cannot be empty.' }, { status: 400 });
+    const body = await request.json() as { title?: unknown; folderId?: unknown };
+    const updateData: { title?: string; folderId?: string | null } = {};
+
+    if (typeof body.title === 'string') {
+      const title = body.title.trim().slice(0, MAX_TITLE_LEN);
+      if (!title) return NextResponse.json({ error: 'Title cannot be empty.' }, { status: 400 });
+      updateData.title = title;
     }
+
+    if ('folderId' in body) {
+      updateData.folderId = typeof body.folderId === 'string' ? body.folderId : null;
+    }
+
+    if (Object.keys(updateData).length === 0) {
+      return NextResponse.json({ error: 'Nothing to update.' }, { status: 400 });
+    }
+
     const recording = await prisma.recording.update({
       where: { id: params.id },
-      data: { title },
+      data: updateData,
     });
-    return NextResponse.json({ title: recording.title });
+    return NextResponse.json({ title: recording.title, folderId: recording.folderId });
   } catch {
-    return NextResponse.json({ error: 'Failed to rename recording.' }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to update recording.' }, { status: 500 });
   }
 }
 

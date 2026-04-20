@@ -7,6 +7,13 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model Folder {
+  id         String      @id @default(cuid())
+  name       String
+  createdAt  DateTime    @default(now())
+  recordings Recording[]
+}
+
 model Recording {
   id         String   @id @default(cuid())
   title      String   @default("")
@@ -16,11 +23,13 @@ model Recording {
   mimeType   String   @default("")
   audioPath  String   @default("")
   status     String   @default("uploading")
+  folderId   String?
 
-  chunks     ChunkBlob[]
+  folder      Folder?      @relation(fields: [folderId], references: [id])
+  chunks      ChunkBlob[]
   finalizeJob FinalizeJob?
-  transcript Transcript?
-  summary    Summary?
+  transcript  Transcript?
+  summary     Summary?
 }
 
 // Raw audio chunks stored during recording — transcribed in bulk at finalize time.

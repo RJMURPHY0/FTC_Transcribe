@@ -1,6 +1,10 @@
 import Link from 'next/link';
+import { Suspense } from 'react';
 import { prisma } from '@/lib/db';
 import QuickDeleteButton from '@/components/QuickDeleteButton';
+import AssignFolderButton from '@/components/AssignFolderButton';
+import FolderTabs from '@/components/FolderTabs';
+import { estimateSeconds } from '@/lib/finalize-recording';
 
 export const dynamic = 'force-dynamic';
 
@@ -9,6 +13,17 @@ function formatDate(date: Date) {
     day: 'numeric', month: 'short', year: 'numeric',
     hour: '2-digit', minute: '2-digit',
   }).format(new Date(date));
+}
+
+function formatEta(seconds: number): string {
+  if (seconds < 60) return '< 1 min';
+  const mins = Math.ceil(seconds / 60);
+  return `~${mins} min`;
+}
+
+function safeJson<T>(value: string | null | undefined, fallback: T): T {
+  if (!value) return fallback;
+  try { return JSON.parse(value) as T; } catch { return fallback; }
 }
 
 function MicIcon({ className }: { className?: string }) {
@@ -20,19 +35,39 @@ function MicIcon({ className }: { className?: string }) {
   );
 }
 
-export default async function Home() {
-  let recordings: Awaited<ReturnType<typeof prisma.recording.findMany<{ include: { summary: true } }>>> = [];
+export default async function Home({
+  searchParams,
+}: {
+  searchParams: { folder?: string };
+}) {
+  const activeFolderId = searchParams.folder ?? null;
+
+  let folders: { id: string; name: string; _count: { recordings: number } }[] = [];
+  let recordings: Awaited<ReturnType<typeof prisma.recording.findMany<{
+    include: { summary: true; _count: { select: { chunks: true } } };
+  }>>> = [];
+
   try {
-    recordings = await prisma.recording.findMany({
-      include: { summary: true },
-      orderBy: { createdAt: 'desc' },
-    });
+    [folders, recordings] = await Promise.all([
+      prisma.folder.findMany({
+        orderBy: { createdAt: 'asc' },
+        include: { _count: { select: { recordings: true } } },
+      }),
+      prisma.recording.findMany({
+        where: activeFolderId ? { folderId: activeFolderId } : {},
+        include: { summary: true, _count: { select: { chunks: true } } },
+        orderBy: { createdAt: 'desc' },
+      }),
+    ]);
   } catch { /* DB not ready */ }
 
-  const completed = recordings.filter((r) => r.status === 'completed').length;
-  const thisWeek = recordings.filter((r) => {
-    return Date.now() - new Date(r.createdAt).getTime() < 7 * 86400_000;
-  }).length;
+  const allCount = await prisma.recording.count().catch(() => 0);
+  const completed = await prisma.recording.count({ where: { status: 'completed' } }).catch(() => 0);
+  const thisWeek  = await prisma.recording.count({
+    where: { createdAt: { gte: new Date(Date.now() - 7 * 86400_000) } },
+  }).catch(() => 0);
+
+  const folderList = folders.map((f) => ({ id: f.id, name: f.name }));
 
   return (
     <div className="min-h-screen flex flex-col bg-surface">
@@ -55,10 +90,10 @@ export default async function Home() {
       <main className="max-w-5xl mx-auto w-full px-4 py-8 flex-1">
 
         {/* Stats */}
-        {recordings.length > 0 && (
+        {allCount > 0 && (
           <div className="grid grid-cols-3 gap-3 mb-8">
             {[
-              { label: 'Total', value: recordings.length },
+              { label: 'Total', value: allCount },
               { label: 'Complete', value: completed },
               { label: 'This week', value: thisWeek },
             ].map(({ label, value }) => (
@@ -70,8 +105,13 @@ export default async function Home() {
           </div>
         )}
 
+        {/* Folder tabs */}
+        <Suspense>
+          <FolderTabs folders={folders} />
+        </Suspense>
+
         <h2 className="text-xs font-semibold uppercase tracking-widest text-ftc-mid mb-4">
-          Recordings
+          {activeFolderId ? (folders.find((f) => f.id === activeFolderId)?.name ?? 'Folder') : 'All Recordings'}
         </h2>
 
         {recordings.length === 0 ? (
@@ -80,25 +120,33 @@ export default async function Home() {
               <MicIcon className="w-9 h-9 text-surface-muted" />
             </div>
             <div className="text-center">
-              <p className="font-semibold text-ftc-gray mb-1">No recordings yet</p>
-              <p className="text-sm text-ftc-mid">Tap New Recording to capture your first meeting</p>
+              <p className="font-semibold text-ftc-gray mb-1">
+                {activeFolderId ? 'No recordings in this folder' : 'No recordings yet'}
+              </p>
+              <p className="text-sm text-ftc-mid">
+                {activeFolderId ? 'Move recordings here using the folder icon on each card' : 'Tap New Recording to capture your first meeting'}
+              </p>
             </div>
-            <Link href="/record" className="btn-brand px-6 py-3 rounded-2xl text-sm font-semibold text-white touch-manipulation">
-              Start Recording
-            </Link>
+            {!activeFolderId && (
+              <Link href="/record" className="btn-brand px-6 py-3 rounded-2xl text-sm font-semibold text-white touch-manipulation">
+                Start Recording
+              </Link>
+            )}
           </div>
         ) : (
           <ul className="space-y-3">
             {recordings.map((rec) => {
-              const actions: string[] = rec.summary ? JSON.parse(rec.summary.actionItems) : [];
-              const points: string[] = rec.summary ? JSON.parse(rec.summary.keyPoints) : [];
-              const isComplete = rec.status === 'completed';
+              const actions = safeJson<string[]>(rec.summary?.actionItems, []);
+              const points  = safeJson<string[]>(rec.summary?.keyPoints,   []);
+              const isQueued = rec.status === 'uploading' || rec.status === 'queued' || rec.status === 'processing';
+              const chunkCount = rec._count.chunks;
+              const eta = isQueued ? formatEta(estimateSeconds(chunkCount)) : null;
 
               return (
                 <li key={rec.id} className="relative">
                   <Link
                     href={`/recordings/${rec.id}`}
-                    className="flex flex-col gap-3 rounded-2xl border border-surface-border bg-surface-card p-5 pr-14 transition-colors hover:border-surface-muted active:scale-[0.99] touch-manipulation"
+                    className="flex flex-col gap-3 rounded-2xl border border-surface-border bg-surface-card p-5 pr-20 transition-colors hover:border-surface-muted active:scale-[0.99] touch-manipulation"
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex items-center gap-3 min-w-0">
@@ -110,15 +158,21 @@ export default async function Home() {
                           <p className="text-xs mt-0.5 text-ftc-mid">{formatDate(rec.createdAt)}</p>
                         </div>
                       </div>
-                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0 ${rec.status === 'completed' ? 'bg-emerald-500/10 text-emerald-400'
-                          : rec.status === 'failed' ? 'bg-red-500/10 text-red-400'
-                            : (rec.status === 'uploading' || rec.status === 'queued') ? 'bg-blue-500/10 text-blue-400'
-                              : 'bg-amber-500/10 text-amber-400'
+                      <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                          rec.status === 'completed' ? 'bg-emerald-500/10 text-emerald-400'
+                          : rec.status === 'failed'  ? 'bg-red-500/10 text-red-400'
+                          : isQueued                 ? 'bg-blue-500/10 text-blue-400'
+                          : 'bg-amber-500/10 text-amber-400'
                         }`}>
-                        {rec.status === 'processing' ? 'analysing'
-                          : (rec.status === 'uploading' || rec.status === 'queued') ? 'queued'
+                          {rec.status === 'processing' ? 'analysing'
+                            : (rec.status === 'uploading' || rec.status === 'queued') ? 'queued'
                             : rec.status}
-                      </span>
+                        </span>
+                        {eta && (
+                          <span className="text-[10px] text-ftc-mid">{eta}</span>
+                        )}
+                      </div>
                     </div>
 
                     {rec.summary && (
@@ -148,8 +202,14 @@ export default async function Home() {
                       </div>
                     )}
                   </Link>
-                  {/* Delete — sits outside the Link so tapping it never navigates */}
-                  <div className="absolute top-1/2 right-3 -translate-y-1/2">
+
+                  {/* Action buttons outside the Link */}
+                  <div className="absolute top-1/2 right-3 -translate-y-1/2 flex flex-col gap-1 items-center">
+                    <AssignFolderButton
+                      recordingId={rec.id}
+                      currentFolderId={rec.folderId}
+                      folders={folderList}
+                    />
                     <QuickDeleteButton id={rec.id} />
                   </div>
                 </li>
