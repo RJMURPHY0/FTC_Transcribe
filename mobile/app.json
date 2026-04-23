@@ -1,0 +1,38 @@
+{
+  "expo": {
+    "name": "FTC Transcribe",
+    "slug": "ftc-transcribe",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "scheme": "ftctranscribe",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#030712"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.ftcgroup.transcribe",
+      "infoPlist": {
+        "UIBackgroundModes": ["audio"],
+        "NSMicrophoneUsageDescription": "FTC Transcribe needs microphone access to record meetings.",
+        "UIStatusBarStyle": "UIStatusBarStyleLightContent"
+      }
+    },
+    "android": {
+      "package": "com.ftcgroup.transcribe",
+      "permissions": ["RECORD_AUDIO", "FOREGROUND_SERVICE"]
+    },
+    "plugins": [
+      [
+        "expo-av",
+        { "microphonePermission": "FTC Transcribe needs microphone access to record meetings." }
+      ]
+    ],
+    "extra": {
+      "eas": { "projectId": "ftc-transcribe" }
+    }
+  }
+}

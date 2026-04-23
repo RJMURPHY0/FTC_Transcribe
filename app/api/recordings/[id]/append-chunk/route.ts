@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 30;
 
 const CUID_RE = /^c[a-z0-9]{20,}$/;
-const ALLOWED_MIME = new Set(['audio/webm', 'audio/mp4', 'audio/ogg', 'audio/mpeg', 'audio/wav']);
+const ALLOWED_MIME = new Set(['audio/webm', 'audio/mp4', 'audio/ogg', 'audio/mpeg', 'audio/wav', 'audio/m4a', 'audio/x-m4a']);
 const MAX_CHUNK_BYTES = 10 * 1024 * 1024; // 10 MB
 
 export async function POST(

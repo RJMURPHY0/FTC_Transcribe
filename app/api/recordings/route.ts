@@ -6,12 +6,15 @@ export const dynamic = 'force-dynamic';
 export async function GET() {
   try {
     const recordings = await prisma.recording.findMany({
-      include: { summary: true },
       orderBy: { createdAt: 'desc' },
+      include: {
+        summary: { select: { overview: true, keyPoints: true, actionItems: true, decisions: true, topics: true } },
+        folder: { select: { id: true, name: true } },
+        _count: { select: { chunks: true } },
+      },
     });
     return NextResponse.json(recordings);
-  } catch (error) {
-    console.error('[recordings] Error:', error);
-    return NextResponse.json({ error: 'Failed to fetch recordings' }, { status: 500 });
+  } catch {
+    return NextResponse.json({ error: 'Failed to fetch recordings.' }, { status: 500 });
   }
 }
