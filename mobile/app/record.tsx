@@ -1,4 +1,5 @@
 import { Audio, InterruptionModeAndroid, InterruptionModeIOS } from 'expo-av';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { router } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, AppState, Pressable, StyleSheet, Text, View } from 'react-native';
@@ -165,6 +166,7 @@ export default function RecordScreen() {
       isActiveRef.current = true;
 
       await startChunk();
+      await activateKeepAwakeAsync();
       setState('recording');
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Could not start recording');
@@ -176,6 +178,7 @@ export default function RecordScreen() {
     if (state !== 'recording') return;
     isActiveRef.current = false;
     stopChunkTimer();
+    deactivateKeepAwake();
     setState('uploading');
 
     try {
