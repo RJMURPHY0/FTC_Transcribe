@@ -33,11 +33,16 @@ export async function GET(
     return NextResponse.json({ error: 'No summary found.' }, { status: 404 });
   }
 
+  function safeJson<T>(v: string | null | undefined, fallback: T): T {
+    if (!v) return fallback;
+    try { return JSON.parse(v); } catch { return fallback; }
+  }
+
   const s = recording.summary;
-  const keyPoints:   string[]       = JSON.parse(s.keyPoints);
-  const actionItems: string[]       = JSON.parse(s.actionItems);
-  const decisions:   string[]       = JSON.parse(s.decisions);
-  const topics:      TopicSection[] = JSON.parse(s.topics ?? '[]');
+  const keyPoints:   string[]       = safeJson(s.keyPoints,   []);
+  const actionItems: string[]       = safeJson(s.actionItems, []);
+  const decisions:   string[]       = safeJson(s.decisions,   []);
+  const topics:      TopicSection[] = safeJson(s.topics,      []);
 
   const children: Paragraph[] = [
     // Title
@@ -111,7 +116,7 @@ export async function GET(
   const buffer = await Packer.toBuffer(doc);
   const safe   = recording.title.replace(/[^a-z0-9 ]/gi, '_');
 
-  return new NextResponse(buffer as unknown as BodyInit, {
+  return new NextResponse(new Uint8Array(buffer), {
     headers: {
       'Content-Type':        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       'Content-Disposition': `attachment; filename="${safe}.docx"`,
