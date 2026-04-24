@@ -186,6 +186,72 @@ export async function diarizeSegments(rawSegments: RawSegment[]): Promise<Transc
   return rawSegments.map((s, i) => ({ ...s, speaker: allLabels[i] ?? 'Speaker 1' }));
 }
 
+export async function identifySpeakerNames(
+  segments: TranscriptSegment[],
+): Promise<Record<string, string>> {
+  if (!segments.length || isMockAnthropic || !anthropic) return {};
+
+  // Collect the first 6 segments per speaker (introductions) + 30 from the middle
+  const perSpeaker = new Map<string, string[]>();
+  for (const seg of segments) {
+    const bucket = perSpeaker.get(seg.speaker) ?? [];
+    if (bucket.length < 6) {
+      bucket.push(`${seg.speaker}: ${seg.text.trim()}`);
+      perSpeaker.set(seg.speaker, bucket);
+    }
+  }
+  const midStart = Math.floor(segments.length * 0.4);
+  const midLines = segments
+    .slice(midStart, midStart + 30)
+    .map(s => `${s.speaker}: ${s.text.trim()}`);
+
+  const sampleLines: string[] = [];
+  for (const lines of perSpeaker.values()) sampleLines.push(...lines);
+  sampleLines.push(...midLines);
+
+  const sample = sampleLines.join('\n').slice(0, 6000);
+  const speakers = [...perSpeaker.keys()];
+
+  try {
+    const message = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 256,
+      messages: [{
+        role: 'user',
+        content: `Analyse this meeting transcript excerpt and identify the real name of each speaker.
+
+Only assign a name if you are HIGHLY CONFIDENT — the person introduces themselves ("I'm John", "This is Sarah"), is addressed directly by name ("Thanks, John"), or their identity is unambiguous from context.
+
+If you are not confident, return null for that speaker.
+
+Speaker labels: ${speakers.join(', ')}
+
+Transcript excerpt:
+${sample}
+
+Return ONLY a JSON object, e.g. {"Speaker 1": "John Smith", "Speaker 2": null}`,
+      }],
+    });
+
+    const content = message.content[0];
+    if (content.type !== 'text') return {};
+
+    const jsonMatch = content.text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return {};
+
+    const raw = JSON.parse(jsonMatch[0]) as Record<string, string | null>;
+    const result: Record<string, string> = {};
+    for (const [label, name] of Object.entries(raw)) {
+      if (name && typeof name === 'string' && name.trim()) {
+        result[label] = name.trim();
+      }
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
 export async function generateTitle(transcript: string): Promise<string | null> {
   if (isMockAnthropic || !anthropic || !transcript.trim()) return null;
 

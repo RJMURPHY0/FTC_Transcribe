@@ -6,6 +6,7 @@ import { prisma } from '@/lib/db';
 import {
   transcribeAudio,
   diarizeSegments,
+  identifySpeakerNames,
   analyzeTranscript,
   generateTitle,
   generateTopics,
@@ -92,12 +93,20 @@ async function analyzeAndCompleteRecording(recordingId: string): Promise<Finaliz
   }
 
   const rawSegments: RawSegment[] = JSON.parse(transcript.segments);
-  const [diarized, analysis, shortTitle, topics] = await Promise.all([
+
+  // Run analysis/title/topics in parallel with diarization, then resolve names
+  const [diarizedRaw, analysis, shortTitle, topics] = await Promise.all([
     diarizeSegments(rawSegments),
     analyzeTranscript(transcript.fullText),
     generateTitle(transcript.fullText),
     generateTopics(rawSegments),
   ]);
+
+  // Replace speaker labels with real names where confident
+  const speakerNames = await identifySpeakerNames(diarizedRaw);
+  const diarized = Object.keys(speakerNames).length > 0
+    ? diarizedRaw.map(seg => ({ ...seg, speaker: speakerNames[seg.speaker] ?? seg.speaker }))
+    : diarizedRaw;
 
   const dateStr = new Date().toLocaleDateString('en-GB', {
     day: 'numeric', month: 'short', year: 'numeric',
