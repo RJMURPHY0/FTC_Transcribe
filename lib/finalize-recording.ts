@@ -339,7 +339,7 @@ async function finalizeWithJobs(recordingId: string): Promise<FinalizeResult> {
     // The browser ProcessingPoller (or cron) will re-trigger this function.
     if (moreAfterThis) {
       const processed = doneIds.size + thisBatch.length;
-      const stillLeft  = allChunks.length - processed;
+      const stillLeft  = allChunkMeta.length - processed;
       return { ok: true, completed: false, failedChunks: 0, pendingChunks: stillLeft, reason: 'partial-progress' };
     }
 

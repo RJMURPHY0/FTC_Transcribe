@@ -122,6 +122,7 @@ const DIARIZE_BATCH_SIZE = 100;
 async function diarizeBatch(
   segments: RawSegment[],
   prevSpeaker: string,
+  prevText: string,
   client: Anthropic,
 ): Promise<string[]> {
   const segmentList = segments
@@ -129,7 +130,7 @@ async function diarizeBatch(
     .join('\n');
 
   const contextHint = prevSpeaker
-    ? `Continuing from the previous batch. The last speaker was ${prevSpeaker}. Continue numbering speakers consistently — do not restart from Speaker 1 unless it is genuinely a new speaker.\n\n`
+    ? `The segment immediately before this batch was spoken by ${prevSpeaker}: "${prevText}"\n\n`
     : '';
 
   const message = await client.messages.create({
@@ -138,14 +139,20 @@ async function diarizeBatch(
     messages: [
       {
         role: 'user',
-        content: `${contextHint}Identify speaker changes in this meeting transcript. Assign "Speaker 1", "Speaker 2", etc. in order of first appearance.
+        content: `${contextHint}Label each segment with the speaker. Follow these rules strictly:
 
-Return ONLY a JSON array of speaker label strings, one per segment in order.
+- Only assign a NEW speaker number when you are CERTAIN a different person is speaking
+- When in doubt, keep the SAME speaker as the previous segment
+- NEVER split one person's continuous thought across two different speaker labels
+- Speaker changes only happen at clear conversation turn boundaries — after a full sentence ends, not mid-phrase
+- A monologue (one person speaking alone) must be entirely "Speaker 1" throughout — do not alternate
+- Short filler words ("yes", "okay", "right", "mm-hmm") between long turns: default to same speaker
+- Speakers are numbered in order of first appearance: "Speaker 1", "Speaker 2", etc.
 
 Segments:
 ${segmentList}
 
-Return format (one label per segment): ["Speaker 1","Speaker 1","Speaker 2",...]`,
+Return ONLY a JSON array with one label per segment: ["Speaker 1","Speaker 1","Speaker 2",...]`,
       },
     ],
   });
@@ -163,6 +170,24 @@ Return format (one label per segment): ["Speaker 1","Speaker 1","Speaker 2",...]
   }
 }
 
+// Fix single-segment speaker islands that are almost certainly diarization errors.
+// E.g. [...S1, S1, S2, S1, S1...] where the S2 segment is short → collapse to S1.
+function fixOrphanSpeakers(segments: TranscriptSegment[]): TranscriptSegment[] {
+  const result = [...segments];
+  for (let i = 1; i < result.length - 1; i++) {
+    const prev = result[i - 1].speaker;
+    const curr = result[i].speaker;
+    const next = result[i + 1].speaker;
+    if (curr !== prev && prev === next) {
+      const wordCount = result[i].text.trim().split(/\s+/).length;
+      if (wordCount < 10) {
+        result[i] = { ...result[i], speaker: prev };
+      }
+    }
+  }
+  return result;
+}
+
 export async function diarizeSegments(rawSegments: RawSegment[]): Promise<TranscriptSegment[]> {
   if (!rawSegments.length) return [];
 
@@ -173,17 +198,20 @@ export async function diarizeSegments(rawSegments: RawSegment[]): Promise<Transc
 
   const allLabels: string[] = [];
   let prevSpeaker = '';
+  let prevText = '';
 
   // Process in batches so long meetings (hundreds of segments) don't hit context/timeout limits
   for (let i = 0; i < rawSegments.length; i += DIARIZE_BATCH_SIZE) {
     const batch = rawSegments.slice(i, i + DIARIZE_BATCH_SIZE);
-    const labels = await diarizeBatch(batch, prevSpeaker, anthropic);
+    const labels = await diarizeBatch(batch, prevSpeaker, prevText, anthropic);
     allLabels.push(...labels);
     prevSpeaker = labels[labels.length - 1] ?? prevSpeaker;
+    prevText = batch[batch.length - 1]?.text.trim() ?? prevText;
   }
 
   // Timestamps are always from Whisper — only the speaker label comes from Claude
-  return rawSegments.map((s, i) => ({ ...s, speaker: allLabels[i] ?? 'Speaker 1' }));
+  const labelled = rawSegments.map((s, i) => ({ ...s, speaker: allLabels[i] ?? 'Speaker 1' }));
+  return fixOrphanSpeakers(labelled);
 }
 
 export async function identifySpeakerNames(
