@@ -3,7 +3,7 @@ import { prisma } from '@/lib/db';
 import { finalizeRecording, enqueueFinalizeJob } from '@/lib/finalize-recording';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 300;
+export const maxDuration = 800;
 
 const MAX_RECORDINGS_PER_RUN = 5;
 

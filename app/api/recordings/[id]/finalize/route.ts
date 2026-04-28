@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { finalizeRecording } from '@/lib/finalize-recording';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 300;
+export const maxDuration = 800;
 
 const CUID_RE = /^c[a-z0-9]{20,}$/;
 

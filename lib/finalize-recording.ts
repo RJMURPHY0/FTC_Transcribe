@@ -13,8 +13,10 @@ import {
 } from '@/lib/ai';
 import type { RawSegment } from '@/lib/ai';
 import { backupToAirtable } from '@/lib/airtable-backup';
+import { isDeepgramReady, transcribeWithDeepgram, alignSpeakersAcrossChunks } from '@/lib/deepgram';
+import type { DeepgramRawSegment } from '@/lib/deepgram';
 
-const LOCK_MS = 14 * 60 * 1000;
+const LOCK_MS = 5 * 60 * 1000; // 5 min — expires quickly if a function is killed, letting the next retry take over
 const MAX_CHUNK_ATTEMPTS = 4;
 const PARALLEL_CHUNKS = 5;
 // Vercel Pro allows 800s. 100 chunks × 5 parallel ≈ 20 rounds × ~10s = ~200s + overhead.
@@ -88,6 +90,29 @@ async function transcribeChunkWithRetry(audioData: Buffer, ext: string) {
   throw lastErr;
 }
 
+// Returns DeepgramRawSegment[] on success, or falls back to Groq (returning RawSegment[] with no speaker).
+async function transcribeChunkWithDeepgramRetry(
+  audioData: Buffer,
+  mimeType: string,
+): Promise<{ text: string; segments: DeepgramRawSegment[] } | { text: string; rawSegments: RawSegment[] }> {
+  let lastErr: Error = new Error('Deepgram failed');
+
+  for (let attempt = 0; attempt < MAX_CHUNK_ATTEMPTS; attempt++) {
+    if (attempt > 0) await new Promise(r => setTimeout(r, 2000 * Math.pow(2, attempt - 1)));
+    try {
+      return await transcribeWithDeepgram(audioData, mimeType);
+    } catch (err) {
+      lastErr = err instanceof Error ? err : new Error('Deepgram error');
+      console.warn(`[finalize] Deepgram attempt ${attempt + 1}/${MAX_CHUNK_ATTEMPTS} failed:`, lastErr.message);
+    }
+  }
+
+  // Deepgram exhausted — fall back to Groq so the chunk still gets transcribed
+  console.warn('[finalize] Deepgram failed after retries, falling back to Groq for this chunk');
+  const ext = mimeType.includes('mp4') ? '.mp4' : mimeType.includes('ogg') ? '.ogg' : '.webm';
+  return transcribeChunkWithRetry(audioData, ext);
+}
+
 async function analyzeAndCompleteRecording(recordingId: string): Promise<FinalizeResult> {
   const transcript = await prisma.transcript.findUnique({ where: { recordingId } });
   if (!transcript || !transcript.fullText.trim()) {
@@ -95,7 +120,7 @@ async function analyzeAndCompleteRecording(recordingId: string): Promise<Finaliz
     return { ok: false, reason: 'No transcript to analyse.' };
   }
 
-  const rawSegments: RawSegment[] = JSON.parse(transcript.segments);
+  const rawSegments: Array<RawSegment & { speaker?: string }> = JSON.parse(transcript.segments);
 
   // Run analysis/title/topics in parallel with diarization, then resolve names
   const [diarizedRaw, analysis, shortTitle, topics] = await Promise.all([
@@ -319,10 +344,23 @@ async function finalizeWithJobs(recordingId: string): Promise<FinalizeResult> {
             where: { id: chunkMeta.id },
             select: { audioData: true },
           });
-          const { text, rawSegments } = await transcribeChunkWithRetry(blob.audioData as Buffer, ext);
+
+          let chunkText: string;
+          let chunkSegments: RawSegment[] | DeepgramRawSegment[];
+
+          if (isDeepgramReady) {
+            const result = await transcribeChunkWithDeepgramRetry(blob.audioData as Buffer, chunkMeta.mimeType);
+            chunkText = result.text;
+            chunkSegments = 'segments' in result ? result.segments : result.rawSegments;
+          } else {
+            const result = await transcribeChunkWithRetry(blob.audioData as Buffer, ext);
+            chunkText = result.text;
+            chunkSegments = result.rawSegments;
+          }
+
           await prisma.chunkTranscript.update({
             where: { jobId_chunkId: { jobId: lock.id, chunkId: chunkMeta.id } },
-            data: { status: 'succeeded', transcript: text.trim(), segments: JSON.stringify(rawSegments), processedAt: new Date(), lastError: '' },
+            data: { status: 'succeeded', transcript: chunkText.trim(), segments: JSON.stringify(chunkSegments), processedAt: new Date(), lastError: '' },
           });
         } catch (err) {
           const msg = err instanceof Error ? err.message : 'Chunk transcription failed';
@@ -354,12 +392,26 @@ async function finalizeWithJobs(recordingId: string): Promise<FinalizeResult> {
     ]);
 
     let fullText = '';
-    const allSegments: RawSegment[] = [];
+    const allSegments: Array<RawSegment & { speaker?: string }> = [];
+    const deepgramChunkData: Array<{ segments: DeepgramRawSegment[]; offset: number }> = [];
+    let hasDeepgramChunks = false;
+
     for (const row of rows) {
       if (row.transcript.trim()) fullText += (fullText ? ' ' : '') + row.transcript.trim();
-      let parsed: RawSegment[] = [];
-      try { parsed = JSON.parse(row.segments) as RawSegment[]; } catch { parsed = []; }
-      allSegments.push(...parsed.map(s => ({ start: s.start + row.offset, end: s.end + row.offset, text: s.text })));
+      try {
+        const parsed = JSON.parse(row.segments) as Array<{ start: number; end: number; text: string; speaker?: number | string }>;
+        if (parsed.length > 0 && typeof parsed[0].speaker === 'number') {
+          hasDeepgramChunks = true;
+          deepgramChunkData.push({ segments: parsed as DeepgramRawSegment[], offset: row.offset });
+        } else {
+          allSegments.push(...parsed.map(s => ({ start: s.start + row.offset, end: s.end + row.offset, text: s.text })));
+        }
+      } catch { /* skip unparseable chunk */ }
+    }
+
+    if (hasDeepgramChunks) {
+      const sorted = deepgramChunkData.sort((a, b) => a.offset - b.offset);
+      allSegments.push(...alignSpeakersAcrossChunks(sorted));
     }
 
     if (fullText.trim()) {

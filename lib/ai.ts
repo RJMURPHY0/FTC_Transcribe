@@ -206,8 +206,13 @@ function fixOrphanSpeakers(segments: TranscriptSegment[]): TranscriptSegment[] {
   return result;
 }
 
-export async function diarizeSegments(rawSegments: RawSegment[]): Promise<TranscriptSegment[]> {
+export async function diarizeSegments(rawSegments: Array<RawSegment & { speaker?: string }>): Promise<TranscriptSegment[]> {
   if (!rawSegments.length) return [];
+
+  // Already labeled by Deepgram — skip Claude entirely
+  if (rawSegments.every(s => s.speaker)) {
+    return rawSegments as TranscriptSegment[];
+  }
 
   // Without Claude, label everything Speaker 1
   if (isMockAnthropic || !anthropic) {
