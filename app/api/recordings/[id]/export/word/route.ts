@@ -20,6 +20,10 @@ const MID    = '888888';
 const LIGHT  = 'dadada';
 const WHITE  = 'ffffff';
 
+// FTC brand fonts
+const FONT_HEADING = 'Avenir Black';
+const FONT_BODY    = 'Avenir Roman';
+
 function formatTimestamp(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = Math.floor(seconds % 60);
@@ -55,9 +59,9 @@ function logoParagraph(): Paragraph | null {
 function headerBar(title: string): Paragraph {
   return new Paragraph({
     children: [
-      new TextRun({ text: 'FTC TRANSCRIBE', bold: true, color: WHITE, size: 20, characterSpacing: 120 }),
-      new TextRun({ text: '   |   ', color: WHITE, size: 20 }),
-      new TextRun({ text: title.toUpperCase(), color: WHITE, size: 17, characterSpacing: 60 }),
+      new TextRun({ text: 'FTC TRANSCRIBE', bold: true, color: WHITE, size: 20, characterSpacing: 120, font: FONT_HEADING }),
+      new TextRun({ text: '   |   ', color: WHITE, size: 20, font: FONT_HEADING }),
+      new TextRun({ text: title.toUpperCase(), color: WHITE, size: 17, characterSpacing: 60, font: FONT_HEADING }),
     ],
     shading: { type: ShadingType.SOLID, color: ORANGE, fill: ORANGE },
     spacing: { before: 0, after: 0 },
@@ -67,7 +71,7 @@ function headerBar(title: string): Paragraph {
 
 function recordingTitle(text: string): Paragraph {
   return new Paragraph({
-    children: [new TextRun({ text, bold: true, color: DARK, size: 44 })],
+    children: [new TextRun({ text, bold: true, color: DARK, size: 44, font: FONT_HEADING })],
     spacing: { before: 360, after: 100 },
   });
 }
@@ -81,6 +85,7 @@ function dateRow(date: Date): Paragraph {
         }),
         color: MID,
         size: 19,
+        font: FONT_BODY,
       }),
     ],
     spacing: { after: 300 },
@@ -97,7 +102,7 @@ function divider(): Paragraph {
 function sectionHeading(text: string): Paragraph {
   return new Paragraph({
     children: [
-      new TextRun({ text: text.toUpperCase(), bold: true, color: ORANGE, size: 19, characterSpacing: 80 }),
+      new TextRun({ text: text.toUpperCase(), bold: true, color: ORANGE, size: 19, characterSpacing: 80, font: FONT_HEADING }),
     ],
     spacing: { before: 400, after: 160 },
     border: { bottom: { style: BorderStyle.SINGLE, size: 2, color: LIGHT, space: 4 } },
@@ -106,7 +111,7 @@ function sectionHeading(text: string): Paragraph {
 
 function bodyText(text: string): Paragraph {
   return new Paragraph({
-    children: [new TextRun({ text, color: DARK, size: 22 })],
+    children: [new TextRun({ text, color: DARK, size: 22, font: FONT_BODY })],
     spacing: { after: 120 },
     alignment: AlignmentType.JUSTIFIED,
   });
@@ -115,8 +120,8 @@ function bodyText(text: string): Paragraph {
 function bulletPoint(text: string): Paragraph {
   return new Paragraph({
     children: [
-      new TextRun({ text: '●  ', color: ORANGE, size: 20 }),
-      new TextRun({ text, color: DARK, size: 22 }),
+      new TextRun({ text: '●  ', color: ORANGE, size: 20, font: FONT_HEADING }),
+      new TextRun({ text, color: DARK, size: 22, font: FONT_BODY }),
     ],
     indent: { left: 360 },
     spacing: { after: 120 },
@@ -126,8 +131,8 @@ function bulletPoint(text: string): Paragraph {
 function numberedItem(n: number, text: string): Paragraph {
   return new Paragraph({
     children: [
-      new TextRun({ text: `${n}.  `, bold: true, color: ORANGE, size: 22 }),
-      new TextRun({ text, color: DARK, size: 22 }),
+      new TextRun({ text: `${n}.  `, bold: true, color: ORANGE, size: 22, font: FONT_HEADING }),
+      new TextRun({ text, color: DARK, size: 22, font: FONT_BODY }),
     ],
     indent: { left: 360 },
     spacing: { after: 120 },
@@ -137,8 +142,8 @@ function numberedItem(n: number, text: string): Paragraph {
 function checkItem(text: string): Paragraph {
   return new Paragraph({
     children: [
-      new TextRun({ text: '✓  ', bold: true, color: ORANGE, size: 22 }),
-      new TextRun({ text, color: DARK, size: 22 }),
+      new TextRun({ text: '✓  ', bold: true, color: ORANGE, size: 22, font: FONT_HEADING }),
+      new TextRun({ text, color: DARK, size: 22, font: FONT_BODY }),
     ],
     indent: { left: 360 },
     spacing: { after: 120 },
@@ -148,8 +153,8 @@ function checkItem(text: string): Paragraph {
 function topicItem(t: TopicSection): Paragraph {
   return new Paragraph({
     children: [
-      new TextRun({ text: formatTimestamp(t.time) + '   ', bold: true, color: ORANGE, size: 20 }),
-      new TextRun({ text: t.title, color: DARK, size: 22 }),
+      new TextRun({ text: formatTimestamp(t.time) + '   ', bold: true, color: ORANGE, size: 20, font: FONT_HEADING }),
+      new TextRun({ text: t.title, color: DARK, size: 22, font: FONT_BODY }),
     ],
     indent: { left: 360 },
     spacing: { after: 120 },
@@ -168,6 +173,7 @@ function footerParagraph(date: Date): Paragraph {
         color: LIGHT,
         size: 16,
         italics: true,
+        font: FONT_BODY,
       }),
     ],
     alignment: AlignmentType.CENTER,
