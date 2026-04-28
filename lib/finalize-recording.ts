@@ -14,12 +14,12 @@ import {
 import type { RawSegment } from '@/lib/ai';
 import { backupToAirtable } from '@/lib/airtable-backup';
 
-const LOCK_MS = 8 * 60 * 1000;
+const LOCK_MS = 14 * 60 * 1000;
 const MAX_CHUNK_ATTEMPTS = 4;
-const PARALLEL_CHUNKS = 3;
-// Vercel Hobby hard-caps functions at 60s. 6 chunks × ~7s each with 3 parallel ≈ 14s + overhead.
-// The browser ProcessingPoller re-triggers finalize until all chunks are done.
-const MAX_CHUNKS_PER_RUN = 6;
+const PARALLEL_CHUNKS = 5;
+// Vercel Pro allows 800s. 100 chunks × 5 parallel ≈ 20 rounds × ~10s = ~200s + overhead.
+// ProcessingPoller re-triggers if a meeting somehow exceeds this.
+const MAX_CHUNKS_PER_RUN = 100;
 
 // Estimated processing time in seconds for a given chunk count
 export function estimateSeconds(chunkCount: number): number {
@@ -281,9 +281,11 @@ async function finalizeWithJobs(recordingId: string): Promise<FinalizeResult> {
   }
 
   try {
-    const allChunks = await prisma.chunkBlob.findMany({
+    // Fetch metadata only (no audioData) to avoid loading gigabytes into memory for long meetings
+    const allChunkMeta = await prisma.chunkBlob.findMany({
       where: { recordingId },
       orderBy: [{ offset: 'asc' }, { createdAt: 'asc' }],
+      select: { id: true, offset: true, mimeType: true },
     });
 
     // Find chunks already successfully transcribed in a previous invocation
@@ -294,34 +296,38 @@ async function finalizeWithJobs(recordingId: string): Promise<FinalizeResult> {
       })).map(r => r.chunkId),
     );
 
-    // Only process the next batch of un-done chunks (fits within 60s Vercel limit)
-    const remaining = allChunks.filter(c => !doneIds.has(c.id));
+    const remaining = allChunkMeta.filter(c => !doneIds.has(c.id));
     const thisBatch = remaining.slice(0, MAX_CHUNKS_PER_RUN);
     const moreAfterThis = remaining.length > thisBatch.length;
 
     await runConcurrent(
-      thisBatch.map((chunk) => async () => {
+      thisBatch.map((chunkMeta) => async () => {
         await refreshJobLock(lock.id, lock.token);
 
         await prisma.chunkTranscript.upsert({
-          where: { jobId_chunkId: { jobId: lock.id, chunkId: chunk.id } },
-          create: { jobId: lock.id, recordingId, chunkId: chunk.id, offset: chunk.offset, status: 'processing', attempts: 1 },
+          where: { jobId_chunkId: { jobId: lock.id, chunkId: chunkMeta.id } },
+          create: { jobId: lock.id, recordingId, chunkId: chunkMeta.id, offset: chunkMeta.offset, status: 'processing', attempts: 1 },
           update: { status: 'processing', attempts: { increment: 1 }, lastError: '' },
         });
 
-        const ext = chunk.mimeType.includes('mp4') ? '.mp4'
-          : chunk.mimeType.includes('ogg') ? '.ogg' : '.webm';
+        const ext = chunkMeta.mimeType.includes('mp4') ? '.mp4'
+          : chunkMeta.mimeType.includes('ogg') ? '.ogg' : '.webm';
 
         try {
-          const { text, rawSegments } = await transcribeChunkWithRetry(chunk.audioData as Buffer, ext);
+          // Load audio data only when needed — one chunk at a time, not the entire recording
+          const blob = await prisma.chunkBlob.findUniqueOrThrow({
+            where: { id: chunkMeta.id },
+            select: { audioData: true },
+          });
+          const { text, rawSegments } = await transcribeChunkWithRetry(blob.audioData as Buffer, ext);
           await prisma.chunkTranscript.update({
-            where: { jobId_chunkId: { jobId: lock.id, chunkId: chunk.id } },
+            where: { jobId_chunkId: { jobId: lock.id, chunkId: chunkMeta.id } },
             data: { status: 'succeeded', transcript: text.trim(), segments: JSON.stringify(rawSegments), processedAt: new Date(), lastError: '' },
           });
         } catch (err) {
           const msg = err instanceof Error ? err.message : 'Chunk transcription failed';
           await prisma.chunkTranscript.update({
-            where: { jobId_chunkId: { jobId: lock.id, chunkId: chunk.id } },
+            where: { jobId_chunkId: { jobId: lock.id, chunkId: chunkMeta.id } },
             data: { status: 'failed', lastError: msg.slice(0, 500), processedAt: null },
           });
         }

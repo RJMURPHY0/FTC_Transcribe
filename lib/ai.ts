@@ -329,8 +329,8 @@ Return ONLY the JSON array, nothing else.`,
   }
 }
 
-// ~24 000 words — enough for a 2-3 hour meeting; keeps prompt well within Haiku's context window
-const MAX_TRANSCRIPT_CHARS = 120_000;
+// ~48 000 words — enough for a 4-6 hour meeting; well within Haiku's 200k token context window
+const MAX_TRANSCRIPT_CHARS = 200_000;
 
 export async function analyzeTranscript(transcript: string): Promise<AnalysisResult> {
   if (isMockAnthropic || !anthropic) {

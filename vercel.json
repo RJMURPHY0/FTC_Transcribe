@@ -1,19 +1,19 @@
 {
   "functions": {
     "app/api/transcribe/route.ts": {
-      "maxDuration": 60
+      "maxDuration": 800
     },
     "app/api/recordings/[id]/append-chunk/route.ts": {
       "maxDuration": 60
     },
     "app/api/recordings/[id]/finalize/route.ts": {
-      "maxDuration": 300
+      "maxDuration": 800
     },
     "app/api/recordings/[id]/chat/route.ts": {
-      "maxDuration": 30
+      "maxDuration": 60
     },
     "app/api/jobs/finalize/route.ts": {
-      "maxDuration": 300
+      "maxDuration": 800
     }
   },
   "crons": [

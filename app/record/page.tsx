@@ -43,7 +43,7 @@ export default function RecordPage() {
   const timeOffsetRef   = useRef(0);
   const chunkStartRef   = useRef(0);
   const isActiveRef     = useRef(false);
-  const wakeLockRef     = useRef<WakeLockSentinel | null>(null);
+  const noSleepRef      = useRef<{ enable(): Promise<boolean>; disable(): void } | null>(null);
 
   // Timer — only runs during recording
   useEffect(() => {
@@ -55,40 +55,33 @@ export default function RecordPage() {
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
   }, [state]);
 
-  const releaseWakeLock = useCallback(async () => {
-    if (!wakeLockRef.current) return;
-    try {
-      await wakeLockRef.current.release();
-    } catch {
-      // no-op
-    } finally {
-      wakeLockRef.current = null;
-    }
+  const releaseWakeLock = useCallback(() => {
+    noSleepRef.current?.disable();
   }, []);
 
   const requestWakeLock = useCallback(async () => {
     if (typeof window === 'undefined') return;
-    if (!('wakeLock' in navigator)) return;
     try {
-      wakeLockRef.current = await navigator.wakeLock.request('screen');
-      wakeLockRef.current.addEventListener('release', () => {
-        wakeLockRef.current = null;
-      }, { once: true });
+      if (!noSleepRef.current) {
+        const { default: NoSleep } = await import('nosleep.js');
+        noSleepRef.current = new NoSleep();
+      }
+      await noSleepRef.current.enable();
     } catch {
-      // Some browsers/devices block wake-lock. Recording can still continue.
+      // Low Power Mode or unsupported — recording continues regardless
     }
   }, []);
 
   useEffect(() => {
     const onVisibility = () => {
-      if (document.visibilityState === 'visible' && state === 'recording' && !wakeLockRef.current) {
+      if (document.visibilityState === 'visible' && state === 'recording') {
         void requestWakeLock();
       }
     };
     document.addEventListener('visibilitychange', onVisibility);
     return () => {
       document.removeEventListener('visibilitychange', onVisibility);
-      void releaseWakeLock();
+      releaseWakeLock();
     };
   }, [state, requestWakeLock, releaseWakeLock]);
 
@@ -211,7 +204,7 @@ export default function RecordPage() {
 
       setState('recording');
     } catch (err) {
-      await releaseWakeLock();
+      releaseWakeLock();
       setErrorMsg(err instanceof Error ? err.message : 'Microphone access denied. Allow mic access and try again.');
       setState('error');
     }
