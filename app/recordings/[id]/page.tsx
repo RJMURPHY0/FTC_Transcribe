@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation';
 import { prisma } from '@/lib/db';
 import DeleteButton from './DeleteButton';
 import RetryButton from './RetryButton';
+import ProcessingPoller from './ProcessingPoller';
 import EditableTitle from './EditableTitle';
 import ChatPanel from './ChatPanel';
 import EditableAINotes from './EditableAINotes';
@@ -135,6 +136,9 @@ export default async function RecordingPage({ params }: { params: { id: string }
       </header>
 
       <main className="max-w-6xl mx-auto w-full px-4 py-6 flex-1">
+        {/* Auto-retry + auto-refresh when queued or processing */}
+        {(isUploading || isProcessing) && <ProcessingPoller id={recording.id} />}
+
         {/* Status banners */}
         {isFailed && (
           <div className="flex items-start gap-3 rounded-2xl border border-red-500/20 bg-red-500/5 p-4 mb-4 text-red-300 text-sm">
@@ -142,7 +146,16 @@ export default async function RecordingPage({ params }: { params: { id: string }
               <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
             </svg>
             <div className="flex-1 space-y-3">
-              <span>Analysis failed — you can retry below. If it keeps failing, check your API keys.</span>
+              <span>Analysis failed — you can retry below. If it keeps failing, check your API keys in Settings.</span>
+              <RetryButton id={recording.id} />
+            </div>
+          </div>
+        )}
+        {isUploading && (
+          <div className="flex items-start gap-3 rounded-2xl border border-blue-500/20 bg-blue-500/5 p-4 mb-4 text-blue-300 text-sm">
+            <div className="w-4 h-4 rounded-full border-2 border-blue-400/30 border-t-blue-400 animate-spin flex-shrink-0 mt-0.5" />
+            <div className="flex-1 space-y-3">
+              <span>Queued for transcription — processing automatically. This page refreshes every 10 seconds.</span>
               <RetryButton id={recording.id} />
             </div>
           </div>
