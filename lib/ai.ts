@@ -123,14 +123,20 @@ async function diarizeBatch(
   segments: RawSegment[],
   prevSpeaker: string,
   prevText: string,
+  prevEnd: number,
   client: Anthropic,
 ): Promise<string[]> {
   const segmentList = segments
-    .map((s, i) => `[${i}] ${formatTime(s.start)}: ${s.text.trim()}`)
+    .map((s, i) => {
+      const gapFrom = i === 0 ? prevEnd : segments[i - 1].end;
+      const gap = gapFrom >= 0 ? ` +${(s.start - gapFrom).toFixed(1)}s` : '';
+      const noEnd = /[.?!…]$/.test(s.text.trim()) ? '' : ' [no-end]';
+      return `[${i}] ${formatTime(s.start)}${gap}: ${s.text.trim()}${noEnd}`;
+    })
     .join('\n');
 
   const contextHint = prevSpeaker
-    ? `The segment immediately before this batch was spoken by ${prevSpeaker}: "${prevText}"\n\n`
+    ? `Last segment before this batch — ${prevSpeaker}: "${prevText}"\n\n`
     : '';
 
   const message = await client.messages.create({
@@ -139,20 +145,32 @@ async function diarizeBatch(
     messages: [
       {
         role: 'user',
-        content: `${contextHint}Label each segment with the speaker. Follow these rules strictly:
+        content: `${contextHint}Label each segment with the speaker.
 
-- Only assign a NEW speaker number when you are CERTAIN a different person is speaking
-- When in doubt, keep the SAME speaker as the previous segment
-- NEVER split one person's continuous thought across two different speaker labels
-- Speaker changes only happen at clear conversation turn boundaries — after a full sentence ends, not mid-phrase
-- A monologue (one person speaking alone) must be entirely "Speaker 1" throughout — do not alternate
-- Short filler words ("yes", "okay", "right", "mm-hmm") between long turns: default to same speaker
-- Speakers are numbered in order of first appearance: "Speaker 1", "Speaker 2", etc.
+Each line shows: [index] timestamp +gap: text [no-end?]
+- "+Xs" = seconds of silence before this segment started
+- "[no-end]" = segment ends without terminal punctuation — the thought is incomplete
+
+Gap rules (most important signal):
+- gap < 0.5s → same speaker, person is still mid-speech
+- gap 0.5s–1.5s → probably same speaker; only change if very strong turn evidence
+- gap > 1.5s → possible speaker change, but ONLY if previous segment had no [no-end]
+- gap > 1.5s AND previous had [no-end] → ambiguous; default to same speaker unless you are certain
+
+Sentence rules:
+- [no-end] means the thought is unfinished — the next segment almost certainly continues from the same speaker
+- Never assign a new speaker immediately after a [no-end] segment unless the gap is also large AND there is clear turn-taking evidence in the words themselves
+
+General rules:
+- When in doubt keep the SAME speaker — false splits are worse than false merges
+- A monologue (one person speaking) must be entirely "Speaker 1" — never alternate labels
+- Fillers ("yes", "right", "mm-hmm") between long turns: default to same speaker
+- Speakers numbered in order of first appearance: "Speaker 1", "Speaker 2", etc.
 
 Segments:
 ${segmentList}
 
-Return ONLY a JSON array with one label per segment: ["Speaker 1","Speaker 1","Speaker 2",...]`,
+Return ONLY a JSON array, one label per segment: ["Speaker 1","Speaker 1","Speaker 2",...]`,
       },
     ],
   });
@@ -199,14 +217,16 @@ export async function diarizeSegments(rawSegments: RawSegment[]): Promise<Transc
   const allLabels: string[] = [];
   let prevSpeaker = '';
   let prevText = '';
+  let prevEnd = -1;
 
   // Process in batches so long meetings (hundreds of segments) don't hit context/timeout limits
   for (let i = 0; i < rawSegments.length; i += DIARIZE_BATCH_SIZE) {
     const batch = rawSegments.slice(i, i + DIARIZE_BATCH_SIZE);
-    const labels = await diarizeBatch(batch, prevSpeaker, prevText, anthropic);
+    const labels = await diarizeBatch(batch, prevSpeaker, prevText, prevEnd, anthropic);
     allLabels.push(...labels);
     prevSpeaker = labels[labels.length - 1] ?? prevSpeaker;
     prevText = batch[batch.length - 1]?.text.trim() ?? prevText;
+    prevEnd = batch[batch.length - 1]?.end ?? prevEnd;
   }
 
   // Timestamps are always from Whisper — only the speaker label comes from Claude
