@@ -26,9 +26,10 @@ function getBestMime() {
 
 export default function RecordPage() {
   const [state, setState] = useState<State>('idle');
-  const [seconds,     setSeconds]     = useState(0);
-  const [errorMsg,    setErrorMsg]    = useState('');
-  const [chunksSaved, setChunksSaved] = useState(0);
+  const [seconds,       setSeconds]       = useState(0);
+  const [errorMsg,      setErrorMsg]      = useState('');
+  const [chunksSaved,   setChunksSaved]   = useState(0);
+  const [chunksFailed,  setChunksFailed]  = useState(0);
 
   const router = useRouter();
 
@@ -168,6 +169,7 @@ export default function RecordPage() {
       } catch (err) {
         // Upload failed but recording continues — the missed chunk will leave a gap
         console.warn('[rotate] chunk upload failed:', err instanceof Error ? err.message : err);
+        setChunksFailed((n) => n + 1);
       }
     }
   }, [uploadChunk]);
@@ -222,6 +224,7 @@ export default function RecordPage() {
     setErrorMsg('');
     setSeconds(0);
     setChunksSaved(0);
+    setChunksFailed(0);
 
     try {
       const createRes = await fetch('/api/recordings/create', { method: 'POST' });
@@ -378,6 +381,12 @@ export default function RecordPage() {
           {state === 'recording' && chunksSaved > 0 && (
             <p className="text-sm text-ftc-mid">
               {chunksSaved} segment{chunksSaved !== 1 ? 's' : ''} saved safely
+            </p>
+          )}
+
+          {state === 'recording' && chunksFailed > 0 && (
+            <p className="text-sm text-amber-500">
+              {chunksFailed} segment{chunksFailed !== 1 ? 's' : ''} failed to save — check your connection
             </p>
           )}
 

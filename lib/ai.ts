@@ -326,7 +326,7 @@ ${transcript.slice(0, 600)}`,
     });
     const text = message.content[0]?.type === 'text' ? message.content[0].text.trim() : null;
     // Reject anything that looks too long or malformed
-    if (!text || text.length > 60 || text.includes('\n')) return null;
+    if (!text || !text.trim() || text.length > 60 || text.includes('\n')) return null;
     return text;
   } catch {
     return null;
