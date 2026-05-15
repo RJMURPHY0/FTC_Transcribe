@@ -1,10 +1,6 @@
 import { randomUUID } from 'crypto';
-import { writeFile, unlink } from 'fs/promises';
-import os from 'os';
-import path from 'path';
 import { prisma } from '@/lib/db';
 import {
-  transcribeAudio,
   diarizeSegments,
   identifySpeakerNames,
   analyzeTranscript,
@@ -13,11 +9,17 @@ import {
 } from '@/lib/ai';
 import type { RawSegment } from '@/lib/ai';
 import { backupToAirtable } from '@/lib/airtable-backup';
-import { isDeepgramReady, transcribeWithDeepgram, alignSpeakersAcrossChunks } from '@/lib/deepgram';
+import { alignSpeakersAcrossChunks } from '@/lib/deepgram';
 import type { DeepgramRawSegment } from '@/lib/deepgram';
+import {
+  transcribeChunk,
+  transcribeChunkWithRetry,
+  transcribeChunkWithDeepgramRetry,
+  withTempFile,
+  MAX_CHUNK_ATTEMPTS,
+} from '@/lib/transcribe-chunk';
 
 const LOCK_MS = 5 * 60 * 1000; // 5 min — expires quickly if a function is killed, letting the next retry take over
-const MAX_CHUNK_ATTEMPTS = 4;
 const PARALLEL_CHUNKS = 5;
 // Vercel Pro allows 800s. 100 chunks × 5 parallel ≈ 20 rounds × ~10s = ~200s + overhead.
 // ProcessingPoller re-triggers if a meeting somehow exceeds this.
@@ -57,61 +59,6 @@ function isMissingFinalizeTablesError(err: unknown): boolean {
   );
 }
 
-async function withTempFile<T>(
-  data: Buffer,
-  ext: string,
-  fn: (filePath: string) => Promise<T>,
-): Promise<T> {
-  const tempPath = path.join(os.tmpdir(), `chunk-${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
-  await writeFile(tempPath, data);
-  try {
-    return await fn(tempPath);
-  } finally {
-    await unlink(tempPath).catch(() => {});
-  }
-}
-
-async function transcribeChunkWithRetry(audioData: Buffer, ext: string) {
-  let lastErr: Error = new Error('Transcription failed');
-
-  for (let attempt = 0; attempt < MAX_CHUNK_ATTEMPTS; attempt++) {
-    if (attempt > 0) {
-      await new Promise((r) => setTimeout(r, 2000 * Math.pow(2, attempt - 1)));
-    }
-
-    try {
-      return await withTempFile(audioData, ext, (filePath) => transcribeAudio(filePath));
-    } catch (err) {
-      lastErr = err instanceof Error ? err : new Error('Transcription error');
-      console.warn(`[finalize] chunk attempt ${attempt + 1}/${MAX_CHUNK_ATTEMPTS} failed:`, lastErr.message);
-    }
-  }
-
-  throw lastErr;
-}
-
-// Returns DeepgramRawSegment[] on success, or falls back to Groq (returning RawSegment[] with no speaker).
-async function transcribeChunkWithDeepgramRetry(
-  audioData: Buffer,
-  mimeType: string,
-): Promise<{ text: string; segments: DeepgramRawSegment[] } | { text: string; rawSegments: RawSegment[] }> {
-  let lastErr: Error = new Error('Deepgram failed');
-
-  for (let attempt = 0; attempt < MAX_CHUNK_ATTEMPTS; attempt++) {
-    if (attempt > 0) await new Promise(r => setTimeout(r, 2000 * Math.pow(2, attempt - 1)));
-    try {
-      return await transcribeWithDeepgram(audioData, mimeType);
-    } catch (err) {
-      lastErr = err instanceof Error ? err : new Error('Deepgram error');
-      console.warn(`[finalize] Deepgram attempt ${attempt + 1}/${MAX_CHUNK_ATTEMPTS} failed:`, lastErr.message);
-    }
-  }
-
-  // Deepgram exhausted — fall back to Groq so the chunk still gets transcribed
-  console.warn('[finalize] Deepgram failed after retries, falling back to Groq for this chunk');
-  const ext = mimeType.includes('mp4') ? '.mp4' : mimeType.includes('ogg') ? '.ogg' : '.webm';
-  return transcribeChunkWithRetry(audioData, ext);
-}
 
 async function analyzeAndCompleteRecording(recordingId: string): Promise<FinalizeResult> {
   const transcript = await prisma.transcript.findUnique({ where: { recordingId } });
@@ -335,9 +282,6 @@ async function finalizeWithJobs(recordingId: string): Promise<FinalizeResult> {
           update: { status: 'processing', attempts: { increment: 1 }, lastError: '' },
         });
 
-        const ext = chunkMeta.mimeType.includes('mp4') ? '.mp4'
-          : chunkMeta.mimeType.includes('ogg') ? '.ogg' : '.webm';
-
         try {
           // Load audio data only when needed — one chunk at a time, not the entire recording
           const blob = await prisma.chunkBlob.findUniqueOrThrow({
@@ -355,18 +299,10 @@ async function finalizeWithJobs(recordingId: string): Promise<FinalizeResult> {
             return;
           }
 
-          let chunkText: string;
-          let chunkSegments: RawSegment[] | DeepgramRawSegment[];
-
-          if (isDeepgramReady) {
-            const result = await transcribeChunkWithDeepgramRetry(blob.audioData as Buffer, chunkMeta.mimeType);
-            chunkText = result.text;
-            chunkSegments = 'segments' in result ? result.segments : result.rawSegments;
-          } else {
-            const result = await transcribeChunkWithRetry(blob.audioData as Buffer, ext);
-            chunkText = result.text;
-            chunkSegments = result.rawSegments;
-          }
+          const { text: chunkText, segments: chunkSegments } = await transcribeChunk(
+            blob.audioData as Buffer,
+            chunkMeta.mimeType,
+          );
 
           await prisma.chunkTranscript.update({
             where: { jobId_chunkId: { jobId: lock.id, chunkId: chunkMeta.id } },
@@ -455,17 +391,20 @@ async function finalizeWithJobs(recordingId: string): Promise<FinalizeResult> {
   }
 }
 
-export async function enqueueFinalizeJob(recordingId: string): Promise<void> {
+export async function enqueueFinalizeJob(recordingId: string): Promise<string | null> {
   try {
-    await prisma.finalizeJob.upsert({
+    const job = await prisma.finalizeJob.upsert({
       where: { recordingId },
       create: { recordingId, status: 'pending' },
       update: { status: 'pending', lastError: '' },
+      select: { id: true },
     });
+    return job.id;
   } catch (err) {
     if (!isMissingFinalizeTablesError(err)) {
       console.warn('[finalize] enqueue warning:', err);
     }
+    return null;
   }
 }
 

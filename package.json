@@ -17,6 +17,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.87.0",
     "@prisma/client": "^5.22.0",
+    "@vercel/functions": "^3.5.1",
     "airtable": "^0.12.2",
     "docx": "^9.6.1",
     "formidable": "^3.5.4",

@@ -4,7 +4,7 @@
       "maxDuration": 800
     },
     "app/api/recordings/[id]/append-chunk/route.ts": {
-      "maxDuration": 60
+      "maxDuration": 120
     },
     "app/api/recordings/[id]/finalize/route.ts": {
       "maxDuration": 800
@@ -22,7 +22,7 @@
   "crons": [
     {
       "path": "/api/jobs/finalize",
-      "schedule": "0 2 * * *"
+      "schedule": "*/5 * * * *"
     }
   ]
 }

@@ -44,6 +44,9 @@ export default function RecordPage() {
   const chunkStartRef   = useRef(0);
   const isActiveRef     = useRef(false);
   const noSleepRef      = useRef<{ enable(): Promise<boolean>; disable(): void } | null>(null);
+  // WebM EBML header bytes (before the first Cluster element) extracted from the first chunk.
+  // Non-first chunks are cluster-only and need this header prepended to be valid WebM files.
+  const webmHeaderRef   = useRef<ArrayBuffer | null>(null);
 
   // Timer — only runs during recording
   useEffect(() => {
@@ -129,7 +132,28 @@ export default function RecordPage() {
     // Schedule the next rotation before the async upload so the interval stays accurate
     chunkTimerRef.current = setTimeout(rotateChunk, CHUNK_MS);
 
-    const blob = new Blob(blobs, { type: mimeRef.current });
+    // MediaRecorder only includes the EBML/Segment/Tracks header in the very first
+    // ondataavailable event. Subsequent chunks are cluster-only (header: 1f43b675)
+    // and are rejected by Whisper as "invalid file format". Fix: extract the header
+    // bytes from the first rotation and prepend them to all subsequent chunks.
+    let blobsForUpload = blobs;
+    if (offset === 0) {
+      // First rotation — extract the EBML header bytes (everything before first Cluster)
+      try {
+        const raw = new Uint8Array(await new Blob(blobs, { type: mimeRef.current }).arrayBuffer());
+        for (let i = 0; i < Math.min(raw.length, 200000) - 3; i++) {
+          if (raw[i] === 0x1f && raw[i + 1] === 0x43 && raw[i + 2] === 0xb6 && raw[i + 3] === 0x75) {
+            webmHeaderRef.current = raw.buffer.slice(0, i);
+            break;
+          }
+        }
+      } catch { /* non-fatal — subsequent chunks may fail but first chunk will succeed */ }
+    } else if (webmHeaderRef.current) {
+      // Non-first rotation — prepend the saved header so the upload is a valid WebM file
+      blobsForUpload = [new Blob([webmHeaderRef.current], { type: mimeRef.current }), ...blobs];
+    }
+
+    const blob = new Blob(blobsForUpload, { type: mimeRef.current });
     if (blob.size >= 1000) {
       try {
         await uploadChunk(blob, offset);
@@ -148,6 +172,7 @@ export default function RecordPage() {
     recorderRef.current = mr;
     chunkBlobsRef.current = [];
     chunkStartRef.current = Date.now();
+    webmHeaderRef.current = null;
 
     mr.ondataavailable = (e) => {
       if (e.data.size > 0) chunkBlobsRef.current.push(e.data);

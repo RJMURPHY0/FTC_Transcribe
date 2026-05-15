@@ -5,7 +5,9 @@ import { finalizeRecording, enqueueFinalizeJob } from '@/lib/finalize-recording'
 export const dynamic = 'force-dynamic';
 export const maxDuration = 800;
 
-const MAX_RECORDINGS_PER_RUN = 5;
+// With real-time background transcription, each recording only needs analysis (~45s).
+// Keep this low so the 5-min cron never times out.
+const MAX_RECORDINGS_PER_RUN = 2;
 
 function isAuthorized(req: NextRequest): boolean {
   const secret = process.env.CRON_SECRET;
@@ -15,11 +17,20 @@ function isAuthorized(req: NextRequest): boolean {
 }
 
 async function runWorker() {
+  // Only process recordings where no new chunk arrived in the last 5 minutes.
+  // Active recordings upload every 2 minutes, so this reliably means the session is over.
+  const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+
   let candidates: Array<{ id: string }> = [];
 
   try {
     const jobs = await prisma.finalizeJob.findMany({
-      where: { status: { in: ['pending', 'failed', 'running'] } },
+      where: {
+        status: { in: ['pending', 'failed', 'running'] },
+        recording: {
+          chunks: { none: { createdAt: { gt: fiveMinutesAgo } } },
+        },
+      },
       orderBy: { updatedAt: 'asc' },
       take: MAX_RECORDINGS_PER_RUN,
       select: { recordingId: true },
@@ -27,10 +38,14 @@ async function runWorker() {
 
     candidates = jobs.map((j: { recordingId: string }) => ({ id: j.recordingId }));
   } catch {
+    // FinalizeJob table may not exist on older deployments — fall back to scanning recordings
     const recordings = await prisma.recording.findMany({
       where: {
         status: { in: ['uploading', 'processing', 'failed'] },
-        chunks: { some: {} },
+        chunks: {
+          some: {},
+          none: { createdAt: { gt: fiveMinutesAgo } },
+        },
       },
       orderBy: { createdAt: 'asc' },
       take: MAX_RECORDINGS_PER_RUN,
@@ -69,10 +84,16 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
+  // Enqueue finalize jobs for any stale uploading recordings (no chunk in last 5 min)
+  const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+
   const staleUploads = await prisma.recording.findMany({
     where: {
       status: 'uploading',
-      chunks: { some: {} },
+      chunks: {
+        some: {},
+        none: { createdAt: { gt: fiveMinutesAgo } },
+      },
     },
     take: MAX_RECORDINGS_PER_RUN,
     select: { id: true },

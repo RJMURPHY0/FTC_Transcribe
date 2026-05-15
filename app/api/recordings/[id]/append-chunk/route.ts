@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { waitUntil } from '@vercel/functions';
 import { prisma } from '@/lib/db';
 import { enqueueFinalizeJob } from '@/lib/finalize-recording';
+import { transcribeChunk } from '@/lib/transcribe-chunk';
 
 export const dynamic = 'force-dynamic';
-// No AI calls here — just a DB write, so a short timeout is plenty.
-export const maxDuration = 30;
+// Extended to accommodate background transcription via waitUntil
+export const maxDuration = 120;
 
 const CUID_RE = /^c[a-z0-9]{20,}$/;
 const ALLOWED_MIME = new Set(['audio/webm', 'audio/mp4', 'audio/ogg', 'audio/mpeg', 'audio/wav', 'audio/m4a', 'audio/x-m4a']);
@@ -46,29 +48,93 @@ export async function POST(
       return NextResponse.json({ error: 'Recording not found.' }, { status: 404 });
     }
 
-    // Store raw bytes — transcription happens later in /finalize.
-    // This means the upload phase can never fail due to AI API errors or rate limits.
     const bytes = await file.arrayBuffer();
-    await prisma.$transaction([
-      prisma.chunkBlob.create({
+
+    // Store chunk and update status in one transaction; capture the new chunk ID
+    const chunkRecord = await prisma.$transaction(async (tx) => {
+      const chunk = await tx.chunkBlob.create({
         data: {
           recordingId: params.id,
           audioData:   Buffer.from(bytes),
           offset:      timeOffset,
           mimeType:    baseMime,
         },
-      }),
-      prisma.recording.update({
+        select: { id: true },
+      });
+      await tx.recording.update({
         where: { id: params.id },
         data:  { status: 'uploading' },
-      }),
-    ]);
+      });
+      return chunk;
+    });
 
-    await enqueueFinalizeJob(params.id);
+    const jobId = await enqueueFinalizeJob(params.id);
+
+    // Transcribe this chunk in the background so finalize only needs to run AI analysis.
+    // waitUntil keeps the serverless function alive after the HTTP response is sent.
+    if (jobId) {
+      waitUntil(transcribeChunkBackground(chunkRecord.id, jobId, params.id, timeOffset, baseMime));
+    }
 
     return NextResponse.json({ ok: true });
   } catch (error) {
     console.error('[append-chunk]', error);
     return NextResponse.json({ error: 'Failed to save chunk.' }, { status: 500 });
+  }
+}
+
+async function transcribeChunkBackground(
+  chunkId: string,
+  jobId: string,
+  recordingId: string,
+  offset: number,
+  mimeType: string,
+): Promise<void> {
+  // Idempotency: skip if a previous background run already succeeded
+  const existing = await prisma.chunkTranscript.findUnique({
+    where: { jobId_chunkId: { jobId, chunkId } },
+    select: { status: true },
+  });
+  if (existing?.status === 'succeeded') return;
+
+  await prisma.chunkTranscript.upsert({
+    where: { jobId_chunkId: { jobId, chunkId } },
+    create: { jobId, recordingId, chunkId, offset, status: 'processing', attempts: 1 },
+    update: { status: 'processing', attempts: { increment: 1 }, lastError: '' },
+  });
+
+  try {
+    const blob = await prisma.chunkBlob.findUniqueOrThrow({
+      where: { id: chunkId },
+      select: { audioData: true },
+    });
+
+    if ((blob.audioData as Buffer).length < 1000) {
+      await prisma.chunkTranscript.update({
+        where: { jobId_chunkId: { jobId, chunkId } },
+        data: { status: 'succeeded', transcript: '', segments: '[]', processedAt: new Date(), lastError: '' },
+      });
+      return;
+    }
+
+    const { text, segments } = await transcribeChunk(blob.audioData as Buffer, mimeType);
+
+    await prisma.chunkTranscript.update({
+      where: { jobId_chunkId: { jobId, chunkId } },
+      data: {
+        status: 'succeeded',
+        transcript: text.trim(),
+        segments: JSON.stringify(segments),
+        processedAt: new Date(),
+        lastError: '',
+      },
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Background transcription failed';
+    await prisma.chunkTranscript.update({
+      where: { jobId_chunkId: { jobId, chunkId } },
+      data: { status: 'failed', lastError: msg.slice(0, 500), processedAt: null },
+    }).catch(() => {});
+    console.error('[append-chunk bg]', chunkId, msg);
   }
 }
