@@ -19,7 +19,7 @@ export default function ProcessingPoller({ id }: { id: string }) {
       router.refresh();
     }, 10_000);
 
-    // Re-trigger finalize every 50s — each invocation processes 6 more chunks
+    // Re-trigger finalize every 50s as a fallback while the browser is open
     const finalizeInterval = setInterval(() => {
       fetch(`/api/recordings/${id}/finalize`, { method: 'POST', keepalive: true }).catch(() => {});
     }, 50_000);

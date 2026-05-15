@@ -21,14 +21,15 @@ import {
 
 const LOCK_MS = 5 * 60 * 1000; // 5 min — expires quickly if a function is killed, letting the next retry take over
 const PARALLEL_CHUNKS = 5;
-// Vercel Pro allows 800s. 100 chunks × 5 parallel ≈ 20 rounds × ~10s = ~200s + overhead.
-// ProcessingPoller re-triggers if a meeting somehow exceeds this.
+// Safety cap: chunks are pre-transcribed in background so finalize normally skips them.
+// This limit only matters if background transcription failed for many chunks.
 const MAX_CHUNKS_PER_RUN = 100;
 
-// Estimated processing time in seconds for a given chunk count
+// Estimated processing time in seconds shown on the home-page list.
+// Chunks are pre-transcribed as they upload; finalize only needs AI analysis (~45s).
+// Small per-chunk buffer covers the rare case where background transcription didn't finish.
 export function estimateSeconds(chunkCount: number): number {
-  if (chunkCount === 0) return 45;
-  return Math.ceil(chunkCount / PARALLEL_CHUNKS) * 18 + 45;
+  return 45 + Math.min(chunkCount * 3, 30);
 }
 
 async function runConcurrent<T>(tasks: (() => Promise<T>)[], limit: number): Promise<T[]> {
@@ -319,8 +320,7 @@ async function finalizeWithJobs(recordingId: string): Promise<FinalizeResult> {
       PARALLEL_CHUNKS,
     );
 
-    // If there are more chunks left, release the lock and let the next invocation continue.
-    // The browser ProcessingPoller (or cron) will re-trigger this function.
+    // If there are more chunks left (rare with background transcription), let the next cron run continue.
     if (moreAfterThis) {
       const processed = doneIds.size + thisBatch.length;
       const stillLeft  = allChunkMeta.length - processed;
