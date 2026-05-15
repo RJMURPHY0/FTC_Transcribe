@@ -141,13 +141,20 @@ export default function RecordPage() {
       // First rotation — extract the EBML header bytes (everything before first Cluster)
       try {
         const raw = new Uint8Array(await new Blob(blobs, { type: mimeRef.current }).arrayBuffer());
-        for (let i = 0; i < Math.min(raw.length, 200000) - 3; i++) {
+        for (let i = 0; i < raw.length - 3; i++) {
           if (raw[i] === 0x1f && raw[i + 1] === 0x43 && raw[i + 2] === 0xb6 && raw[i + 3] === 0x75) {
             webmHeaderRef.current = raw.buffer.slice(0, i);
             break;
           }
         }
-      } catch { /* non-fatal — subsequent chunks may fail but first chunk will succeed */ }
+        // Fallback: if no cluster marker found (non-WebM format or unusual encoder),
+        // use the first event's blob as the header — slight audio duplication but stays valid.
+        if (!webmHeaderRef.current && blobs.length > 0) {
+          webmHeaderRef.current = await blobs[0].arrayBuffer();
+        }
+      } catch (err) {
+        console.warn('[rotateChunk] WebM header extraction failed — subsequent chunks may fail:', err);
+      }
     } else if (webmHeaderRef.current) {
       // Non-first rotation — prepend the saved header so the upload is a valid WebM file
       blobsForUpload = [new Blob([webmHeaderRef.current], { type: mimeRef.current }), ...blobs];
@@ -185,7 +192,12 @@ export default function RecordPage() {
       const offset = timeOffsetRef.current;
 
       try {
-        const blob = new Blob(blobs, { type: mime });
+        // Apply the same header prepend as rotateChunk — the final segment is also cluster-only
+        let blobsForUpload = blobs;
+        if (offset > 0 && webmHeaderRef.current) {
+          blobsForUpload = [new Blob([webmHeaderRef.current], { type: mime }), ...blobs];
+        }
+        const blob = new Blob(blobsForUpload, { type: mime });
         if (blob.size >= 1000) {
           await uploadChunk(blob, offset);
         }

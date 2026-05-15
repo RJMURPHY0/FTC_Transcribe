@@ -137,37 +137,44 @@ async function analyzeAndCompleteRecording(recordingId: string): Promise<Finaliz
 async function finalizeLegacy(recordingId: string): Promise<FinalizeResult> {
   await prisma.recording.update({ where: { id: recordingId }, data: { status: 'processing' } }).catch(() => {});
 
-  const chunks = await prisma.chunkBlob.findMany({
+  // Load metadata only — audioData is fetched one chunk at a time below to avoid
+  // loading the entire recording (~60+ MB for a long meeting) into memory at once.
+  const chunkMetas = await prisma.chunkBlob.findMany({
     where: { recordingId },
     orderBy: { offset: 'asc' },
+    select: { id: true, offset: true, mimeType: true },
   });
 
   let failedChunks = 0;
 
-  if (chunks.length > 0) {
+  if (chunkMetas.length > 0) {
     let fullText = '';
     const allSegments: RawSegment[] = [];
 
-    for (const chunk of chunks) {
-      const ext = chunk.mimeType.includes('mp4') ? '.mp4'
-        : chunk.mimeType.includes('ogg') ? '.ogg'
+    for (const chunkMeta of chunkMetas) {
+      const ext = chunkMeta.mimeType.includes('mp4') ? '.mp4'
+        : chunkMeta.mimeType.includes('ogg') ? '.ogg'
         : '.webm';
 
       try {
-        const { text, rawSegments } = await transcribeChunkWithRetry(chunk.audioData as Buffer, ext);
+        const chunkData = await prisma.chunkBlob.findUniqueOrThrow({
+          where: { id: chunkMeta.id },
+          select: { audioData: true },
+        });
+        const { text, rawSegments } = await transcribeChunkWithRetry(chunkData.audioData as Buffer, ext);
         if (text.trim()) {
           fullText += (fullText ? ' ' : '') + text.trim();
         }
 
         const shifted = rawSegments.map((s) => ({
-          start: s.start + chunk.offset,
-          end: s.end + chunk.offset,
+          start: s.start + chunkMeta.offset,
+          end: s.end + chunkMeta.offset,
           text: s.text,
         }));
         allSegments.push(...shifted);
       } catch (err) {
         failedChunks += 1;
-        console.error(`[finalize] chunk ${chunk.id} failed after retries:`, err);
+        console.error(`[finalize] chunk ${chunkMeta.id} failed after retries:`, err);
       }
     }
 
