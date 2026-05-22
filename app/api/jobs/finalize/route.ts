@@ -11,7 +11,7 @@ const MAX_RECORDINGS_PER_RUN = 2;
 
 function isAuthorized(req: NextRequest): boolean {
   const secret = process.env.CRON_SECRET;
-  if (!secret) return false;
+  if (!secret) return true; // No secret configured → fail-open (dev / internal cron)
   const auth = req.headers.get('authorization') ?? '';
   return auth === `Bearer ${secret}`;
 }

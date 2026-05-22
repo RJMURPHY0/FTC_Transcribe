@@ -68,7 +68,12 @@ async function analyzeAndCompleteRecording(recordingId: string): Promise<Finaliz
     return { ok: false, reason: 'No transcript to analyse.' };
   }
 
-  const rawSegments: Array<RawSegment & { speaker?: string }> = JSON.parse(transcript.segments);
+  let rawSegments: Array<RawSegment & { speaker?: string }> = [];
+  try {
+    rawSegments = JSON.parse(transcript.segments);
+  } catch {
+    // Malformed segments — proceed with empty array; diarization will be skipped
+  }
 
   // Run analysis/title/topics in parallel with diarization, then resolve names
   const [diarizedRaw, analysis, shortTitle, topics] = await Promise.all([
@@ -119,7 +124,7 @@ async function analyzeAndCompleteRecording(recordingId: string): Promise<Finaliz
   });
 
   // Fire-and-forget Airtable backup — never blocks the main flow
-  void backupToAirtable({
+  backupToAirtable({
     recordingId,
     title:       completedRecording.title,
     createdAt:   completedRecording.createdAt,
@@ -129,7 +134,7 @@ async function analyzeAndCompleteRecording(recordingId: string): Promise<Finaliz
     actionItems: analysis.actionItems,
     decisions:   analysis.decisions,
     fullText:    transcript.fullText,
-  });
+  }).catch((err) => console.error('[finalize] airtable backup failed:', err));
 
   return { ok: true, completed: true, failedChunks: 0, pendingChunks: 0 };
 }
@@ -282,46 +287,50 @@ async function finalizeWithJobs(recordingId: string): Promise<FinalizeResult> {
 
     await runConcurrent(
       thisBatch.map((chunkMeta) => async () => {
-        await refreshJobLock(lock.id, lock.token);
-
-        await prisma.chunkTranscript.upsert({
-          where: { jobId_chunkId: { jobId: lock.id, chunkId: chunkMeta.id } },
-          create: { jobId: lock.id, recordingId, chunkId: chunkMeta.id, offset: chunkMeta.offset, status: 'processing', attempts: 1 },
-          update: { status: 'processing', attempts: { increment: 1 }, lastError: '' },
-        });
-
         try {
-          // Load audio data only when needed — one chunk at a time, not the entire recording
-          const blob = await prisma.chunkBlob.findUniqueOrThrow({
-            where: { id: chunkMeta.id },
-            select: { audioData: true },
+          await refreshJobLock(lock.id, lock.token);
+
+          await prisma.chunkTranscript.upsert({
+            where: { jobId_chunkId: { jobId: lock.id, chunkId: chunkMeta.id } },
+            create: { jobId: lock.id, recordingId, chunkId: chunkMeta.id, offset: chunkMeta.offset, status: 'processing', attempts: 1 },
+            update: { status: 'processing', attempts: { increment: 1 }, lastError: '' },
           });
 
-          // Chunks smaller than 1 KB contain no real audio (e.g. WebM cluster headers from
-          // browsers that fail to capture after a recorder restart). Skip transcription.
-          if ((blob.audioData as Buffer).length < 1000) {
+          try {
+            // Load audio data only when needed — one chunk at a time, not the entire recording
+            const blob = await prisma.chunkBlob.findUniqueOrThrow({
+              where: { id: chunkMeta.id },
+              select: { audioData: true },
+            });
+
+            // Chunks smaller than 1 KB contain no real audio (e.g. WebM cluster headers from
+            // browsers that fail to capture after a recorder restart). Skip transcription.
+            if ((blob.audioData as Buffer).length < 1000) {
+              await prisma.chunkTranscript.update({
+                where: { jobId_chunkId: { jobId: lock.id, chunkId: chunkMeta.id } },
+                data: { status: 'succeeded', transcript: '', segments: '[]', processedAt: new Date(), lastError: '' },
+              });
+              return;
+            }
+
+            const { text: chunkText, segments: chunkSegments } = await transcribeChunk(
+              blob.audioData as Buffer,
+              chunkMeta.mimeType,
+            );
+
             await prisma.chunkTranscript.update({
               where: { jobId_chunkId: { jobId: lock.id, chunkId: chunkMeta.id } },
-              data: { status: 'succeeded', transcript: '', segments: '[]', processedAt: new Date(), lastError: '' },
+              data: { status: 'succeeded', transcript: chunkText.trim(), segments: JSON.stringify(chunkSegments), processedAt: new Date(), lastError: '' },
             });
-            return;
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : 'Chunk transcription failed';
+            await prisma.chunkTranscript.update({
+              where: { jobId_chunkId: { jobId: lock.id, chunkId: chunkMeta.id } },
+              data: { status: 'failed', lastError: msg.slice(0, 500), processedAt: null },
+            }).catch(() => {});
           }
-
-          const { text: chunkText, segments: chunkSegments } = await transcribeChunk(
-            blob.audioData as Buffer,
-            chunkMeta.mimeType,
-          );
-
-          await prisma.chunkTranscript.update({
-            where: { jobId_chunkId: { jobId: lock.id, chunkId: chunkMeta.id } },
-            data: { status: 'succeeded', transcript: chunkText.trim(), segments: JSON.stringify(chunkSegments), processedAt: new Date(), lastError: '' },
-          });
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : 'Chunk transcription failed';
-          await prisma.chunkTranscript.update({
-            where: { jobId_chunkId: { jobId: lock.id, chunkId: chunkMeta.id } },
-            data: { status: 'failed', lastError: msg.slice(0, 500), processedAt: null },
-          });
+        } catch (outerErr) {
+          console.error(`[finalize] chunk ${chunkMeta.id} task error:`, outerErr);
         }
       }),
       PARALLEL_CHUNKS,
@@ -375,10 +384,15 @@ async function finalizeWithJobs(recordingId: string): Promise<FinalizeResult> {
       });
     }
 
-    if (failedChunks > 0 || pendingChunks > 0) {
-      await prisma.finalizeJob.update({ where: { id: lock.id }, data: { status: 'failed', lastError: `pending=${pendingChunks}, failed=${failedChunks}` } });
+    if (pendingChunks > 0) {
+      // Background transcription (waitUntil) may still be running — don't mark failed, let next cron retry
+      return { ok: true, completed: false, failedChunks, pendingChunks, reason: 'Chunks still pending — will retry next cron run.' };
+    }
+
+    if (failedChunks > 0) {
+      await prisma.finalizeJob.update({ where: { id: lock.id }, data: { status: 'failed', lastError: `failed=${failedChunks}` } });
       await prisma.recording.update({ where: { id: recordingId }, data: { status: 'failed' } }).catch(() => {});
-      return { ok: true, completed: false, failedChunks, pendingChunks, reason: 'Some chunks failed and were kept for retry.' };
+      return { ok: true, completed: false, failedChunks, pendingChunks: 0, reason: 'Some chunks failed and were kept for retry.' };
     }
 
     // Refresh lock before analysis — diarization + AI calls can take several minutes

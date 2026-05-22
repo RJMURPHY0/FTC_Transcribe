@@ -400,13 +400,14 @@ export async function analyzeTranscript(transcript: string): Promise<AnalysisRes
       ? transcript.slice(0, MAX_TRANSCRIPT_CHARS) + '\n\n[Transcript truncated — full meeting was longer]'
       : transcript;
 
-  const message = await anthropic.messages.create({
-    model: 'claude-haiku-4-5-20251001',
-    max_tokens: 1024,
-    messages: [
-      {
-        role: 'user',
-        content: `You are an AI meeting assistant. Analyse this transcript and return ONLY valid JSON.
+  try {
+    const message = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 1024,
+      messages: [
+        {
+          role: 'user',
+          content: `You are an AI meeting assistant. Analyse this transcript and return ONLY valid JSON.
 
 Format:
 {
@@ -420,20 +421,28 @@ Rules: keyPoints 3-5 items; actionItems empty array if none; decisions empty arr
 
 TRANSCRIPT:
 ${truncated}`,
-      },
-    ],
-  });
+        },
+      ],
+    });
 
-  const content = message.content[0];
-  if (content.type !== 'text') throw new Error('Unexpected Claude response type');
+    const content = message.content[0];
+    if (content.type !== 'text') throw new Error('Unexpected Claude response type');
 
-  try {
-    const jsonMatch = content.text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error('No JSON in response');
-    return JSON.parse(jsonMatch[0]) as AnalysisResult;
+    try {
+      const jsonMatch = content.text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error('No JSON in response');
+      return JSON.parse(jsonMatch[0]) as AnalysisResult;
+    } catch {
+      return {
+        overview: content.text.slice(0, 500),
+        keyPoints: [],
+        actionItems: [],
+        decisions: [],
+      };
+    }
   } catch {
     return {
-      overview: content.text.slice(0, 500),
+      overview: 'Analysis could not be completed — retry the recording to regenerate.',
       keyPoints: [],
       actionItems: [],
       decisions: [],

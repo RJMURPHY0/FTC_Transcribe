@@ -202,8 +202,8 @@ export default function RecordPage() {
         const blob = new Blob(blobsForUpload, { type: mime });
         if (blob.size >= 1000) {
           await uploadChunk(blob, offset);
+          setChunksSaved((n) => n + 1);
         }
-        setChunksSaved((n) => n + 1);
         setState('queued');
 
         const id = recordingIdRef.current;
