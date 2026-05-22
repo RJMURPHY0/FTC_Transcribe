@@ -103,6 +103,18 @@ export async function GET(request: NextRequest) {
     await enqueueFinalizeJob(rec.id);
   }
 
+  // Mark recordings that have been stuck in 'uploading' or 'processing' for over 24 hours
+  // as failed. These are ghosts — abandoned sessions, mic-denied starts, or crashed uploads —
+  // that will never complete on their own.
+  const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  await prisma.recording.updateMany({
+    where: {
+      status: { in: ['uploading', 'processing'] },
+      createdAt: { lt: oneDayAgo },
+    },
+    data: { status: 'failed' },
+  }).catch(() => {});
+
   const stats = await runWorker();
   return NextResponse.json({ ok: true, ...stats });
 }

@@ -44,6 +44,7 @@ export default function RecordPage() {
   const timeOffsetRef   = useRef(0);
   const chunkStartRef   = useRef(0);
   const isActiveRef     = useRef(false);
+  const isStartingRef   = useRef(false);  // prevents double-tap from creating two recordings
   const noSleepRef      = useRef<{ enable(): Promise<boolean>; disable(): void } | null>(null);
   // WebM EBML header bytes (before the first Cluster element) extracted from the first chunk.
   // Non-first chunks are cluster-only and need this header prepended to be valid WebM files.
@@ -88,6 +89,17 @@ export default function RecordPage() {
       releaseWakeLock();
     };
   }, [state, requestWakeLock, releaseWakeLock]);
+
+  // Release the microphone if the user navigates away mid-recording.
+  // The recording in the DB will be picked up by the cron if it has chunks,
+  // or cleaned up by the stale-recording sweep if it has none.
+  useEffect(() => {
+    return () => {
+      if (chunkTimerRef.current) clearTimeout(chunkTimerRef.current);
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+      isActiveRef.current = false;
+    };
+  }, []);
 
   const uploadChunk = useCallback(async (blob: Blob, offset: number) => {
     const id = recordingIdRef.current;
@@ -221,6 +233,9 @@ export default function RecordPage() {
   }, [uploadChunk, router]);
 
   const start = useCallback(async () => {
+    if (isStartingRef.current) return;
+    isStartingRef.current = true;
+
     setErrorMsg('');
     setSeconds(0);
     setChunksSaved(0);
@@ -249,9 +264,17 @@ export default function RecordPage() {
       chunkTimerRef.current = setTimeout(rotateChunk, CHUNK_MS);
       setState('recording');
     } catch (err) {
+      // If recording was created before the error (e.g. mic denied), delete it so it
+      // doesn't linger as a ghost 'uploading' entry in the list.
+      if (recordingIdRef.current) {
+        fetch(`/api/recordings/${recordingIdRef.current}`, { method: 'DELETE' }).catch(() => {});
+        recordingIdRef.current = null;
+      }
       releaseWakeLock();
       setErrorMsg(err instanceof Error ? err.message : 'Microphone access denied. Allow mic access and try again.');
       setState('error');
+    } finally {
+      isStartingRef.current = false;
     }
   }, [startRecorder, rotateChunk, requestWakeLock, releaseWakeLock]);
 
