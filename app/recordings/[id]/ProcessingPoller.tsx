@@ -14,15 +14,16 @@ export default function ProcessingPoller({ id }: { id: string }) {
       fetch(`/api/recordings/${id}/finalize`, { method: 'POST', keepalive: true }).catch(() => {});
     }
 
-    // Refresh page data every 10s so status updates are visible
+    // Refresh page data every 3s so the transcript appears as soon as it's saved
     const refreshInterval = setInterval(() => {
       router.refresh();
-    }, 10_000);
+    }, 3_000);
 
-    // Re-trigger finalize every 50s as a fallback while the browser is open
+    // Re-trigger finalize every 8s — picks up the final chunk as soon as background
+    // transcription finishes (typically 5–15s after recording stops)
     const finalizeInterval = setInterval(() => {
       fetch(`/api/recordings/${id}/finalize`, { method: 'POST', keepalive: true }).catch(() => {});
-    }, 50_000);
+    }, 8_000);
 
     return () => {
       clearInterval(refreshInterval);
