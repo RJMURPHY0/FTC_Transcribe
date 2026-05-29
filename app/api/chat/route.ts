@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
 import { prisma } from '@/lib/db';
+import { reportError } from '@/lib/reportError';
 
 export const dynamic = 'force-dynamic';
 
@@ -104,7 +105,9 @@ Guidelines:
 
     return NextResponse.json({ reply, mentionedIds });
   } catch (error) {
+    const message = error instanceof Error ? error.message : 'Chat failed.';
     console.error('[global-chat] Error:', error);
+    reportError(message, { route: '/api/chat' }).catch(() => {});
     return NextResponse.json({ error: 'Chat failed.' }, { status: 500 });
   }
 }

@@ -66,7 +66,10 @@ export default async function RecordingPage({ params }: { params: { id: string }
 
   function safeJson<T>(value: string | null | undefined, fallback: T): T {
     if (!value) return fallback;
-    try { return JSON.parse(value) as T; } catch { return fallback; }
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      return (parsed !== null && parsed !== undefined) ? (parsed as T) : fallback;
+    } catch { return fallback; }
   }
 
   const actions:   string[]       = recording.summary ? safeJson<string[]>(recording.summary.actionItems, []) : [];
@@ -74,10 +77,11 @@ export default async function RecordingPage({ params }: { params: { id: string }
   const decisions: string[]       = recording.summary ? safeJson<string[]>(recording.summary.decisions,   []) : [];
   const topics:    TopicSection[] = recording.summary ? safeJson<TopicSection[]>(recording.summary.topics, []) : [];
 
-  const rawSegments: TranscriptSegment[] = safeJson<TranscriptSegment[]>(
+  const rawSegmentsParsed = safeJson<TranscriptSegment[]>(
     recording.transcript?.segments as string | undefined,
     [],
   );
+  const rawSegments: TranscriptSegment[] = Array.isArray(rawSegmentsParsed) ? rawSegmentsParsed : [];
 
   // Merge consecutive same-speaker segments into one block
   const speakerGroups = rawSegments.reduce<TranscriptSegment[]>((groups, seg) => {

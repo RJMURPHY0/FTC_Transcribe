@@ -70,7 +70,8 @@ async function analyzeAndCompleteRecording(recordingId: string): Promise<Finaliz
 
   let rawSegments: Array<RawSegment & { speaker?: string }> = [];
   try {
-    rawSegments = JSON.parse(transcript.segments);
+    const parsed = JSON.parse(transcript.segments);
+    if (Array.isArray(parsed)) rawSegments = parsed;
   } catch {
     // Malformed segments — proceed with empty array; diarization will be skipped
   }
@@ -229,6 +230,7 @@ async function acquireJobLock(recordingId: string): Promise<{ id: string; token:
   const claim = await prisma.finalizeJob.updateMany({
     where: {
       id: job.id,
+      status: { not: 'completed' },
       OR: [{ lockUntil: null }, { lockUntil: { lt: new Date() } }],
     },
     data: {

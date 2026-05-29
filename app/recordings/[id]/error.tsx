@@ -12,6 +12,14 @@ export default function RecordingError({
 }) {
   useEffect(() => {
     console.error('[recording-page]', error);
+    fetch('/api/report-error', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: error.message || 'Recording page error',
+        context: { digest: error.digest, name: error.name },
+      }),
+    }).catch(() => {});
   }, [error]);
 
   return (

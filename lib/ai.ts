@@ -431,7 +431,13 @@ ${truncated}`,
     try {
       const jsonMatch = content.text.match(/\{[\s\S]*\}/);
       if (!jsonMatch) throw new Error('No JSON in response');
-      return JSON.parse(jsonMatch[0]) as AnalysisResult;
+      const r = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
+      return {
+        overview:    typeof r.overview === 'string' ? r.overview : '',
+        keyPoints:   Array.isArray(r.keyPoints)   ? (r.keyPoints   as string[]) : [],
+        actionItems: Array.isArray(r.actionItems) ? (r.actionItems as string[]) : [],
+        decisions:   Array.isArray(r.decisions)   ? (r.decisions   as string[]) : [],
+      };
     } catch {
       return {
         overview: content.text.slice(0, 500),

@@ -42,7 +42,11 @@ export async function PATCH(
 
   let segments: TranscriptSegment[] = [];
   try {
-    segments = JSON.parse(transcript.segments) as TranscriptSegment[];
+    const parsed = JSON.parse(transcript.segments) as unknown;
+    if (!Array.isArray(parsed)) {
+      return NextResponse.json({ error: 'Could not parse segments.' }, { status: 500 });
+    }
+    segments = parsed as TranscriptSegment[];
   } catch {
     return NextResponse.json({ error: 'Could not parse segments.' }, { status: 500 });
   }

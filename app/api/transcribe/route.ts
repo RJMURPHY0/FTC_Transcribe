@@ -4,6 +4,7 @@ import path from 'path';
 import os from 'os';
 import { prisma } from '@/lib/db';
 import { transcribeAudio, diarizeSegments, analyzeTranscript } from '@/lib/ai';
+import { reportError } from '@/lib/reportError';
 
 export const dynamic = 'force-dynamic';
 
@@ -80,6 +81,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Processing failed.';
     console.error('[transcribe] Error:', error);
+    reportError(message, { route: '/api/transcribe', recordingId }).catch(() => {});
     // Mark the recording as failed so it doesn't hang as "processing" forever
     if (recordingId) {
       await prisma.recording.update({

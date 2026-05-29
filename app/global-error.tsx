@@ -11,6 +11,14 @@ export default function GlobalError({
 }) {
   useEffect(() => {
     console.error('[global-error]', error);
+    fetch('/api/report-error', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: error.message || 'Unhandled global error',
+        context: { digest: error.digest, name: error.name },
+      }),
+    }).catch(() => {});
   }, [error]);
 
   return (
