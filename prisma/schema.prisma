@@ -104,3 +104,18 @@ model Summary {
   topics      String    @default("[]")
   createdAt   DateTime  @default(now())
 }
+
+// Deduplication log for the auto-fix pipeline. One row per unique error
+// message (hashed) within a 24-hour window — prevents 49 identical errors
+// from spawning 49 PRs.
+model AutoFixAttempt {
+  id        String   @id @default(cuid())
+  errorHash String
+  errorMsg  String
+  source    String   @default("")
+  prUrl     String?
+  status    String   @default("pending")
+  createdAt DateTime @default(now())
+
+  @@index([errorHash, createdAt])
+}

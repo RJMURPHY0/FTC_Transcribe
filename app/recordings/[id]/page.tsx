@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { prisma } from '@/lib/db';
+import { estimateSeconds } from '@/lib/finalize-recording';
 import DeleteButton from './DeleteButton';
 import RetryButton from './RetryButton';
 import ProcessingPoller from './ProcessingPoller';
@@ -59,7 +60,7 @@ function SpeakerBlock({ seg, speakerOrder }: { seg: { speaker: string; start: nu
 
 export default async function RecordingPage({ params }: { params: { id: string } }) {
   const recording = await prisma.recording
-    .findUnique({ where: { id: params.id }, include: { transcript: true, summary: true } })
+    .findUnique({ where: { id: params.id }, include: { transcript: true, summary: true, _count: { select: { chunks: true } } } })
     .catch(() => null);
 
   if (!recording) notFound();
@@ -94,14 +95,20 @@ export default async function RecordingPage({ params }: { params: { id: string }
     return groups;
   }, []);
 
-  // Unique speakers in order of first appearance — used for stable colour assignment
-  const speakerOrder = Array.from(new Set(speakerGroups.map(g => g.speaker)));
+  // Unique speakers in order of first appearance — used for stable colour assignment.
+  // Force to string: Deepgram stores speaker as number (0,1,2…) which breaks Object.fromEntries in Safari.
+  const speakerOrder = Array.from(new Set(speakerGroups.map(g => String(g.speaker))));
 
   const hasSpeakers = speakerGroups.length > 0;
   const isComplete   = recording.status === 'completed';
   const isFailed     = recording.status === 'failed';
   const isUploading  = recording.status === 'uploading' || recording.status === 'queued';
   const isProcessing = recording.status === 'processing';
+
+  const etaSecs = (isUploading || isProcessing) ? estimateSeconds(recording._count.chunks) : 0;
+  const etaLabel = etaSecs > 0
+    ? (etaSecs < 60 ? 'less than a minute' : `about ${Math.ceil(etaSecs / 60)} min`)
+    : null;
 
   return (
     <div className="min-h-screen flex flex-col bg-surface">
@@ -163,7 +170,10 @@ export default async function RecordingPage({ params }: { params: { id: string }
           <div className="flex items-start gap-3 rounded-2xl border border-blue-500/20 bg-blue-500/5 p-4 mb-4 text-blue-300 text-sm">
             <div className="w-4 h-4 rounded-full border-2 border-blue-400/30 border-t-blue-400 animate-spin flex-shrink-0 mt-0.5" />
             <div className="flex-1 space-y-3">
-              <span>Queued for transcription — this page updates automatically. You can leave and come back.</span>
+              <span>
+                Queued for transcription — this page updates automatically. You can leave and come back.
+                {etaLabel && <span className="ml-1 text-blue-400/70">Est. {etaLabel}.</span>}
+              </span>
               <RetryButton id={recording.id} />
             </div>
           </div>
@@ -173,6 +183,7 @@ export default async function RecordingPage({ params }: { params: { id: string }
             <div className="w-4 h-4 rounded-full border-2 border-amber-400/30 border-t-amber-400 animate-spin flex-shrink-0" />
             <div className="flex-1">
               Transcript is on its way — speaker labels and notes will follow shortly.
+              {etaLabel && <span className="ml-1 text-amber-400/70">Est. {etaLabel}.</span>}
             </div>
           </div>
         )}

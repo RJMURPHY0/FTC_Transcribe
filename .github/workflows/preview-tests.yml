@@ -1,0 +1,161 @@
+name: Preview Tests
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# Cancel in-progress runs on the same PR so a rapid push doesn't queue up
+# stale test runs.
+concurrency:
+  group: preview-tests-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Playwright (Vercel preview)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install chromium --with-deps
+
+      # ── Wait for Vercel to finish building the preview ─────────────────────
+      # Polls the Vercel REST API until the deployment for this commit is READY.
+      # Requires three repository secrets:
+      #   VERCEL_TOKEN      — your Vercel personal access token
+      #   VERCEL_ORG_ID     — team_LhMuj7nCUAOMQFdXLQ9ed1pZ
+      #   VERCEL_PROJECT_ID — prj_TVKhxh2sLrqjCTUw7xnvlU7B0PSo
+      - name: Wait for Vercel preview deployment
+        id: vercel
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          echo "Polling Vercel for deployment of commit $COMMIT_SHA..."
+          PREVIEW_URL=""
+
+          for i in $(seq 1 40); do
+            RESPONSE=$(curl -sf \
+              -H "Authorization: Bearer $VERCEL_TOKEN" \
+              "https://api.vercel.com/v6/deployments?teamId=$VERCEL_ORG_ID&projectId=$VERCEL_PROJECT_ID&meta-githubCommitSha=$COMMIT_SHA&limit=1" \
+              || echo '{}')
+
+            STATE=$(echo "$RESPONSE" | jq -r '.deployments[0].state // empty')
+            URL=$(echo "$RESPONSE"   | jq -r '.deployments[0].url   // empty')
+
+            if [ "$STATE" = "READY" ] && [ -n "$URL" ]; then
+              PREVIEW_URL="https://$URL"
+              echo "preview_url=$PREVIEW_URL" >> "$GITHUB_OUTPUT"
+              echo "✅ Preview ready: $PREVIEW_URL"
+              break
+            elif [ "$STATE" = "ERROR" ] || [ "$STATE" = "CANCELED" ]; then
+              echo "❌ Deployment failed with state: $STATE"
+              exit 1
+            else
+              echo "Attempt $i/40 — state=${STATE:-unknown}, waiting 15 s..."
+              sleep 15
+            fi
+          done
+
+          if [ -z "$PREVIEW_URL" ]; then
+            echo "❌ Timed out (10 min) waiting for Vercel preview"
+            exit 1
+          fi
+
+      # ── Run Playwright ──────────────────────────────────────────────────────
+      - name: Run Playwright tests
+        env:
+          BASE_URL: ${{ steps.vercel.outputs.preview_url }}
+        run: npx playwright test
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-${{ github.event.pull_request.number }}
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 14
+
+      # ── Post results as a PR comment ────────────────────────────────────────
+      - name: Comment test results on PR
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          PREVIEW_URL: ${{ steps.vercel.outputs.preview_url }}
+        with:
+          script: |
+            const fs = require('fs');
+            const previewUrl = process.env.PREVIEW_URL || '(unknown)';
+
+            let summary = '';
+            let icon = '⚠️';
+
+            try {
+              const raw = fs.readFileSync('test-results/results.json', 'utf8');
+              const results = JSON.parse(raw);
+
+              const allSpecs = (results.suites ?? []).flatMap(s =>
+                (s.suites ?? [s]).flatMap(sub => sub.specs ?? [])
+              );
+              const passed  = allSpecs.filter(s => s.ok).length;
+              const failed  = allSpecs.filter(s => !s.ok).length;
+              const skipped = allSpecs.filter(s => s.tests?.every(t => t.results?.every(r => r.status === 'skipped'))).length;
+              const total   = passed + failed;
+
+              icon = failed === 0 ? '✅' : '❌';
+
+              summary += `## ${icon} Playwright Tests — ${passed}/${total} passed\n\n`;
+              summary += `**Preview:** [${previewUrl}](${previewUrl})\n\n`;
+
+              if (skipped > 0) summary += `> ${skipped} test(s) skipped (no matching production data)\n\n`;
+
+              if (failed > 0) {
+                const failedNames = allSpecs
+                  .filter(s => !s.ok)
+                  .map(s => `- ❌ \`${s.title}\``)
+                  .join('\n');
+                summary += `**Failed:**\n${failedNames}\n`;
+              }
+            } catch {
+              summary = `## ${icon} Playwright Tests\n\nCould not parse test results — check the [workflow artifacts](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}).`;
+            }
+
+            // Delete previous bot comment if it exists (keeps PR tidy)
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            for (const c of comments.data) {
+              if (c.user?.login === 'github-actions[bot]' && c.body?.includes('Playwright Tests')) {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo:  context.repo.repo,
+                  comment_id: c.id,
+                });
+              }
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              issue_number: context.issue.number,
+              body: summary,
+            });

@@ -9,7 +9,10 @@
     "postinstall": "prisma generate",
     "start": "next start",
     "db:migrate": "prisma migrate dev --name init",
-    "db:generate": "prisma generate"
+    "db:generate": "prisma generate",
+    "test": "playwright test",
+    "test:ui": "playwright test --ui",
+    "test:report": "playwright show-report"
   },
   "keywords": [],
   "author": "",
@@ -29,6 +32,7 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
     "@types/formidable": "^3.5.1",
     "@types/node": "^25.6.0",
     "@types/react": "^19.2.14",

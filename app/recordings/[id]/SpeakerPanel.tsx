@@ -19,7 +19,7 @@ interface Props {
 export default function SpeakerPanel({ recordingId, speakers }: Props) {
   const router = useRouter();
   const [names, setNames] = useState<Record<string, string>>(
-    Object.fromEntries(speakers.map(s => [s, s])),
+    () => Object.fromEntries(speakers.map(s => [String(s), String(s)])),
   );
   const [saving, setSaving] = useState(false);
   const [reanalysing, setReanalysing] = useState(false);
