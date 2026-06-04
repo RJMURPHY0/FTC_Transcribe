@@ -18,10 +18,14 @@ import {
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-// Maps source app name → GitHub repo
+// Maps source app name → GitHub repo.
+// FTC Contacts reports errors with source "frontend" | "chat" | "api".
+// FTC Transcribe reports with source "transcribe".
 function repoForSource(source: string): string | null {
-  if (source === 'transcribe') return process.env.AUTOFIX_REPO_TRANSCRIBE ?? 'RJMURPHY0/Transcription-';
-  if (source === 'contacts')   return process.env.AUTOFIX_REPO_CONTACTS   ?? null;
+  if (source === 'transcribe') return process.env.AUTOFIX_REPO_TRANSCRIBE ?? 'RJMURPHY0/FTC_Transcribe';
+  if (source === 'contacts' || source === 'frontend' || source === 'chat' || source === 'api') {
+    return process.env.AUTOFIX_REPO_CONTACTS ?? null;
+  }
   return null;
 }
 
