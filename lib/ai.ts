@@ -411,13 +411,18 @@ export async function analyzeTranscript(transcript: string): Promise<AnalysisRes
 
 Format:
 {
-  "overview": "2-3 sentence summary",
-  "keyPoints": ["point 1", "point 2"],
-  "actionItems": ["action 1"],
-  "decisions": ["decision 1"]
+  "overview": "2-3 sentence summary of the meeting's purpose and outcomes",
+  "keyPoints": ["important context, background, or discussion highlight"],
+  "actionItems": ["Person to do specific task"],
+  "decisions": ["What was agreed or resolved"]
 }
 
-Rules: keyPoints 3-5 items; actionItems empty array if none; decisions empty array if none.
+Rules:
+- overview: 2-3 sentences covering the meeting purpose and main outcomes
+- keyPoints: 3-7 items — important context, background info, or notable discussion points only. Do NOT include tasks or decisions here
+- actionItems: specific tasks assigned to a person. Format as "Name to do X". Empty array if none. Do NOT repeat anything already in keyPoints or decisions
+- decisions: firm agreements or resolutions reached in the meeting. Empty array if none. Do NOT repeat anything already in keyPoints or actionItems
+- Each piece of information belongs in exactly ONE section — no duplicates across sections
 
 TRANSCRIPT:
 ${truncated}`,

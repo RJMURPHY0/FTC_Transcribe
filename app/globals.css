@@ -117,7 +117,7 @@
 }
 @media (min-width: 1024px) {
   .detail-grid {
-    grid-template-columns: 1.1fr 2fr 1.2fr;
+    grid-template-columns: 1.43fr 2fr 1.2fr;
     align-items: start;
   }
   .transcript-panel {

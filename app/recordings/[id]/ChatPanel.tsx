@@ -27,7 +27,9 @@ export default function ChatPanel({ recordingId }: { recordingId: string }) {
   useEffect(() => { setMounted(true); }, []);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (messages.length > 0) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
   }, [messages, loading]);
 
   useEffect(() => {

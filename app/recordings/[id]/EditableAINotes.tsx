@@ -283,6 +283,26 @@ export default function EditableAINotes({
 
       {saveError && <p className="text-xs text-red-400 px-1">{saveError}</p>}
 
+      {/* ── Topics (only if AI found some) ── */}
+      {data.topics.length > 0 && (
+        <SectionCard title="Topics" {...sectionProps('topics')}>
+          {isEdit('topics') ? (
+            <TopicsEditor items={draftTopics} onChange={setDraftTopics} />
+          ) : (
+            <ol className="space-y-0">
+              {data.topics.map((t, i) => (
+                <li key={i} className="flex items-center gap-3 py-2 border-b border-surface-border last:border-0">
+                  <span className="tabular-nums text-xs font-mono text-ftc-mid w-10 flex-shrink-0">
+                    {formatTimestamp(t.time)}
+                  </span>
+                  <span className="text-sm text-ftc-gray">{t.title}</span>
+                </li>
+              ))}
+            </ol>
+          )}
+        </SectionCard>
+      )}
+
       {/* ── Summary ── */}
       <SectionCard title="Summary" {...sectionProps('overview')}>
         {isEdit('overview') ? (
@@ -356,26 +376,6 @@ export default function EditableAINotes({
           <p className="text-sm text-ftc-mid">No decisions recorded.</p>
         )}
       </SectionCard>
-
-      {/* ── Topics (only if AI found some) ── */}
-      {data.topics.length > 0 && (
-        <SectionCard title="Topics" {...sectionProps('topics')}>
-          {isEdit('topics') ? (
-            <TopicsEditor items={draftTopics} onChange={setDraftTopics} />
-          ) : (
-            <ol className="space-y-0">
-              {data.topics.map((t, i) => (
-                <li key={i} className="flex items-center gap-3 py-2 border-b border-surface-border last:border-0">
-                  <span className="tabular-nums text-xs font-mono text-ftc-mid w-10 flex-shrink-0">
-                    {formatTimestamp(t.time)}
-                  </span>
-                  <span className="text-sm text-ftc-gray">{t.title}</span>
-                </li>
-              ))}
-            </ol>
-          )}
-        </SectionCard>
-      )}
 
     </div>
   );
