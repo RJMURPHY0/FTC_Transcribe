@@ -9,6 +9,7 @@ import {
 } from '@/lib/ai';
 import type { RawSegment } from '@/lib/ai';
 import { backupToAirtable } from '@/lib/airtable-backup';
+import { notifyTeamsChannel } from '@/lib/integrations/teams-notify';
 import { alignSpeakersAcrossChunks } from '@/lib/deepgram';
 import type { DeepgramRawSegment } from '@/lib/deepgram';
 import {
@@ -149,6 +150,18 @@ async function analyzeAndCompleteRecording(recordingId: string): Promise<Finaliz
     decisions:   analysis.decisions,
     fullText:    transcript.fullText,
   }).catch((err) => console.error('[finalize] airtable backup failed:', err));
+
+  // Fire-and-forget Teams channel notification
+  notifyTeamsChannel({
+    recordingId,
+    title:       completedRecording.title,
+    createdAt:   completedRecording.createdAt,
+    overview:    analysis.overview,
+    keyPoints:   analysis.keyPoints,
+    actionItems: analysis.actionItems,
+    decisions:   analysis.decisions,
+    durationSec: completedRecording.duration,
+  }).catch((err) => console.error('[finalize] teams notify failed:', err));
 
   return { ok: true, completed: true, failedChunks: 0, pendingChunks: 0 };
 }
