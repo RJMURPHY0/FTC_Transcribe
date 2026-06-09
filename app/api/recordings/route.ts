@@ -6,6 +6,7 @@ export const dynamic = 'force-dynamic';
 export async function GET() {
   try {
     const recordings = await prisma.recording.findMany({
+      take: 100,
       orderBy: { createdAt: 'desc' },
       include: {
         summary: { select: { overview: true, keyPoints: true, actionItems: true, decisions: true, topics: true } },

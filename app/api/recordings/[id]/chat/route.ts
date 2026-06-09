@@ -107,19 +107,28 @@ Guidelines:
 - If something isn't mentioned, say so clearly
 - Keep answers concise but complete`;
 
-    const response = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 1024,
-      system: systemPrompt,
-      messages: [
-        ...history.map((h) => ({ role: h.role, content: h.content })),
-        { role: 'user', content: message },
-      ],
-    });
+    let response;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        response = await anthropic.messages.create({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 1024,
+          system: systemPrompt,
+          messages: [
+            ...history.map((h) => ({ role: h.role, content: h.content })),
+            { role: 'user', content: message },
+          ],
+        });
+        break;
+      } catch (err) {
+        if (attempt === 1) throw err;
+        await new Promise(r => setTimeout(r, 1000));
+      }
+    }
 
     const reply =
-      response.content[0]?.type === 'text'
-        ? response.content[0].text
+      response!.content[0]?.type === 'text'
+        ? response!.content[0].text
         : 'Sorry, I could not generate a response.';
 
     return NextResponse.json({ reply });

@@ -100,28 +100,41 @@ async function analyzeAndCompleteRecording(recordingId: string): Promise<Finaliz
     data: { segments: JSON.stringify(diarized) },
   });
 
-  await prisma.summary.upsert({
-    where: { recordingId },
-    create: {
-      recordingId,
-      overview: analysis.overview,
-      keyPoints: JSON.stringify(analysis.keyPoints),
-      actionItems: JSON.stringify(analysis.actionItems),
-      decisions: JSON.stringify(analysis.decisions),
-      topics: JSON.stringify(topics),
-    },
-    update: {
-      overview: analysis.overview,
-      keyPoints: JSON.stringify(analysis.keyPoints),
-      actionItems: JSON.stringify(analysis.actionItems),
-      decisions: JSON.stringify(analysis.decisions),
-      topics: JSON.stringify(topics),
-    },
-  });
+  // B2: Don't persist empty or mock-mode analysis — mark failed so the recording can be retried
+  if (
+    !analysis.overview.trim() ||
+    analysis.overview.startsWith('Demo summary') ||
+    analysis.overview.startsWith('Analysis could not be completed')
+  ) {
+    await prisma.recording.update({ where: { id: recordingId }, data: { status: 'failed' } }).catch(() => {});
+    return { ok: false, reason: 'AI analysis returned empty or mock content — check ANTHROPIC_API_KEY.' };
+  }
 
-  const completedRecording = await prisma.recording.update({
-    where: { id: recordingId },
-    data: { status: 'completed', ...(title ? { title } : {}) },
+  // B3: Wrap summary upsert + status update atomically so a mid-flight crash
+  // can't leave the recording stuck in 'processing' with no summary.
+  const completedRecording = await prisma.$transaction(async (tx) => {
+    await tx.summary.upsert({
+      where: { recordingId },
+      create: {
+        recordingId,
+        overview: analysis.overview,
+        keyPoints: JSON.stringify(analysis.keyPoints),
+        actionItems: JSON.stringify(analysis.actionItems),
+        decisions: JSON.stringify(analysis.decisions),
+        topics: JSON.stringify(topics),
+      },
+      update: {
+        overview: analysis.overview,
+        keyPoints: JSON.stringify(analysis.keyPoints),
+        actionItems: JSON.stringify(analysis.actionItems),
+        decisions: JSON.stringify(analysis.decisions),
+        topics: JSON.stringify(topics),
+      },
+    });
+    return tx.recording.update({
+      where: { id: recordingId },
+      data: { status: 'completed', ...(title ? { title } : {}) },
+    });
   });
 
   // Fire-and-forget Airtable backup — never blocks the main flow

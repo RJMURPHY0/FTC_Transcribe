@@ -79,7 +79,7 @@ export async function backupToAirtable(payload: BackupPayload): Promise<void> {
 
     // Try to find an existing row with this Recording ID
     const existing = await table.select({
-      filterByFormula: `{Recording ID} = '${payload.recordingId}'`,
+      filterByFormula: `{Recording ID} = '${payload.recordingId.replace(/'/g, '')}'`,
       maxRecords: 1,
     }).firstPage();
 
