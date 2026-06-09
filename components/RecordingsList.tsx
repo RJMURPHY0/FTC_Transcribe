@@ -15,7 +15,7 @@ interface RecordingSummary {
 interface Recording {
   id: string;
   title: string;
-  createdAt: string; // serialised as ISO string from server
+  createdAt: string;
   status: string;
   folderId: string | null;
   summary: RecordingSummary | null;
@@ -24,6 +24,24 @@ interface Recording {
 }
 
 interface Folder { id: string; name: string }
+
+interface UndoState {
+  mergedId: string;
+  originalIds: string[];
+  countdown: number; // seconds remaining
+}
+
+const UNDO_SECONDS = 6;
+
+const COUNTDOWN_WIDTH: Record<number, string> = {
+  6: 'w-full',
+  5: 'w-5/6',
+  4: 'w-4/6',
+  3: 'w-3/6',
+  2: 'w-2/6',
+  1: 'w-1/6',
+  0: 'w-0',
+};
 
 function MicIcon({ className }: { className?: string }) {
   return (
@@ -119,6 +137,101 @@ function BulkFolderPicker({
   );
 }
 
+// ── Merge split-button ───────────────────────────────────────────────────────
+
+function MergeButton({
+  disabled,
+  busy,
+  onMergeKeep,
+  onMergeDelete,
+}: {
+  disabled: boolean;
+  busy: boolean;
+  onMergeKeep: () => void;
+  onMergeDelete: () => void;
+}) {
+  const [dropOpen, setDropOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!dropOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setDropOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [dropOpen]);
+
+  return (
+    <div ref={ref} className="relative flex">
+      {/* Main action */}
+      <button
+        type="button"
+        onClick={onMergeKeep}
+        disabled={disabled || busy}
+        title={disabled ? 'Select at least 2 to merge' : 'Merge into one recording (keep originals)'}
+        className="flex items-center gap-1.5 pl-3 pr-2 py-2 rounded-l-xl text-sm font-medium bg-brand text-white hover:bg-brand/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors touch-manipulation"
+      >
+        {busy ? (
+          <div className="w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin" />
+        ) : (
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 16.875h3.375m0 0h3.375m-3.375 0V13.5m0 3.375v3.375M6 10.5h2.25a2.25 2.25 0 002.25-2.25V6a2.25 2.25 0 00-2.25-2.25H6A2.25 2.25 0 003.75 6v2.25A2.25 2.25 0 006 10.5zm0 9.75h2.25A2.25 2.25 0 0010.5 18v-2.25a2.25 2.25 0 00-2.25-2.25H6a2.25 2.25 0 00-2.25 2.25V18A2.25 2.25 0 006 20.25zm9.75-9.75H18a2.25 2.25 0 002.25-2.25V6A2.25 2.25 0 0018 3.75h-2.25A2.25 2.25 0 0013.5 6v2.25a2.25 2.25 0 002.25 2.25z" />
+          </svg>
+        )}
+        Merge
+      </button>
+
+      {/* Chevron dropdown trigger */}
+      <button
+        type="button"
+        onClick={() => setDropOpen((o) => !o)}
+        disabled={disabled || busy}
+        className="flex items-center px-1.5 py-2 rounded-r-xl text-sm bg-brand/80 text-white hover:bg-brand/70 border-l border-white/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors touch-manipulation"
+        aria-label="More merge options"
+      >
+        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {/* Dropdown */}
+      {dropOpen && (
+        <div className="absolute bottom-full mb-2 left-0 z-50 w-52 rounded-xl border border-surface-border bg-surface-card shadow-xl overflow-hidden">
+          <button
+            type="button"
+            onClick={() => { setDropOpen(false); onMergeKeep(); }}
+            className="w-full text-left px-3 py-2.5 text-xs text-ftc-gray hover:bg-surface-raised transition-colors flex items-center gap-2"
+          >
+            <svg className="w-3.5 h-3.5 text-brand flex-shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 16.875h3.375m0 0h3.375m-3.375 0V13.5m0 3.375v3.375M6 10.5h2.25a2.25 2.25 0 002.25-2.25V6a2.25 2.25 0 00-2.25-2.25H6A2.25 2.25 0 003.75 6v2.25A2.25 2.25 0 006 10.5zm0 9.75h2.25A2.25 2.25 0 0010.5 18v-2.25a2.25 2.25 0 00-2.25-2.25H6a2.25 2.25 0 00-2.25 2.25V18A2.25 2.25 0 006 20.25zm9.75-9.75H18a2.25 2.25 0 002.25-2.25V6A2.25 2.25 0 0018 3.75h-2.25A2.25 2.25 0 0013.5 6v2.25a2.25 2.25 0 002.25 2.25z" />
+            </svg>
+            <div>
+              <p className="font-medium">Merge &amp; Keep originals</p>
+              <p className="text-surface-muted mt-0.5">Creates a new combined meeting</p>
+            </div>
+          </button>
+          <div className="border-t border-surface-border">
+            <button
+              type="button"
+              onClick={() => { setDropOpen(false); onMergeDelete(); }}
+              className="w-full text-left px-3 py-2.5 text-xs text-ftc-gray hover:bg-surface-raised transition-colors flex items-center gap-2"
+            >
+              <svg className="w-3.5 h-3.5 text-red-400 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+              </svg>
+              <div>
+                <p className="font-medium">Merge &amp; Delete originals</p>
+                <p className="text-surface-muted mt-0.5">Replaces them with merged meeting</p>
+              </div>
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function RecordingsList({
@@ -129,12 +242,44 @@ export default function RecordingsList({
   folders: Folder[];
 }) {
   const router = useRouter();
-  // Ordered list of selected IDs — index + 1 = selection number badge
   const [selected, setSelected] = useState<string[]>([]);
   const [merging, setMerging] = useState(false);
   const [bulkFolderBusy, setBulkFolderBusy] = useState(false);
+  const [undoState, setUndoState] = useState<UndoState | null>(null);
+  const undoTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const isSelecting = selected.length > 0;
+
+  // Countdown tick for undo toast
+  useEffect(() => {
+    if (!undoState) return;
+    undoTimerRef.current = setInterval(() => {
+      setUndoState((prev) => {
+        if (!prev) return null;
+        if (prev.countdown <= 1) return null; // triggers deletion via the null-transition below
+        return { ...prev, countdown: prev.countdown - 1 };
+      });
+    }, 1000);
+    return () => {
+      if (undoTimerRef.current) clearInterval(undoTimerRef.current);
+    };
+  }, [undoState?.mergedId]); // restart only when a new merge happens
+
+  // When undo state hits null (timer expired), fire deletions and navigate
+  const prevUndoRef = useRef<UndoState | null>(null);
+  useEffect(() => {
+    const prev = prevUndoRef.current;
+    prevUndoRef.current = undoState;
+    if (prev && !undoState) {
+      // Timer expired — delete originals then navigate
+      const { mergedId, originalIds } = prev;
+      Promise.all(
+        originalIds.map((id) => fetch(`/api/recordings/${id}`, { method: 'DELETE' })),
+      ).finally(() => {
+        router.push(`/recordings/${mergedId}`);
+      });
+    }
+  }, [undoState, router]);
 
   const toggle = (id: string, e: React.MouseEvent | React.ChangeEvent) => {
     e.preventDefault();
@@ -146,22 +291,29 @@ export default function RecordingsList({
 
   const clearSelection = () => setSelected([]);
 
-  // ── Merge ──────────────────────────────────────────────────────────────────
-  const handleMerge = async () => {
+  // ── Shared merge call ──────────────────────────────────────────────────────
+  const callMergeApi = async (): Promise<string | null> => {
+    const res = await fetch('/api/recordings/merge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ recordingIds: selected }),
+    });
+    if (!res.ok) {
+      const { error } = await res.json().catch(() => ({ error: 'Merge failed.' }));
+      alert(error ?? 'Merge failed.');
+      return null;
+    }
+    const { id } = await res.json();
+    return id;
+  };
+
+  // ── Merge & Keep ───────────────────────────────────────────────────────────
+  const handleMergeKeep = async () => {
     if (selected.length < 2 || merging) return;
     setMerging(true);
     try {
-      const res = await fetch('/api/recordings/merge', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ recordingIds: selected }),
-      });
-      if (!res.ok) {
-        const { error } = await res.json().catch(() => ({ error: 'Merge failed.' }));
-        alert(error ?? 'Merge failed.');
-        return;
-      }
-      const { id } = await res.json();
+      const id = await callMergeApi();
+      if (!id) return;
       clearSelection();
       router.push(`/recordings/${id}`);
     } catch {
@@ -169,6 +321,37 @@ export default function RecordingsList({
     } finally {
       setMerging(false);
     }
+  };
+
+  // ── Merge & Delete (with undo) ─────────────────────────────────────────────
+  const handleMergeDelete = async () => {
+    if (selected.length < 2 || merging) return;
+    setMerging(true);
+    try {
+      const id = await callMergeApi();
+      if (!id) return;
+      const originalIds = [...selected];
+      clearSelection();
+      // Start undo countdown — actual deletion fires when countdown hits 0
+      setUndoState({ mergedId: id, originalIds, countdown: UNDO_SECONDS });
+    } catch {
+      alert('Network error — merge failed.');
+    } finally {
+      setMerging(false);
+    }
+  };
+
+  // ── Undo merge+delete ──────────────────────────────────────────────────────
+  const handleUndo = async () => {
+    if (!undoState) return;
+    if (undoTimerRef.current) clearInterval(undoTimerRef.current);
+    const { mergedId } = undoState;
+    // Clear undo state BEFORE the null-transition effect fires deletion
+    prevUndoRef.current = null;
+    setUndoState(null);
+    // Delete the newly merged recording to restore the original state
+    await fetch(`/api/recordings/${mergedId}`, { method: 'DELETE' });
+    router.refresh();
   };
 
   // ── Download ───────────────────────────────────────────────────────────────
@@ -181,7 +364,6 @@ export default function RecordingsList({
       alert('No completed recordings selected — Word export requires a finished summary.');
       return;
     }
-    // Open each as a separate download; browsers queue them
     for (const id of completedIds) {
       const a = document.createElement('a');
       a.href = `/api/recordings/${id}/export/word`;
@@ -214,7 +396,7 @@ export default function RecordingsList({
   };
 
   if (recordings.length === 0) {
-    return null; // handled by parent
+    return null;
   }
 
   return (
@@ -223,13 +405,13 @@ export default function RecordingsList({
         {recordings.map((rec) => {
           const actions = safeJson<string[]>(rec.summary?.actionItems, []);
           const points  = safeJson<string[]>(rec.summary?.keyPoints,   []);
-          const selIdx  = selected.indexOf(rec.id); // -1 if not selected
-          const selNum  = selIdx + 1;               // 0 if not selected
+          const selIdx  = selected.indexOf(rec.id);
+          const selNum  = selIdx + 1;
           const isSelected = selIdx !== -1;
 
           return (
             <li key={rec.id} className="relative group">
-              {/* Checkbox / selection badge — top-left */}
+              {/* Checkbox / selection badge */}
               <button
                 type="button"
                 aria-label={isSelected ? `Deselect (position ${selNum})` : 'Select'}
@@ -319,7 +501,6 @@ export default function RecordingsList({
                 )}
               </Link>
 
-              {/* Per-card actions — hidden during selection mode */}
               {!isSelecting && (
                 <div className="absolute top-1/2 right-3 -translate-y-1/2 flex flex-col gap-1 items-center">
                   <AssignFolderButton
@@ -335,8 +516,37 @@ export default function RecordingsList({
         })}
       </ul>
 
-      {/* ── Bottom action bar ── */}
-      {isSelecting && (
+      {/* ── Undo toast (Merge & Delete) ── */}
+      {undoState && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-4 py-3 rounded-2xl border border-surface-border bg-surface-card shadow-2xl shadow-black/40 backdrop-blur-md min-w-[320px]">
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-ftc-gray">
+              Merged {undoState.originalIds.length} recordings
+            </p>
+            <div className="flex items-center gap-2 mt-1.5">
+              {/* Progress bar */}
+              <div className="flex-1 h-1 rounded-full bg-surface-raised overflow-hidden">
+                <div
+                  className={`h-full bg-brand rounded-full transition-all duration-1000 ease-linear ${COUNTDOWN_WIDTH[undoState.countdown] ?? 'w-0'}`}
+                />
+              </div>
+              <span className="text-xs text-ftc-mid flex-shrink-0">
+                Deleting originals in {undoState.countdown}s
+              </span>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleUndo}
+            className="flex-shrink-0 px-3 py-1.5 rounded-lg text-sm font-semibold text-brand border border-brand/30 hover:bg-brand/10 transition-colors touch-manipulation"
+          >
+            Undo
+          </button>
+        </div>
+      )}
+
+      {/* ── Bottom selection action bar ── */}
+      {isSelecting && !undoState && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 px-4 py-3 rounded-2xl border border-surface-border bg-surface-card shadow-2xl shadow-black/40 backdrop-blur-md">
           {/* Selection count + order pills */}
           <div className="flex items-center gap-1.5 pr-3 border-r border-surface-border">
@@ -355,25 +565,13 @@ export default function RecordingsList({
             </span>
           </div>
 
-          {/* Merge */}
-          <button
-            type="button"
-            onClick={handleMerge}
-            disabled={selected.length < 2 || merging}
-            title={selected.length < 2 ? 'Select at least 2 to merge' : 'Merge into one recording'}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-medium bg-brand text-white hover:bg-brand/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors touch-manipulation"
-          >
-            {merging ? (
-              <div className="w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin" />
-            ) : (
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 16.875h3.375m0 0h3.375m-3.375 0V13.5m0 3.375v3.375M6 10.5h2.25a2.25 2.25 0 002.25-2.25V6a2.25 2.25 0 00-2.25-2.25H6A2.25 2.25 0 003.75 6v2.25A2.25 2.25 0 006 10.5zm0 9.75h2.25A2.25 2.25 0 0010.5 18v-2.25a2.25 2.25 0 00-2.25-2.25H6a2.25 2.25 0 00-2.25 2.25V18A2.25 2.25 0 006 20.25zm9.75-9.75H18a2.25 2.25 0 002.25-2.25V6A2.25 2.25 0 0018 3.75h-2.25A2.25 2.25 0 0013.5 6v2.25a2.25 2.25 0 002.25 2.25z" />
-              </svg>
-            )}
-            Merge
-          </button>
+          <MergeButton
+            disabled={selected.length < 2}
+            busy={merging}
+            onMergeKeep={handleMergeKeep}
+            onMergeDelete={handleMergeDelete}
+          />
 
-          {/* Download */}
           <button
             type="button"
             onClick={handleDownload}
@@ -385,13 +583,8 @@ export default function RecordingsList({
             Download
           </button>
 
-          {/* Add to folder */}
-          <BulkFolderPicker
-            folders={folders}
-            onAssign={handleBulkFolder}
-          />
+          <BulkFolderPicker folders={folders} onAssign={handleBulkFolder} />
 
-          {/* Dismiss */}
           <button
             type="button"
             onClick={clearSelection}
