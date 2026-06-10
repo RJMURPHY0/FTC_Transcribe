@@ -42,6 +42,7 @@ export async function middleware(request: NextRequest) {
   // Allow unauthenticated access to login and webhook/cron endpoints
   const isPublic =
     pathname === '/login' ||
+    pathname === '/claim' ||
     pathname.startsWith('/api/auto-fix') ||
     pathname.startsWith('/api/jobs/finalize') ||
     pathname.startsWith('/api/health') ||
