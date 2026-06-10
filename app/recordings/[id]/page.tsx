@@ -11,6 +11,7 @@ import EditableAINotes from './EditableAINotes';
 import SpeakerPanel from './SpeakerPanel';
 import TranscriptPlayer from './TranscriptPlayer';
 import type { TranscriptSegment, TopicSection } from '@/lib/ai';
+import { ensureSchema } from '@/lib/ensure-schema';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,6 +30,7 @@ function formatDate(date: Date) {
 
 
 export default async function RecordingPage({ params }: { params: { id: string } }) {
+  await ensureSchema();
   const recording = await prisma.recording
     .findUnique({ where: { id: params.id }, include: { transcript: true, summary: true, _count: { select: { chunks: true } } } })
     .catch(() => null);
