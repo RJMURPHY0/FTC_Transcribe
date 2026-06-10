@@ -8,6 +8,8 @@ export async function ensureSchema() {
   if (applied) return;
   try {
     await prisma.$executeRaw`ALTER TABLE "Recording" ADD COLUMN IF NOT EXISTS "userId" TEXT`;
+    await prisma.$executeRaw`ALTER TABLE "Recording" ADD COLUMN IF NOT EXISTS "source" TEXT NOT NULL DEFAULT 'web'`;
+    await prisma.$executeRaw`ALTER TABLE "Recording" ADD COLUMN IF NOT EXISTS "meetingType" TEXT NOT NULL DEFAULT 'general'`;
     await prisma.$executeRaw`ALTER TABLE "Folder"    ADD COLUMN IF NOT EXISTS "userId" TEXT`;
     await prisma.$executeRaw`CREATE INDEX IF NOT EXISTS "Recording_userId_idx" ON "Recording" ("userId")`;
     await prisma.$executeRaw`CREATE INDEX IF NOT EXISTS "Folder_userId_idx"    ON "Folder"    ("userId")`;
