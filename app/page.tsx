@@ -4,6 +4,7 @@ import { prisma } from '@/lib/db';
 import NewFolderButton from '@/components/NewFolderButton';
 import FolderActions from '@/components/FolderActions';
 import RecordingsList from '@/components/RecordingsList';
+import LogoutButton from '@/components/LogoutButton';
 import { estimateSeconds } from '@/lib/finalize-recording';
 
 export const dynamic = 'force-dynamic';
@@ -67,6 +68,7 @@ export default async function Home({
             <img src="/logo.png" alt="FTC Transcribe" className="h-full object-contain" />
           </div>
           <div className="flex items-center gap-2">
+            <LogoutButton />
             <Link
               href="/settings"
               className="p-2 rounded-xl text-ftc-mid hover:text-ftc-gray hover:bg-surface-raised transition-colors touch-manipulation"
