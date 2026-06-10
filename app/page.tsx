@@ -6,6 +6,7 @@ import FolderActions from '@/components/FolderActions';
 import RecordingsList from '@/components/RecordingsList';
 import LogoutButton from '@/components/LogoutButton';
 import { estimateSeconds } from '@/lib/finalize-recording';
+import { getAuthUser } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,6 +32,13 @@ export default async function Home({
   const activeFolderId = searchParams.folder ?? null;
   const activeSource   = searchParams.source === 'teams' ? 'teams' : searchParams.source === 'web' ? 'web' : null;
 
+  const authUser = await getAuthUser();
+  const userId = authUser?.id ?? null;
+  const canSeeAll = authUser?.canSeeAll ?? false;
+  // Scope filter: super-admin-granted users see everyone's recordings; others see only their own.
+  // Null userId (legacy records) are treated as shared — visible to all.
+  const userScope = canSeeAll ? {} : userId ? { OR: [{ userId }, { userId: null }] } : {};
+
   let folders: { id: string; name: string; _count: { recordings: number } }[] = [];
   let recordings: Awaited<ReturnType<typeof prisma.recording.findMany<{
     include: { summary: true; _count: { select: { chunks: true } } };
@@ -39,6 +47,7 @@ export default async function Home({
   try {
     [folders, recordings] = await Promise.all([
       prisma.folder.findMany({
+        where: canSeeAll ? {} : userId ? { OR: [{ userId }, { userId: null }] } : {},
         orderBy: { createdAt: 'asc' },
         include: { _count: { select: { recordings: true } } },
       }),
@@ -46,6 +55,7 @@ export default async function Home({
         where: {
           ...(activeFolderId ? { folderId: activeFolderId } : { folderId: null }),
           ...(activeSource ? { source: activeSource } : {}),
+          ...userScope,
         },
         include: { summary: true, _count: { select: { chunks: true } } },
         orderBy: { createdAt: 'desc' },
@@ -53,12 +63,13 @@ export default async function Home({
     ]);
   } catch { /* DB not ready */ }
 
-  const allCount    = await prisma.recording.count().catch(() => 0);
-  const completed   = await prisma.recording.count({ where: { status: 'completed' } }).catch(() => 0);
+  const countScope = canSeeAll ? {} : userId ? { OR: [{ userId }, { userId: null }] } : {};
+  const allCount    = await prisma.recording.count({ where: countScope }).catch(() => 0);
+  const completed   = await prisma.recording.count({ where: { ...countScope, status: 'completed' } }).catch(() => 0);
   const thisWeek    = await prisma.recording.count({
-    where: { createdAt: { gte: new Date(Date.now() - 7 * 86400_000) } },
+    where: { ...countScope, createdAt: { gte: new Date(Date.now() - 7 * 86400_000) } },
   }).catch(() => 0);
-  const teamsCount  = await prisma.recording.count({ where: { source: 'teams' } }).catch(() => 0);
+  const teamsCount  = await prisma.recording.count({ where: { ...countScope, source: 'teams' } }).catch(() => 0);
 
   const folderList = folders.map((f) => ({ id: f.id, name: f.name }));
   const activeFolder = activeFolderId ? folders.find(f => f.id === activeFolderId) : null;

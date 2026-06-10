@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
+import { getAuthUser } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,7 +21,8 @@ export async function POST(request: NextRequest) {
     const body = await request.json() as { name?: unknown };
     const name = typeof body.name === 'string' ? body.name.trim().slice(0, 80) : '';
     if (!name) return NextResponse.json({ error: 'Folder name required.' }, { status: 400 });
-    const folder = await prisma.folder.create({ data: { name } });
+    const user = await getAuthUser();
+    const folder = await prisma.folder.create({ data: { name, userId: user?.id ?? null } });
     return NextResponse.json(folder);
   } catch {
     return NextResponse.json({ error: 'Failed to create folder.' }, { status: 500 });
