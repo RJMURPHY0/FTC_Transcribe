@@ -8,6 +8,7 @@ import LogoutButton from '@/components/LogoutButton';
 import { estimateSeconds } from '@/lib/finalize-recording';
 import { getAuthUser } from '@/lib/auth';
 import { ensureSchema } from '@/lib/ensure-schema';
+import AutoClaim from '@/components/AutoClaim';
 
 export const dynamic = 'force-dynamic';
 
@@ -86,6 +87,7 @@ export default async function Home({
 
   return (
     <div className="min-h-screen flex flex-col bg-surface">
+      <AutoClaim />
       {/* Nav */}
       <header className="sticky top-0 z-20 border-b border-surface-border bg-surface/80 backdrop-blur-md">
         <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
