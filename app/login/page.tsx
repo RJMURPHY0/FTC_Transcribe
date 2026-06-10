@@ -16,11 +16,18 @@ export default function LoginPage() {
     setError('');
     setLoading(true);
 
-    const supabase = createClient();
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-
-    if (error) {
-      setError(error.message);
+    try {
+      const supabase = createClient();
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) {
+        setError(error.message === 'Invalid login credentials'
+          ? 'Incorrect email or password.'
+          : error.message);
+        setLoading(false);
+        return;
+      }
+    } catch (e) {
+      setError('Auth not configured — add NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY to Vercel env vars.');
       setLoading(false);
       return;
     }
