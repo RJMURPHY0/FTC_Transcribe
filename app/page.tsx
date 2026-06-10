@@ -7,6 +7,7 @@ import RecordingsList from '@/components/RecordingsList';
 import LogoutButton from '@/components/LogoutButton';
 import { estimateSeconds } from '@/lib/finalize-recording';
 import { getAuthUser } from '@/lib/auth';
+import { ensureSchema } from '@/lib/ensure-schema';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,6 +32,8 @@ export default async function Home({
 }) {
   const activeFolderId = searchParams.folder ?? null;
   const activeSource   = searchParams.source === 'teams' ? 'teams' : searchParams.source === 'web' ? 'web' : null;
+
+  await ensureSchema();
 
   const authUser = await getAuthUser();
   const userId = authUser?.id ?? null;
