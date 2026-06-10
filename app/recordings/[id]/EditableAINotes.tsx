@@ -178,9 +178,10 @@ export default function EditableAINotes({
   const [draftText,    setDraftText]   = useState('');
   const [draftList,    setDraftList]   = useState<string[]>([]);
   const [draftTopics,  setDraftTopics] = useState<TopicSection[]>([]);
-  const [saving,       setSaving]      = useState(false);
-  const [saveError,    setSaveError]   = useState('');
-  const [downloading,  setDownloading] = useState(false);
+  const [saving,        setSaving]       = useState(false);
+  const [saveError,     setSaveError]    = useState('');
+  const [downloading,   setDownloading]  = useState(false);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
 
   // Enter edit mode for a section
   const startEdit = (section: Section) => {
@@ -244,6 +245,25 @@ export default function EditableAINotes({
     }
   };
 
+  const downloadPdf = async () => {
+    setDownloadingPdf(true);
+    try {
+      const res = await fetch(`/api/recordings/${recordingId}/export/pdf`);
+      if (!res.ok) return;
+      const blob = await res.blob();
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href     = url;
+      a.download = `${recordingTitle.replace(/[^a-z0-9 ]/gi, '_')}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } finally {
+      setDownloadingPdf(false);
+    }
+  };
+
   const isEdit = (s: Section) => editing === s;
 
   const sectionProps = (s: Section) => ({
@@ -278,6 +298,20 @@ export default function EditableAINotes({
               d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
           </svg>
           {downloading ? 'Preparing…' : '.docx'}
+        </button>
+        <button
+          onClick={downloadPdf}
+          disabled={downloadingPdf}
+          title="Download as PDF"
+          className="flex items-center gap-1.5 text-xs text-ftc-mid hover:text-brand
+                     border border-surface-border hover:border-brand/40 rounded-xl
+                     px-2.5 py-1.5 transition-colors disabled:opacity-50"
+        >
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round"
+              d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+          </svg>
+          {downloadingPdf ? 'Preparing…' : '.pdf'}
         </button>
       </div>
 

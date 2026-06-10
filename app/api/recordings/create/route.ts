@@ -4,11 +4,15 @@ import { getAuthUser } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
 
+const VALID_MEETING_TYPES = new Set(['general', 'standup', 'sales', 'interview', 'review']);
+
 export async function POST(req: NextRequest) {
   let source = 'web';
+  let meetingType = 'general';
   try {
-    const body = await req.json() as { source?: string };
+    const body = await req.json() as { source?: string; meetingType?: string };
     if (body.source === 'teams') source = 'teams';
+    if (body.meetingType && VALID_MEETING_TYPES.has(body.meetingType)) meetingType = body.meetingType;
   } catch { /* no body — fine */ }
 
   const user = await getAuthUser();
@@ -21,6 +25,7 @@ export async function POST(req: NextRequest) {
       })}`,
       status: 'uploading',
       source,
+      meetingType,
       userId: user?.id ?? null,
     },
   });

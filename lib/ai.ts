@@ -36,6 +36,8 @@ export interface TranscriptSegment {
   text: string;
 }
 
+export type MeetingType = 'general' | 'standup' | 'sales' | 'interview' | 'review';
+
 export interface AnalysisResult {
   overview: string;
   keyPoints: string[];
@@ -382,32 +384,38 @@ Return ONLY the JSON array, nothing else.`,
   }
 }
 
-// ~48 000 words — enough for a 4-6 hour meeting; well within Haiku's 200k token context window
-const MAX_TRANSCRIPT_CHARS = 200_000;
+function meetingTypePrompt(type: MeetingType): string {
+  switch (type) {
+    case 'standup':
+      return `You are an AI standup assistant. Extract:
+- overview: 1-2 sentences on team status and blockers
+- keyPoints: what each person completed since last standup
+- actionItems: tasks assigned or unblocked during this standup
+- decisions: blockers resolved, priority changes, process decisions`;
 
-export async function analyzeTranscript(transcript: string): Promise<AnalysisResult> {
-  if (isMockAnthropic || !anthropic) {
-    return {
-      overview: 'Demo summary — add your ANTHROPIC_API_KEY to .env.local to enable AI analysis.',
-      keyPoints: ['Add ANTHROPIC_API_KEY to .env.local', 'Restart the dev server'],
-      actionItems: [],
-      decisions: [],
-    };
-  }
+    case 'sales':
+      return `You are an AI sales assistant. Extract:
+- overview: 1-2 sentences on meeting purpose and deal status
+- keyPoints: prospect pain points, objections raised, product fit signals
+- actionItems: follow-up commitments (proposals, demos, contracts) with owner
+- decisions: pricing agreed, next steps confirmed, deal stage movement`;
 
-  const truncated =
-    transcript.length > MAX_TRANSCRIPT_CHARS
-      ? transcript.slice(0, MAX_TRANSCRIPT_CHARS) + '\n\n[Transcript truncated — full meeting was longer]'
-      : transcript;
+    case 'interview':
+      return `You are an AI interview assistant. Extract:
+- overview: 1-2 sentences on candidate and role
+- keyPoints: notable strengths, red flags, and standout answers
+- actionItems: next steps (offer, second round, rejection) with owner
+- decisions: panel assessment, hire/no-hire recommendation if stated`;
 
-  try {
-    const message = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 1024,
-      messages: [
-        {
-          role: 'user',
-          content: `You are an AI meeting assistant. Analyse this transcript and return ONLY valid JSON.
+    case 'review':
+      return `You are an AI performance review assistant. Extract:
+- overview: 1-2 sentences on reviewee and review period
+- keyPoints: key achievements, development areas, and feedback themes
+- actionItems: goals set, training agreed, or follow-up conversations planned
+- decisions: rating or outcome if stated, promotion or role changes discussed`;
+
+    default:
+      return `You are an AI meeting assistant. Analyse this transcript and return ONLY valid JSON.
 
 Format:
 {
@@ -422,7 +430,52 @@ Rules:
 - keyPoints: 3-7 items — important context, background info, or notable discussion points only. Do NOT include tasks or decisions here
 - actionItems: specific tasks assigned to a person. Format as "Name to do X". Empty array if none. Do NOT repeat anything already in keyPoints or decisions
 - decisions: firm agreements or resolutions reached in the meeting. Empty array if none. Do NOT repeat anything already in keyPoints or actionItems
-- Each piece of information belongs in exactly ONE section — no duplicates across sections
+- Each piece of information belongs in exactly ONE section — no duplicates across sections`;
+  }
+}
+
+// ~48 000 words — enough for a 4-6 hour meeting; well within Haiku's 200k token context window
+const MAX_TRANSCRIPT_CHARS = 200_000;
+
+export async function analyzeTranscript(transcript: string, meetingType: MeetingType = 'general'): Promise<AnalysisResult> {
+  if (isMockAnthropic || !anthropic) {
+    return {
+      overview: 'Demo summary — add your ANTHROPIC_API_KEY to .env.local to enable AI analysis.',
+      keyPoints: ['Add ANTHROPIC_API_KEY to .env.local', 'Restart the dev server'],
+      actionItems: [],
+      decisions: [],
+    };
+  }
+
+  const truncated =
+    transcript.length > MAX_TRANSCRIPT_CHARS
+      ? transcript.slice(0, MAX_TRANSCRIPT_CHARS) + '\n\n[Transcript truncated — full meeting was longer]'
+      : transcript;
+
+  const systemPrompt = meetingTypePrompt(meetingType);
+  const isGeneral = meetingType === 'general';
+
+  try {
+    const message = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 1024,
+      messages: [
+        {
+          role: 'user',
+          content: `${systemPrompt}${isGeneral ? '' : `
+
+Return ONLY valid JSON in this exact format:
+{
+  "overview": "string",
+  "keyPoints": ["string"],
+  "actionItems": ["string"],
+  "decisions": ["string"]
+}
+
+Rules:
+- Each item belongs in exactly ONE section — no duplicates across sections
+- actionItems: format as "Name to do X" where possible
+- Empty arrays are fine if no items found`}
 
 TRANSCRIPT:
 ${truncated}`,

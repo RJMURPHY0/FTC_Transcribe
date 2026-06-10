@@ -9,9 +9,15 @@ import EditableTitle from './EditableTitle';
 import ChatPanel from './ChatPanel';
 import EditableAINotes from './EditableAINotes';
 import SpeakerPanel from './SpeakerPanel';
+import TranscriptPlayer from './TranscriptPlayer';
 import type { TranscriptSegment, TopicSection } from '@/lib/ai';
 
 export const dynamic = 'force-dynamic';
+
+const MEETING_TYPE_LABELS: Record<string, string> = {
+  general: '💬 General', standup: '🗓 Standup', sales: '📈 Sales',
+  interview: '🎯 Interview', review: '📋 Review',
+};
 
 function formatDate(date: Date) {
   return new Intl.DateTimeFormat('en-GB', {
@@ -20,42 +26,6 @@ function formatDate(date: Date) {
   }).format(new Date(date));
 }
 
-// Colours cycle through speakers consistently
-const SPEAKER_COLOURS = [
-  { label: 'text-blue-400',   dot: 'bg-blue-400',   border: 'border-blue-400/20',   bg: 'bg-blue-400/5'   },
-  { label: 'text-violet-400', dot: 'bg-violet-400', border: 'border-violet-400/20', bg: 'bg-violet-400/5' },
-  { label: 'text-emerald-400',dot: 'bg-emerald-400',border: 'border-emerald-400/20',bg: 'bg-emerald-400/5' },
-  { label: 'text-amber-400',  dot: 'bg-amber-400',  border: 'border-amber-400/20',  bg: 'bg-amber-400/5'  },
-  { label: 'text-rose-400',   dot: 'bg-rose-400',   border: 'border-rose-400/20',   bg: 'bg-rose-400/5'   },
-];
-
-function speakerIndex(speaker: string, order: string[]): number {
-  const i = order.indexOf(speaker);
-  return (i >= 0 ? i : 0) % SPEAKER_COLOURS.length;
-}
-
-function formatTimestamp(seconds: number): string {
-  const m = Math.floor(seconds / 60);
-  const s = Math.floor(seconds % 60);
-  return `${m}:${String(s).padStart(2, '0')}`;
-}
-
-function SpeakerBlock({ seg, speakerOrder }: { seg: { speaker: string; start: number; end: number; text: string }; speakerOrder: string[] }) {
-  const idx = speakerIndex(seg.speaker, speakerOrder);
-  const c = SPEAKER_COLOURS[idx];
-  return (
-    <div className={`rounded-xl border ${c.border} ${c.bg} px-4 py-3`}>
-      <div className="flex items-center gap-2 mb-1.5">
-        <span className={`w-2 h-2 rounded-full flex-shrink-0 ${c.dot}`} />
-        <span className={`text-xs font-semibold ${c.label}`}>{seg.speaker}</span>
-        <span className="text-[10px] text-ftc-mid ml-auto tabular-nums">
-          {formatTimestamp(seg.start)}
-        </span>
-      </div>
-      <p className="text-sm text-ftc-gray leading-relaxed">{seg.text.trim()}</p>
-    </div>
-  );
-}
 
 
 export default async function RecordingPage({ params }: { params: { id: string } }) {
@@ -84,22 +54,11 @@ export default async function RecordingPage({ params }: { params: { id: string }
   );
   const rawSegments: TranscriptSegment[] = Array.isArray(rawSegmentsParsed) ? rawSegmentsParsed : [];
 
-  // Merge consecutive same-speaker segments into one block
-  const speakerGroups = rawSegments.reduce<TranscriptSegment[]>((groups, seg) => {
-    const last = groups[groups.length - 1];
-    if (last && last.speaker === seg.speaker) {
-      groups[groups.length - 1] = { ...last, text: last.text + ' ' + seg.text.trim(), end: seg.end };
-    } else {
-      groups.push({ ...seg, text: seg.text.trim() });
-    }
-    return groups;
-  }, []);
-
   // Unique speakers in order of first appearance — used for stable colour assignment.
   // Force to string: Deepgram stores speaker as number (0,1,2…) which breaks Object.fromEntries in Safari.
-  const speakerOrder = Array.from(new Set(speakerGroups.map(g => String(g.speaker))));
+  const speakerOrder = Array.from(new Set(rawSegments.map(s => String(s.speaker))));
 
-  const hasSpeakers = speakerGroups.length > 0;
+  const hasSpeakers = rawSegments.length > 0;
   const isComplete   = recording.status === 'completed';
   const isFailed     = recording.status === 'failed';
   const isUploading  = recording.status === 'uploading' || recording.status === 'queued';
@@ -133,7 +92,14 @@ export default async function RecordingPage({ params }: { params: { id: string }
 
           <div className="flex-1 min-w-0 pr-1">
             <EditableTitle id={recording.id} initial={recording.title} />
+            <div className="flex items-center gap-2">
             <p className="text-xs text-ftc-mid truncate hidden sm:block">{formatDate(recording.createdAt)}</p>
+            {recording.meetingType && recording.meetingType !== 'general' && (
+              <span className="hidden sm:inline text-xs px-2 py-0.5 rounded-full bg-surface-raised border border-surface-border text-ftc-mid">
+                {MEETING_TYPE_LABELS[recording.meetingType] ?? recording.meetingType}
+              </span>
+            )}
+          </div>
           </div>
 
           <span className={`text-xs px-2.5 py-1 rounded-full font-medium flex-shrink-0 whitespace-nowrap ${
@@ -237,17 +203,20 @@ export default async function RecordingPage({ params }: { params: { id: string }
                 {hasSpeakers && (
                   <SpeakerPanel recordingId={recording.id} speakers={speakerOrder} />
                 )}
-                <div className="rounded-2xl border border-surface-border bg-surface-card p-5 space-y-4">
-                  {hasSpeakers ? (
-                    speakerGroups.map((seg, i) => (
-                      <SpeakerBlock key={i} seg={seg} speakerOrder={speakerOrder} />
-                    ))
-                  ) : (
+                {hasSpeakers ? (
+                  <TranscriptPlayer
+                    recordingId={recording.id}
+                    rawSegments={rawSegments}
+                    speakerOrder={speakerOrder}
+                    hasAudio={recording._count.chunks > 0}
+                  />
+                ) : (
+                  <div className="rounded-2xl border border-surface-border bg-surface-card p-5">
                     <p className="text-sm text-ftc-gray leading-8 whitespace-pre-wrap">
                       {recording.transcript.fullText}
                     </p>
-                  )}
-                </div>
+                  </div>
+                )}
               </>
             ) : (
               <div className="rounded-2xl border border-surface-border bg-surface-card p-8 text-center text-ftc-mid text-sm">

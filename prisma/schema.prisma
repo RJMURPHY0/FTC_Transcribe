@@ -26,9 +26,10 @@ model Recording {
   mimeType   String   @default("")
   audioPath  String   @default("")
   status     String   @default("uploading")
-  source     String   @default("web")
-  folderId   String?
-  userId     String?
+  source      String   @default("web")
+  meetingType String   @default("general")
+  folderId    String?
+  userId      String?
 
   folder      Folder?      @relation(fields: [folderId], references: [id])
   chunks      ChunkBlob[]
@@ -120,6 +121,19 @@ model Summary {
   decisions   String
   topics      String    @default("[]")
   createdAt   DateTime  @default(now())
+}
+
+// Speaker voice profiles — cross-recording speaker identification
+model SpeakerProfile {
+  id          String   @id @default(cuid())
+  userId      String?
+  name        String
+  features    String   // JSON: { avgSegDuration, avgPause, speakingRate, topWords }
+  sampleCount Int      @default(1)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId])
 }
 
 // Deduplication log for the auto-fix pipeline. One row per unique error

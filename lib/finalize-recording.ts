@@ -7,9 +7,10 @@ import {
   generateTitle,
   generateTopics,
 } from '@/lib/ai';
-import type { RawSegment } from '@/lib/ai';
+import type { RawSegment, MeetingType } from '@/lib/ai';
 import { backupToAirtable } from '@/lib/airtable-backup';
 import { notifyTeamsChannel } from '@/lib/integrations/teams-notify';
+import { indexTranscript } from '@/lib/embeddings';
 import { alignSpeakersAcrossChunks } from '@/lib/deepgram';
 import type { DeepgramRawSegment } from '@/lib/deepgram';
 import {
@@ -63,11 +64,16 @@ function isMissingFinalizeTablesError(err: unknown): boolean {
 
 
 async function analyzeAndCompleteRecording(recordingId: string): Promise<FinalizeResult> {
-  const transcript = await prisma.transcript.findUnique({ where: { recordingId } });
+  const [transcript, recording] = await Promise.all([
+    prisma.transcript.findUnique({ where: { recordingId } }),
+    prisma.recording.findUnique({ where: { id: recordingId }, select: { meetingType: true } }),
+  ]);
   if (!transcript || !transcript.fullText.trim()) {
     await prisma.recording.update({ where: { id: recordingId }, data: { status: 'failed' } }).catch(() => {});
     return { ok: false, reason: 'No transcript to analyse.' };
   }
+
+  const meetingType = (recording?.meetingType ?? 'general') as MeetingType;
 
   let rawSegments: Array<RawSegment & { speaker?: string }> = [];
   try {
@@ -80,7 +86,7 @@ async function analyzeAndCompleteRecording(recordingId: string): Promise<Finaliz
   // Run analysis/title/topics in parallel with diarization, then resolve names
   const [diarizedRaw, analysis, shortTitle, topics] = await Promise.all([
     diarizeSegments(rawSegments),
-    analyzeTranscript(transcript.fullText),
+    analyzeTranscript(transcript.fullText, meetingType),
     generateTitle(transcript.fullText),
     generateTopics(rawSegments),
   ]);
@@ -150,6 +156,10 @@ async function analyzeAndCompleteRecording(recordingId: string): Promise<Finaliz
     decisions:   analysis.decisions,
     fullText:    transcript.fullText,
   }).catch((err) => console.error('[finalize] airtable backup failed:', err));
+
+  // Fire-and-forget semantic indexing for search
+  indexTranscript(recordingId, completedRecording.userId ?? null, transcript.fullText)
+    .catch(err => console.error('[finalize] embedding index failed:', err));
 
   // Fire-and-forget Teams channel notification
   notifyTeamsChannel({

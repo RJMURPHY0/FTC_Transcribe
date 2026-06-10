@@ -6,9 +6,19 @@ import Link from 'next/link';
 
 type State = 'idle' | 'recording' | 'uploading' | 'queued' | 'error';
 type Source = 'web' | 'teams';
+export type MeetingType = 'general' | 'standup' | 'sales' | 'interview' | 'review';
 
-// Auto-rotate every 2 minutes — keeps each chunk well within file size & timeout limits
 const CHUNK_MS = 2 * 60 * 1000;
+const SILENCE_RMS = 0.01;
+const SKIP_SPEECH_RATIO = 0.04; // skip upload if < 4% of chunk is speech
+
+const MEETING_TYPES: { id: MeetingType; label: string; icon: string }[] = [
+  { id: 'general',   label: 'General',   icon: '💬' },
+  { id: 'standup',   label: 'Standup',   icon: '🗓' },
+  { id: 'sales',     label: 'Sales',     icon: '📈' },
+  { id: 'interview', label: 'Interview', icon: '🎯' },
+  { id: 'review',    label: 'Review',    icon: '📋' },
+];
 
 function formatTime(s: number) {
   const h = Math.floor(s / 3600);
@@ -28,14 +38,17 @@ function getBestMime() {
 export default function RecordPage() {
   const [state, setState] = useState<State>('idle');
   const [source, setSource] = useState<Source>('web');
+  const [meetingType, setMeetingType] = useState<MeetingType>('general');
   const [seconds,       setSeconds]       = useState(0);
   const [errorMsg,      setErrorMsg]      = useState('');
   const [chunksSaved,   setChunksSaved]   = useState(0);
   const [chunksFailed,  setChunksFailed]  = useState(0);
+  const [voiceLevel,    setVoiceLevel]    = useState(0);
+  const [captions,      setCaptions]      = useState<string[]>([]);
+  const [captionsOpen,  setCaptionsOpen]  = useState(false);
 
   const router = useRouter();
 
-  // Persistent refs (survive re-renders without causing them)
   const streamRef       = useRef<MediaStream | null>(null);
   const recorderRef     = useRef<MediaRecorder | null>(null);
   const chunkBlobsRef   = useRef<Blob[]>([]);
@@ -46,11 +59,18 @@ export default function RecordPage() {
   const timeOffsetRef   = useRef(0);
   const chunkStartRef   = useRef(0);
   const isActiveRef     = useRef(false);
-  const isStartingRef   = useRef(false);  // prevents double-tap from creating two recordings
+  const isStartingRef   = useRef(false);
   const noSleepRef      = useRef<{ enable(): Promise<boolean>; disable(): void } | null>(null);
-  // WebM EBML header bytes (before the first Cluster element) extracted from the first chunk.
-  // Non-first chunks are cluster-only and need this header prepended to be valid WebM files.
   const webmHeaderRef   = useRef<ArrayBuffer | null>(null);
+
+  // Deepgram live-captions WebSocket
+  const dgWsRef         = useRef<WebSocket | null>(null);
+
+  // VAD refs — energy-based, no WASM dependencies, works on every device
+  const analyserRef     = useRef<AnalyserNode | null>(null);
+  const audioCtxRef     = useRef<AudioContext | null>(null);
+  const vadIntervalRef  = useRef<ReturnType<typeof setInterval> | null>(null);
+  const speechMsRef     = useRef(0); // ms of detected speech in current 2-min window
 
   // Timer — only runs during recording
   useEffect(() => {
@@ -61,6 +81,89 @@ export default function RecordPage() {
     }
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
   }, [state]);
+
+  const startVAD = useCallback((stream: MediaStream) => {
+    try {
+      const ctx = new AudioContext();
+      const src = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 1024;
+      src.connect(analyser);
+      audioCtxRef.current = ctx;
+      analyserRef.current = analyser;
+      speechMsRef.current = 0;
+
+      vadIntervalRef.current = setInterval(() => {
+        const a = analyserRef.current;
+        if (!a) return;
+        const buf = new Float32Array(a.fftSize);
+        a.getFloatTimeDomainData(buf);
+        let sum = 0;
+        for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+        const rms = Math.sqrt(sum / buf.length);
+        if (rms > SILENCE_RMS) speechMsRef.current += 100;
+        setVoiceLevel(Math.min(1, rms / 0.06));
+      }, 100);
+    } catch {
+      // VAD not critical — recording continues without it
+    }
+  }, []);
+
+  const stopVAD = useCallback(() => {
+    if (vadIntervalRef.current) { clearInterval(vadIntervalRef.current); vadIntervalRef.current = null; }
+    analyserRef.current = null;
+    audioCtxRef.current?.close().catch(() => {});
+    audioCtxRef.current = null;
+    setVoiceLevel(0);
+    speechMsRef.current = 0;
+  }, []);
+
+  const startLiveCaptions = useCallback(async (recordingId: string) => {
+    try {
+      const res  = await fetch(`/api/recordings/${recordingId}/stream-token`);
+      if (!res.ok) return; // Deepgram not configured — silent no-op
+      const { token } = await res.json() as { token?: string };
+      if (!token) return;
+
+      const url = 'wss://api.deepgram.com/v1/listen'
+        + '?model=nova-2&language=en&encoding=opus&container=webm'
+        + '&sample_rate=48000&channels=1&interim_results=true&punctuate=true';
+
+      const ws = new WebSocket(url, ['token', token]);
+      ws.binaryType = 'arraybuffer';
+
+      ws.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data as string) as {
+            type: string;
+            channel?: { alternatives?: Array<{ transcript?: string }> };
+            is_final?: boolean;
+          };
+          if (msg.type !== 'Results') return;
+          const text = msg.channel?.alternatives?.[0]?.transcript ?? '';
+          if (!text.trim()) return;
+          setCaptions(prev => {
+            if (!msg.is_final) {
+              // Replace last line if it's interim
+              return prev.length > 0 ? [...prev.slice(0, -1), text] : [text];
+            }
+            return [...prev.slice(-9), text]; // keep last 10 final lines
+          });
+        } catch { /* ignore malformed messages */ }
+      };
+
+      ws.onerror = () => ws.close();
+      dgWsRef.current = ws;
+      setCaptionsOpen(true);
+    } catch { /* no captions — recording still works */ }
+  }, []);
+
+  const stopLiveCaptions = useCallback(() => {
+    if (dgWsRef.current) {
+      if (dgWsRef.current.readyState === WebSocket.OPEN) dgWsRef.current.close();
+      dgWsRef.current = null;
+    }
+  }, []);
 
   const releaseWakeLock = useCallback(() => {
     noSleepRef.current?.disable();
@@ -92,14 +195,13 @@ export default function RecordPage() {
     };
   }, [state, requestWakeLock, releaseWakeLock]);
 
-  // Release the microphone if the user navigates away mid-recording.
-  // The recording in the DB will be picked up by the cron if it has chunks,
-  // or cleaned up by the stale-recording sweep if it has none.
   useEffect(() => {
     return () => {
       if (chunkTimerRef.current) clearTimeout(chunkTimerRef.current);
       streamRef.current?.getTracks().forEach((t) => t.stop());
       isActiveRef.current = false;
+      if (vadIntervalRef.current) clearInterval(vadIntervalRef.current);
+      audioCtxRef.current?.close().catch(() => {});
     };
   }, []);
 
@@ -122,7 +224,7 @@ export default function RecordPage() {
           const data = await res.json().catch(() => ({})) as { error?: string };
           throw new Error(data.error ?? `Server error ${res.status}`);
         }
-        return; // success
+        return;
       } catch (err) {
         lastErr = err instanceof Error ? err : new Error('Upload failed');
       }
@@ -130,9 +232,6 @@ export default function RecordPage() {
     throw lastErr;
   }, []);
 
-  // Snapshot current blobs and upload as a chunk WITHOUT stopping the recorder.
-  // This avoids the iOS Safari bug where a new MediaRecorder on the same stream
-  // silently stops capturing audio after the first stop/start cycle.
   const rotateChunk = useCallback(async () => {
     if (!isActiveRef.current) return;
 
@@ -140,20 +239,19 @@ export default function RecordPage() {
     const offset = timeOffsetRef.current;
     const duration = (Date.now() - chunkStartRef.current) / 1000;
 
+    // Capture and reset speech tracking for this window
+    const speechMs = speechMsRef.current;
+    speechMsRef.current = 0;
+    const speechRatio = duration > 0 ? speechMs / (duration * 1000) : 1;
+
     chunkBlobsRef.current = [];
     timeOffsetRef.current += duration;
     chunkStartRef.current = Date.now();
 
-    // Schedule the next rotation before the async upload so the interval stays accurate
     chunkTimerRef.current = setTimeout(rotateChunk, CHUNK_MS);
 
-    // MediaRecorder only includes the EBML/Segment/Tracks header in the very first
-    // ondataavailable event. Subsequent chunks are cluster-only (header: 1f43b675)
-    // and are rejected by Whisper as "invalid file format". Fix: extract the header
-    // bytes from the first rotation and prepend them to all subsequent chunks.
     let blobsForUpload = blobs;
     if (offset === 0) {
-      // First rotation — extract the EBML header bytes (everything before first Cluster)
       try {
         const raw = new Uint8Array(await new Blob(blobs, { type: mimeRef.current }).arrayBuffer());
         for (let i = 0; i < raw.length - 3; i++) {
@@ -162,34 +260,32 @@ export default function RecordPage() {
             break;
           }
         }
-        // Fallback: if no cluster marker found (non-WebM format or unusual encoder),
-        // use the first event's blob as the header — slight audio duplication but stays valid.
         if (!webmHeaderRef.current && blobs.length > 0) {
           webmHeaderRef.current = await blobs[0].arrayBuffer();
         }
       } catch (err) {
-        console.warn('[rotateChunk] WebM header extraction failed — subsequent chunks may fail:', err);
+        console.warn('[rotateChunk] WebM header extraction failed:', err);
       }
     } else if (webmHeaderRef.current) {
-      // Non-first rotation — prepend the saved header so the upload is a valid WebM file
       blobsForUpload = [new Blob([webmHeaderRef.current], { type: mimeRef.current }), ...blobs];
     }
 
     const blob = new Blob(blobsForUpload, { type: mimeRef.current });
     if (blob.size >= 1000) {
+      // Skip silent chunks — saves Whisper/Deepgram API cost
+      if (speechRatio < SKIP_SPEECH_RATIO) {
+        return;
+      }
       try {
         await uploadChunk(blob, offset);
         setChunksSaved((n) => n + 1);
       } catch (err) {
-        // Upload failed but recording continues — the missed chunk will leave a gap
         console.warn('[rotate] chunk upload failed:', err instanceof Error ? err.message : err);
         setChunksFailed((n) => n + 1);
       }
     }
   }, [uploadChunk]);
 
-  // Creates ONE MediaRecorder for the entire meeting — never stopped mid-session.
-  // Chunk rotation is handled by rotateChunk() via a timer, not by stop/restart.
   const startRecorder = useCallback((stream: MediaStream, mime: string) => {
     const mr = new MediaRecorder(stream, { mimeType: mime });
     recorderRef.current = mr;
@@ -198,17 +294,21 @@ export default function RecordPage() {
     webmHeaderRef.current = null;
 
     mr.ondataavailable = (e) => {
-      if (e.data.size > 0) chunkBlobsRef.current.push(e.data);
+      if (e.data.size > 0) {
+        chunkBlobsRef.current.push(e.data);
+        // Stream to Deepgram for live captions
+        if (dgWsRef.current?.readyState === WebSocket.OPEN) {
+          e.data.arrayBuffer().then(buf => dgWsRef.current?.send(buf)).catch(() => {});
+        }
+      }
     };
 
-    // onstop only fires when the user explicitly stops recording
     mr.onstop = async () => {
       const blobs = chunkBlobsRef.current;
       chunkBlobsRef.current = [];
       const offset = timeOffsetRef.current;
 
       try {
-        // Apply the same header prepend as rotateChunk — the final segment is also cluster-only
         let blobsForUpload = blobs;
         if (offset > 0 && webmHeaderRef.current) {
           blobsForUpload = [new Blob([webmHeaderRef.current], { type: mime }), ...blobs];
@@ -247,7 +347,7 @@ export default function RecordPage() {
       const createRes = await fetch('/api/recordings/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source }),
+        body: JSON.stringify({ source, meetingType }),
       });
       const createData = await createRes.json() as { id?: string; error?: string };
       if (!createRes.ok || !createData.id) throw new Error(createData.error ?? 'Could not create recording');
@@ -266,12 +366,13 @@ export default function RecordPage() {
       timeOffsetRef.current = 0;
       isActiveRef.current = true;
 
+      startVAD(stream);
       startRecorder(stream, mime);
       chunkTimerRef.current = setTimeout(rotateChunk, CHUNK_MS);
       setState('recording');
+      // Fire-and-forget — if Deepgram isn't configured it returns silently
+      void startLiveCaptions(createData.id);
     } catch (err) {
-      // If recording was created before the error (e.g. mic denied), delete it so it
-      // doesn't linger as a ghost 'uploading' entry in the list.
       if (recordingIdRef.current) {
         fetch(`/api/recordings/${recordingIdRef.current}`, { method: 'DELETE' }).catch(() => {});
         recordingIdRef.current = null;
@@ -282,13 +383,15 @@ export default function RecordPage() {
     } finally {
       isStartingRef.current = false;
     }
-  }, [startRecorder, rotateChunk, requestWakeLock, releaseWakeLock]);
+  }, [startRecorder, startVAD, startLiveCaptions, rotateChunk, requestWakeLock, releaseWakeLock, source, meetingType]);
 
   const stop = useCallback(() => {
     if (state !== 'recording') return;
 
     isActiveRef.current = false;
     setState('uploading');
+    stopVAD();
+    stopLiveCaptions();
 
     if (chunkTimerRef.current) {
       clearTimeout(chunkTimerRef.current);
@@ -299,10 +402,9 @@ export default function RecordPage() {
       recorderRef.current.stop();
     }
 
-    // Release mic
     streamRef.current?.getTracks().forEach((t) => t.stop());
     void releaseWakeLock();
-  }, [state, releaseWakeLock]);
+  }, [state, stopVAD, stopLiveCaptions, releaseWakeLock]);
 
   const handleClick = () => {
     if (state === 'recording') stop();
@@ -338,7 +440,7 @@ export default function RecordPage() {
       </header>
 
       {/* Body */}
-      <main className="flex-1 flex flex-col items-center justify-center gap-10 px-6 pb-safe">
+      <main className="flex-1 flex flex-col items-center justify-center gap-8 px-6 pb-safe">
 
         {/* Timer */}
         <div className="text-center">
@@ -355,18 +457,23 @@ export default function RecordPage() {
           )}
         </div>
 
-        {/* Waveform */}
+        {/* Reactive voice waveform */}
         <div className="flex items-end justify-center gap-1 h-10">
-          {[...Array(13)].map((_, i) =>
-            state === 'recording' ? (
+          {[...Array(13)].map((_, i) => {
+            if (state !== 'recording') {
+              return <div key={i} className="w-1.5 h-1 rounded-full bg-surface-border" />;
+            }
+            const centerDist = Math.abs(i - 6) / 6;
+            const shapeFactor = 1 - centerDist * 0.4;
+            const heightPct = Math.max(10, Math.round(voiceLevel * 100 * shapeFactor));
+            return (
               <div
                 key={i}
-                className="w-1.5 h-full wave-bar-dynamic bg-brand"
+                className="w-1.5 rounded-full bg-brand transition-all duration-75"
+                style={{ height: `${heightPct}%` }}
               />
-            ) : (
-              <div key={i} className="w-1.5 h-1 rounded-full bg-surface-border" />
-            )
-          )}
+            );
+          })}
         </div>
 
         {/* Record button */}
@@ -436,7 +543,29 @@ export default function RecordPage() {
         </div>
 
         {state === 'idle' && (
-          <div className="flex flex-col items-center gap-4">
+          <div className="flex flex-col items-center gap-5 w-full max-w-sm">
+            {/* Meeting type selector */}
+            <div className="w-full space-y-2">
+              <p className="text-xs font-semibold uppercase tracking-widest text-ftc-mid text-center">Meeting Type</p>
+              <div className="flex flex-wrap justify-center gap-2">
+                {MEETING_TYPES.map(({ id, label, icon }) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setMeetingType(id)}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm font-medium transition-colors touch-manipulation ${
+                      meetingType === id
+                        ? 'bg-brand text-white'
+                        : 'border border-surface-border text-ftc-mid hover:text-ftc-gray hover:bg-surface-raised'
+                    }`}
+                  >
+                    <span>{icon}</span>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             {/* Source toggle */}
             <div className="flex rounded-xl border border-surface-border overflow-hidden">
               <button
@@ -471,6 +600,29 @@ export default function RecordPage() {
             <p className="text-xs text-center max-w-xs text-surface-muted">
               Keep screen on while recording. Once you stop, audio is saved on our servers — you can lock your phone and transcription will complete automatically.
             </p>
+          </div>
+        )}
+
+        {/* Live captions panel — only shown when Deepgram is streaming */}
+        {state === 'recording' && captions.length > 0 && (
+          <div className="w-full max-w-sm">
+            <button
+              type="button"
+              onClick={() => setCaptionsOpen(o => !o)}
+              className="flex items-center gap-2 text-xs text-ftc-mid hover:text-ftc-gray transition-colors mb-2 w-full justify-center"
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              Live captions {captionsOpen ? '↓' : '↑'}
+            </button>
+            {captionsOpen && (
+              <div className="rounded-2xl border border-surface-border bg-surface-card p-4 space-y-1.5 max-h-40 overflow-y-auto">
+                {captions.map((line, i) => (
+                  <p key={i} className={`text-sm leading-relaxed ${i === captions.length - 1 ? 'text-ftc-gray' : 'text-ftc-mid'}`}>
+                    {line}
+                  </p>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </main>
