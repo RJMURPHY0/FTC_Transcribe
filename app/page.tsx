@@ -5,6 +5,7 @@ import NewFolderButton from '@/components/NewFolderButton';
 import FolderActions from '@/components/FolderActions';
 import RecordingsList from '@/components/RecordingsList';
 import LogoutButton from '@/components/LogoutButton';
+import SearchBar from '@/components/SearchBar';
 import { estimateSeconds } from '@/lib/finalize-recording';
 import { getAuthUser } from '@/lib/auth';
 
@@ -35,9 +36,16 @@ export default async function Home({
   const authUser = await getAuthUser();
   const userId = authUser?.id ?? null;
   const canSeeAll = authUser?.canSeeAll ?? false;
-  // Scope filter: super-admin-granted users see everyone's recordings; others see only their own.
-  // Null userId (legacy records) are treated as shared — visible to all.
-  const userScope = canSeeAll ? {} : userId ? { OR: [{ userId }, { userId: null }] } : {};
+
+  // Silently claim any legacy unowned recordings on every visit — no-op once all are assigned.
+  if (userId) {
+    await Promise.all([
+      prisma.recording.updateMany({ where: { userId: null }, data: { userId } }),
+      prisma.folder.updateMany({ where: { userId: null }, data: { userId } }),
+    ]).catch(() => {});
+  }
+
+  const userScope = canSeeAll ? {} : userId ? { userId } : {};
 
   let folders: { id: string; name: string; _count: { recordings: number } }[] = [];
   let recordings: Awaited<ReturnType<typeof prisma.recording.findMany<{
@@ -47,7 +55,7 @@ export default async function Home({
   try {
     [folders, recordings] = await Promise.all([
       prisma.folder.findMany({
-        where: canSeeAll ? {} : userId ? { OR: [{ userId }, { userId: null }] } : {},
+        where: canSeeAll ? {} : userId ? { userId } : {},
         orderBy: { createdAt: 'asc' },
         include: { _count: { select: { recordings: true } } },
       }),
@@ -63,7 +71,7 @@ export default async function Home({
     ]);
   } catch { /* DB not ready */ }
 
-  const countScope = canSeeAll ? {} : userId ? { OR: [{ userId }, { userId: null }] } : {};
+  const countScope = canSeeAll ? {} : userId ? { userId } : {};
   const allCount    = await prisma.recording.count({ where: countScope }).catch(() => 0);
   const completed   = await prisma.recording.count({ where: { ...countScope, status: 'completed' } }).catch(() => 0);
   const thisWeek    = await prisma.recording.count({
@@ -106,6 +114,11 @@ export default async function Home({
       </header>
 
       <main className="max-w-5xl mx-auto w-full px-4 py-8 flex-1">
+
+        {/* Search */}
+        <div className="mb-6">
+          <SearchBar />
+        </div>
 
         {/* Stats */}
         {allCount > 0 && (
