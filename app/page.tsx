@@ -5,7 +5,6 @@ import NewFolderButton from '@/components/NewFolderButton';
 import FolderActions from '@/components/FolderActions';
 import RecordingsList from '@/components/RecordingsList';
 import LogoutButton from '@/components/LogoutButton';
-import SearchBar from '@/components/SearchBar';
 import { estimateSeconds } from '@/lib/finalize-recording';
 import { getAuthUser } from '@/lib/auth';
 
@@ -115,10 +114,6 @@ export default async function Home({
 
       <main className="max-w-5xl mx-auto w-full px-4 py-8 flex-1">
 
-        {/* Search */}
-        <div className="mb-6">
-          <SearchBar />
-        </div>
 
         {/* Stats */}
         {allCount > 0 && (
