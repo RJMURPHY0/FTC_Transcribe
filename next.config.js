@@ -21,7 +21,7 @@ const securityHeaders = [
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data: blob:",
       "media-src 'self' blob:",
-      "connect-src 'self' https://api.anthropic.com https://api.groq.com https://api.openai.com",
+      "connect-src 'self' https://api.anthropic.com https://api.groq.com https://api.openai.com https://ijeeghdxokfvlfarojlm.supabase.co",
       "font-src 'self'",
       "frame-ancestors 'none'",
     ].join('; '),
