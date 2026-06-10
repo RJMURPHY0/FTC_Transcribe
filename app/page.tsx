@@ -5,10 +5,18 @@ import NewFolderButton from '@/components/NewFolderButton';
 import FolderActions from '@/components/FolderActions';
 import RecordingsList from '@/components/RecordingsList';
 import LogoutButton from '@/components/LogoutButton';
+import AdminFilters from '@/components/AdminFilters';
 import { estimateSeconds } from '@/lib/finalize-recording';
 import { getAuthUser } from '@/lib/auth';
 import { ensureSchema } from '@/lib/ensure-schema';
 import AutoClaim from '@/components/AutoClaim';
+import {
+  getOrganisations,
+  getOrgTeams,
+  getOrgMembers,
+  getAllOrgMembers,
+  getMemberUserIds,
+} from '@/lib/contacts-db';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,18 +37,20 @@ function MicIcon({ className }: { className?: string }) {
 export default async function Home({
   searchParams,
 }: {
-  searchParams: { folder?: string; source?: string };
+  searchParams: { folder?: string; source?: string; org?: string; team?: string; assignee?: string };
 }) {
-  const activeFolderId = searchParams.folder ?? null;
-  const activeSource   = searchParams.source === 'teams' ? 'teams' : searchParams.source === 'web' ? 'web' : null;
+  const activeFolderId   = searchParams.folder ?? null;
+  const activeSource     = searchParams.source === 'teams' ? 'teams' : searchParams.source === 'web' ? 'web' : null;
+  const activeOrgId      = searchParams.org ?? null;
+  const activeTeamId     = searchParams.team ?? null;
+  const activeAssigneeId = searchParams.assignee ?? null;
 
   await ensureSchema();
 
-  const authUser = await getAuthUser();
-  const userId = authUser?.id ?? null;
+  const authUser  = await getAuthUser();
+  const userId    = authUser?.id ?? null;
   const canSeeAll = authUser?.canSeeAll ?? false;
 
-  // Silently claim any legacy unowned recordings on every visit — no-op once all are assigned.
   if (userId) {
     await Promise.all([
       prisma.recording.updateMany({ where: { userId: null }, data: { userId } }),
@@ -48,7 +58,31 @@ export default async function Home({
     ]).catch(() => {});
   }
 
-  const userScope = canSeeAll ? {} : userId ? { userId } : {};
+  // ── Org/team/assignee data (super admin only) ─────────────────────────────
+  const orgs      = canSeeAll ? await getOrganisations() : [];
+  const orgTeams  = canSeeAll && activeOrgId ? await getOrgTeams(activeOrgId) : [];
+  const members   = canSeeAll
+    ? activeOrgId
+      ? await getOrgMembers(activeOrgId, activeTeamId)
+      : await getAllOrgMembers()
+    : [];
+
+  // ── Recording scope ───────────────────────────────────────────────────────
+  let userScope: Record<string, unknown> = {};
+
+  if (!canSeeAll) {
+    userScope = userId ? { userId } : {};
+  } else if (activeAssigneeId) {
+    userScope = { userId: activeAssigneeId };
+  } else if (activeTeamId || activeOrgId) {
+    const ids = await getMemberUserIds(activeOrgId, activeTeamId);
+    userScope = ids.length > 0 ? { userId: { in: ids } } : { userId: '__no_match__' };
+  }
+  // else canSeeAll + no filters → no userId scope → see everything
+
+  // In org view (org set, no team), we show org_teams as folder cards —
+  // so we skip personal Transcribe folders and show all org recordings below.
+  const inOrgFolderView = canSeeAll && !!activeOrgId && !activeTeamId && !activeAssigneeId && !activeFolderId;
 
   let folders: { id: string; name: string; _count: { recordings: number } }[] = [];
   let recordings: Awaited<ReturnType<typeof prisma.recording.findMany<{
@@ -56,16 +90,20 @@ export default async function Home({
   }>>> = [];
 
   try {
+    const folderScope = inOrgFolderView
+      ? { userId: '__no_match__' }                            // don't load personal folders in org view
+      : canSeeAll ? {} : userId ? { userId } : {};
+
     [folders, recordings] = await Promise.all([
       prisma.folder.findMany({
-        where: canSeeAll ? {} : userId ? { userId } : {},
+        where: folderScope,
         orderBy: { createdAt: 'asc' },
         include: { _count: { select: { recordings: true } } },
       }),
       prisma.recording.findMany({
         where: {
           ...(activeFolderId ? { folderId: activeFolderId } : { folderId: null }),
-          ...(activeSource ? { source: activeSource } : {}),
+          ...(activeSource   ? { source: activeSource }    : {}),
           ...userScope,
         },
         include: { summary: true, _count: { select: { chunks: true } } },
@@ -75,15 +113,21 @@ export default async function Home({
   } catch { /* DB not ready */ }
 
   const countScope = canSeeAll ? {} : userId ? { userId } : {};
-  const allCount    = await prisma.recording.count({ where: countScope }).catch(() => 0);
-  const completed   = await prisma.recording.count({ where: { ...countScope, status: 'completed' } }).catch(() => 0);
-  const thisWeek    = await prisma.recording.count({
+  const allCount   = await prisma.recording.count({ where: countScope }).catch(() => 0);
+  const completed  = await prisma.recording.count({ where: { ...countScope, status: 'completed' } }).catch(() => 0);
+  const thisWeek   = await prisma.recording.count({
     where: { ...countScope, createdAt: { gte: new Date(Date.now() - 7 * 86400_000) } },
   }).catch(() => 0);
-  const teamsCount  = await prisma.recording.count({ where: { ...countScope, source: 'teams' } }).catch(() => 0);
+  const teamsCount = await prisma.recording.count({ where: { ...countScope, source: 'teams' } }).catch(() => 0);
 
-  const folderList = folders.map((f) => ({ id: f.id, name: f.name }));
+  const folderList   = folders.map(f => ({ id: f.id, name: f.name }));
   const activeFolder = activeFolderId ? folders.find(f => f.id === activeFolderId) : null;
+  const activeOrg    = orgs.find(o => o.id === activeOrgId) ?? null;
+  const activeTeam   = orgTeams.find(t => t.id === activeTeamId) ?? null;
+
+  // ── Breadcrumb back URL ───────────────────────────────────────────────────
+  // Team view: back to org view
+  const teamBackHref = activeOrgId ? `/?org=${activeOrgId}` : '/';
 
   return (
     <div className="min-h-screen flex flex-col bg-surface">
@@ -119,7 +163,6 @@ export default async function Home({
 
       <main className="max-w-5xl mx-auto w-full px-4 py-8 flex-1">
 
-
         {/* Stats */}
         {allCount > 0 && (
           <div className="grid grid-cols-3 gap-3 mb-8">
@@ -136,11 +179,23 @@ export default async function Home({
           </div>
         )}
 
-        {/* ── Source filter tabs (only in All view, only when Teams recordings exist) ── */}
-        {!activeFolderId && teamsCount > 0 && (
-          <div className="flex gap-2 mb-5">
+        {/* ── Super-admin filter dropdowns ── */}
+        {canSeeAll && (
+          <Suspense>
+            <AdminFilters
+              orgs={orgs}
+              members={members}
+              activeOrgId={activeOrgId}
+              activeAssigneeId={activeAssigneeId}
+            />
+          </Suspense>
+        )}
+
+        {/* ── Source filter tabs ── */}
+        {!activeFolderId && !activeTeamId && teamsCount > 0 && (
+          <div className="flex gap-2 mb-5 mt-4">
             <Link
-              href="/"
+              href={activeOrgId ? `/?org=${activeOrgId}` : '/'}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm font-medium transition-colors ${
                 !activeSource ? 'bg-brand text-white' : 'text-ftc-mid hover:text-ftc-gray hover:bg-surface-raised border border-surface-border'
               }`}
@@ -148,7 +203,7 @@ export default async function Home({
               All
             </Link>
             <Link
-              href="/?source=web"
+              href={`/?source=web${activeOrgId ? `&org=${activeOrgId}` : ''}`}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm font-medium transition-colors ${
                 activeSource === 'web' ? 'bg-brand text-white' : 'text-ftc-mid hover:text-ftc-gray hover:bg-surface-raised border border-surface-border'
               }`}
@@ -159,7 +214,7 @@ export default async function Home({
               In Person
             </Link>
             <Link
-              href="/?source=teams"
+              href={`/?source=teams${activeOrgId ? `&org=${activeOrgId}` : ''}`}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm font-medium transition-colors ${
                 activeSource === 'teams' ? 'bg-[#6264A7] text-white' : 'text-ftc-mid hover:text-ftc-gray hover:bg-surface-raised border border-surface-border'
               }`}
@@ -174,9 +229,9 @@ export default async function Home({
         )}
 
         {/* ── Breadcrumb / heading row ── */}
-        <div className="flex items-center justify-between gap-3 mb-5">
+        <div className="flex items-center justify-between gap-3 mb-5 mt-4">
+          {/* Personal Transcribe folder breadcrumb */}
           {activeFolderId ? (
-            /* Folder view breadcrumb */
             <div className="flex items-center gap-2 min-w-0">
               <Link
                 href="/"
@@ -207,48 +262,70 @@ export default async function Home({
                 </Suspense>
               )}
             </div>
+
+          /* Org team breadcrumb (team selected) */
+          ) : activeTeamId ? (
+            <div className="flex items-center gap-2 min-w-0">
+              <Link
+                href={teamBackHref}
+                className="flex items-center gap-1 text-sm text-ftc-mid hover:text-ftc-gray transition-colors flex-shrink-0"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+                </svg>
+                {activeOrg?.name ?? 'All'}
+              </Link>
+              <svg className="w-3.5 h-3.5 text-surface-muted flex-shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+              </svg>
+              <div className="flex items-center gap-2 min-w-0">
+                <svg className="w-4 h-4 text-brand flex-shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z" />
+                </svg>
+                <span className="font-semibold text-sm text-ftc-gray truncate">
+                  {activeTeam?.name ?? 'Team'}
+                </span>
+              </div>
+            </div>
+
+          ) : inOrgFolderView ? (
+            /* Org folder view heading */
+            <h2 className="text-xs font-semibold uppercase tracking-widest text-ftc-mid">
+              {activeOrg?.name ?? 'Company'}
+            </h2>
+
           ) : (
-            /* All view heading */
+            /* Default heading */
             <h2 className="text-xs font-semibold uppercase tracking-widest text-ftc-mid">
               All Recordings
             </h2>
           )}
 
-          {/* New folder button — only shown in All view */}
-          {!activeFolderId && (
+          {/* New folder — only in plain all-recordings view, not admin org views */}
+          {!activeFolderId && !inOrgFolderView && !activeTeamId && (
             <Suspense>
               <NewFolderButton />
             </Suspense>
           )}
         </div>
 
-        {/* ── Folder cards (All view only) ── */}
-        {!activeFolderId && folders.length > 0 && (
+        {/* ── Org team "folder" cards (super admin org view) ── */}
+        {inOrgFolderView && orgTeams.length > 0 && (
           <ul className="space-y-2 mb-6">
-            {folders.map((folder) => (
-              <li key={folder.id}>
+            {orgTeams.map(team => (
+              <li key={team.id}>
                 <Link
-                  href={`/?folder=${folder.id}`}
+                  href={`/?org=${activeOrgId}&team=${team.id}`}
                   className="group flex items-center gap-4 rounded-2xl border border-surface-border bg-surface-card px-5 py-4 transition-colors hover:border-surface-muted active:scale-[0.99] touch-manipulation"
                 >
-                  {/* Folder icon */}
                   <div className="w-9 h-9 rounded-xl bg-brand/10 flex-shrink-0 flex items-center justify-center">
                     <svg className="w-5 h-5 text-brand" fill="none" stroke="currentColor" strokeWidth={1.75} viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v8.25" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z" />
                     </svg>
                   </div>
-
                   <div className="flex-1 min-w-0">
-                    <p className="font-semibold text-sm text-ftc-gray">{folder.name}</p>
-                    <p className="text-xs text-ftc-mid mt-0.5">
-                      {folder._count.recordings} recording{folder._count.recordings !== 1 ? 's' : ''}
-                    </p>
+                    <p className="font-semibold text-sm text-ftc-gray">{team.name}</p>
                   </div>
-
-                  <Suspense>
-                    <FolderActions id={folder.id} name={folder.name} isActive={false} />
-                  </Suspense>
-
                   <svg className="w-4 h-4 text-surface-muted group-hover:text-ftc-mid transition-colors flex-shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
                   </svg>
@@ -258,10 +335,47 @@ export default async function Home({
           </ul>
         )}
 
-        {/* ── Recording list label when in All view with folders ── */}
-        {!activeFolderId && folders.length > 0 && (
+        {/* ── Personal Transcribe folder cards (non-org view) ── */}
+        {!activeFolderId && !inOrgFolderView && !activeTeamId && folders.length > 0 && (
+          <ul className="space-y-2 mb-6">
+            {folders.map(folder => (
+              <li key={folder.id}>
+                <Link
+                  href={`/?folder=${folder.id}`}
+                  className="group flex items-center gap-4 rounded-2xl border border-surface-border bg-surface-card px-5 py-4 transition-colors hover:border-surface-muted active:scale-[0.99] touch-manipulation"
+                >
+                  <div className="w-9 h-9 rounded-xl bg-brand/10 flex-shrink-0 flex items-center justify-center">
+                    <svg className="w-5 h-5 text-brand" fill="none" stroke="currentColor" strokeWidth={1.75} viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v8.25" />
+                    </svg>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-semibold text-sm text-ftc-gray">{folder.name}</p>
+                    <p className="text-xs text-ftc-mid mt-0.5">
+                      {folder._count.recordings} recording{folder._count.recordings !== 1 ? 's' : ''}
+                    </p>
+                  </div>
+                  <Suspense>
+                    <FolderActions id={folder.id} name={folder.name} isActive={false} />
+                  </Suspense>
+                  <svg className="w-4 h-4 text-surface-muted group-hover:text-ftc-mid transition-colors flex-shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                  </svg>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {/* ── Unassigned label (only in folder views where folders exist) ── */}
+        {!activeFolderId && !inOrgFolderView && !activeTeamId && folders.length > 0 && (
           <h3 className="text-xs font-semibold uppercase tracking-widest text-ftc-mid mb-4">
             Unassigned
+          </h3>
+        )}
+        {inOrgFolderView && orgTeams.length > 0 && recordings.length > 0 && (
+          <h3 className="text-xs font-semibold uppercase tracking-widest text-ftc-mid mb-4">
+            All Recordings
           </h3>
         )}
 
@@ -273,15 +387,15 @@ export default async function Home({
             </div>
             <div className="text-center">
               <p className="font-semibold text-ftc-gray mb-1">
-                {activeFolderId ? 'No recordings in this folder' : 'No recordings yet'}
+                {activeFolderId || activeTeamId ? 'No recordings in this folder' : 'No recordings yet'}
               </p>
               <p className="text-sm text-ftc-mid">
-                {activeFolderId
+                {activeFolderId || activeTeamId
                   ? 'Move recordings here using the folder icon on each card'
                   : 'Tap New Recording to capture your first meeting'}
               </p>
             </div>
-            {!activeFolderId && (
+            {!activeFolderId && !activeTeamId && (
               <Link href="/record" className="btn-brand px-6 py-3 rounded-2xl text-sm font-semibold text-white touch-manipulation">
                 Start Recording
               </Link>
@@ -289,7 +403,7 @@ export default async function Home({
           </div>
         ) : (
           <RecordingsList
-            recordings={recordings.map((rec) => {
+            recordings={recordings.map(rec => {
               const isQueued = rec.status === 'uploading' || rec.status === 'queued' || rec.status === 'processing';
               return {
                 id: rec.id,
