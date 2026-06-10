@@ -26,9 +26,10 @@ function MicIcon({ className }: { className?: string }) {
 export default async function Home({
   searchParams,
 }: {
-  searchParams: { folder?: string };
+  searchParams: { folder?: string; source?: string };
 }) {
   const activeFolderId = searchParams.folder ?? null;
+  const activeSource   = searchParams.source === 'teams' ? 'teams' : searchParams.source === 'web' ? 'web' : null;
 
   let folders: { id: string; name: string; _count: { recordings: number } }[] = [];
   let recordings: Awaited<ReturnType<typeof prisma.recording.findMany<{
@@ -42,19 +43,22 @@ export default async function Home({
         include: { _count: { select: { recordings: true } } },
       }),
       prisma.recording.findMany({
-        // In a folder: show that folder's recordings. In All: show unassigned only.
-        where: activeFolderId ? { folderId: activeFolderId } : { folderId: null },
+        where: {
+          ...(activeFolderId ? { folderId: activeFolderId } : { folderId: null }),
+          ...(activeSource ? { source: activeSource } : {}),
+        },
         include: { summary: true, _count: { select: { chunks: true } } },
         orderBy: { createdAt: 'desc' },
       }),
     ]);
   } catch { /* DB not ready */ }
 
-  const allCount  = await prisma.recording.count().catch(() => 0);
-  const completed = await prisma.recording.count({ where: { status: 'completed' } }).catch(() => 0);
-  const thisWeek  = await prisma.recording.count({
+  const allCount    = await prisma.recording.count().catch(() => 0);
+  const completed   = await prisma.recording.count({ where: { status: 'completed' } }).catch(() => 0);
+  const thisWeek    = await prisma.recording.count({
     where: { createdAt: { gte: new Date(Date.now() - 7 * 86400_000) } },
   }).catch(() => 0);
+  const teamsCount  = await prisma.recording.count({ where: { source: 'teams' } }).catch(() => 0);
 
   const folderList = folders.map((f) => ({ id: f.id, name: f.name }));
   const activeFolder = activeFolderId ? folders.find(f => f.id === activeFolderId) : null;
@@ -105,6 +109,43 @@ export default async function Home({
                 <p className="text-xs mt-0.5 text-ftc-mid">{label}</p>
               </div>
             ))}
+          </div>
+        )}
+
+        {/* ── Source filter tabs (only in All view, only when Teams recordings exist) ── */}
+        {!activeFolderId && teamsCount > 0 && (
+          <div className="flex gap-2 mb-5">
+            <Link
+              href="/"
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm font-medium transition-colors ${
+                !activeSource ? 'bg-brand text-white' : 'text-ftc-mid hover:text-ftc-gray hover:bg-surface-raised border border-surface-border'
+              }`}
+            >
+              All
+            </Link>
+            <Link
+              href="/?source=web"
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm font-medium transition-colors ${
+                activeSource === 'web' ? 'bg-brand text-white' : 'text-ftc-mid hover:text-ftc-gray hover:bg-surface-raised border border-surface-border'
+              }`}
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M17.982 18.725A7.488 7.488 0 0012 15.75a7.488 7.488 0 00-5.982 2.975m11.963 0a9 9 0 10-11.963 0m11.963 0A8.966 8.966 0 0112 21a8.966 8.966 0 01-5.982-2.275M15 9.75a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+              In Person
+            </Link>
+            <Link
+              href="/?source=teams"
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm font-medium transition-colors ${
+                activeSource === 'teams' ? 'bg-[#6264A7] text-white' : 'text-ftc-mid hover:text-ftc-gray hover:bg-surface-raised border border-surface-border'
+              }`}
+            >
+              <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M12.5 2C11.1 2 10 3.1 10 4.5S11.1 7 12.5 7 15 5.9 15 4.5 13.9 2 12.5 2zm5 3c-.8 0-1.5.7-1.5 1.5S16.7 8 17.5 8 19 7.3 19 6.5 18.3 5 17.5 5zM3 9v10h2v-4h1.5c.3 1.2 1.3 2 2.5 2s2.2-.8 2.5-2H13v4h2V9H3zm8 4H5v-2h6v2z"/>
+              </svg>
+              Teams
+              <span className="text-[10px] font-bold opacity-80">{teamsCount}</span>
+            </Link>
           </div>
         )}
 
@@ -231,6 +272,7 @@ export default async function Home({
                 title: rec.title,
                 createdAt: rec.createdAt.toISOString(),
                 status: rec.status,
+                source: rec.source ?? 'web',
                 folderId: rec.folderId,
                 summary: rec.summary
                   ? { overview: rec.summary.overview, keyPoints: rec.summary.keyPoints, actionItems: rec.summary.actionItems }

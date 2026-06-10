@@ -10,8 +10,11 @@ datasource db {
 model Folder {
   id         String      @id @default(cuid())
   name       String
+  userId     String?
   createdAt  DateTime    @default(now())
   recordings Recording[]
+
+  @@index([userId])
 }
 
 model Recording {
@@ -23,13 +26,27 @@ model Recording {
   mimeType   String   @default("")
   audioPath  String   @default("")
   status     String   @default("uploading")
+  source     String   @default("web")
   folderId   String?
+  userId     String?
 
   folder      Folder?      @relation(fields: [folderId], references: [id])
   chunks      ChunkBlob[]
   finalizeJob FinalizeJob?
   transcript  Transcript?
   summary     Summary?
+
+  @@index([userId])
+}
+
+// Mirrors auth.users — stores per-user Transcribe permission flags.
+// Written by FTC Contacts super admin; read here to scope recording visibility.
+model TranscribePermission {
+  userId     String   @id @map("user_id")
+  canSeeAll  Boolean  @default(false) @map("can_see_all")
+  grantedAt  DateTime @default(now()) @map("granted_at")
+
+  @@map("transcribe_permissions")
 }
 
 // Raw audio chunks stored during recording — transcribed in bulk at finalize time.
