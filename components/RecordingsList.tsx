@@ -22,6 +22,17 @@ interface Recording {
   summary: RecordingSummary | null;
   _count: { chunks: number };
   eta: string | null;
+  duration: number;
+}
+
+function formatDuration(seconds: number): string {
+  if (!seconds) return '';
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s > 0 ? `${s}s` : ''}`.trim();
+  return `${s}s`;
 }
 
 interface Folder { id: string; name: string }
@@ -468,7 +479,15 @@ export default function RecordingsList({
                           <span className="flex-shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-[#4b53bc]/15 text-[#6264A7]">Teams</span>
                         )}
                       </div>
-                      <p className="text-xs mt-0.5 text-ftc-mid">{formatDate(rec.createdAt)}</p>
+                      <p className="text-xs mt-0.5 text-ftc-mid flex items-center gap-1.5">
+                        {formatDate(rec.createdAt)}
+                        {rec.duration > 0 && (
+                          <>
+                            <span className="text-surface-muted">·</span>
+                            <span>{formatDuration(rec.duration)}</span>
+                          </>
+                        )}
+                      </p>
                     </div>
                   </div>
                   <div className="flex flex-col items-end gap-1 flex-shrink-0">

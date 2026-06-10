@@ -298,6 +298,7 @@ export default async function Home({
                 status: rec.status,
                 source: rec.source ?? 'web',
                 folderId: rec.folderId,
+                duration: rec.duration ?? 0,
                 summary: rec.summary
                   ? { overview: rec.summary.overview, keyPoints: rec.summary.keyPoints, actionItems: rec.summary.actionItems }
                   : null,
