@@ -9,7 +9,10 @@ export interface AuthUser {
 
 export async function getAuthUser(): Promise<AuthUser | null> {
   const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  // getSession reads the cookie directly (no network call); safe because
+  // middleware already validated the JWT with getUser() on every request.
+  const { data: { session } } = await supabase.auth.getSession();
+  const user = session?.user;
   if (!user) return null;
 
   let canSeeAll = false;
