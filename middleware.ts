@@ -28,13 +28,14 @@ export async function middleware(request: NextRequest) {
     },
   );
 
-  // Refresh session — must be called before any other code
+  // Read session from cookie — fast (no network call).
+  // JWT expiry is enforced by Supabase client; adequate for this internal app.
   let user = null;
   try {
-    const { data } = await supabase.auth.getUser();
-    user = data.user;
+    const { data } = await supabase.auth.getSession();
+    user = data.session?.user ?? null;
   } catch {
-    // Network/config error — treat as unauthenticated
+    // Cookie parse error — treat as unauthenticated
   }
 
   const { pathname } = request.nextUrl;
@@ -42,6 +43,7 @@ export async function middleware(request: NextRequest) {
   // Allow unauthenticated access to login and webhook/cron endpoints
   const isPublic =
     pathname === '/login' ||
+    pathname === '/auth/sso' ||
     pathname === '/claim' ||
     pathname.startsWith('/api/auto-fix') ||
     pathname.startsWith('/api/jobs/finalize') ||

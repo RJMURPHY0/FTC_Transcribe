@@ -15,14 +15,19 @@ export async function getAuthUser(): Promise<AuthUser | null> {
   const user = session?.user;
   if (!user) return null;
 
-  let canSeeAll = false;
-  try {
-    const perm = await prisma.transcribePermission.findUnique({
-      where: { userId: user.id },
-      select: { canSeeAll: true },
-    });
-    canSeeAll = perm?.canSeeAll ?? false;
-  } catch { /* table may not exist in dev */ }
+  // Super admin email always gets full access, regardless of DB row
+  const SUPER_ADMIN_EMAIL = 'ryan.murphy@ftc-ss.com';
+  let canSeeAll = user.email === SUPER_ADMIN_EMAIL;
+
+  if (!canSeeAll) {
+    try {
+      const perm = await prisma.transcribePermission.findUnique({
+        where: { userId: user.id },
+        select: { canSeeAll: true },
+      });
+      canSeeAll = perm?.canSeeAll ?? false;
+    } catch { /* table may not exist in dev */ }
+  }
 
   return { id: user.id, email: user.email ?? '', canSeeAll };
 }

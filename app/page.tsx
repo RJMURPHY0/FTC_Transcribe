@@ -181,19 +181,21 @@ export default async function Home({
 
         {/* ── Super-admin filter dropdowns ── */}
         {canSeeAll && (
-          <Suspense>
-            <AdminFilters
-              orgs={orgs}
-              members={members}
-              activeOrgId={activeOrgId}
-              activeAssigneeId={activeAssigneeId}
-            />
-          </Suspense>
+          <div className="mb-5">
+            <Suspense>
+              <AdminFilters
+                orgs={orgs}
+                members={members}
+                activeOrgId={activeOrgId}
+                activeAssigneeId={activeAssigneeId}
+              />
+            </Suspense>
+          </div>
         )}
 
         {/* ── Source filter tabs ── */}
         {!activeFolderId && !activeTeamId && teamsCount > 0 && (
-          <div className="flex gap-2 mb-5 mt-4">
+          <div className="flex gap-2 mb-5">
             <Link
               href={activeOrgId ? `/?org=${activeOrgId}` : '/'}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm font-medium transition-colors ${
@@ -229,7 +231,7 @@ export default async function Home({
         )}
 
         {/* ── Breadcrumb / heading row ── */}
-        <div className="flex items-center justify-between gap-3 mb-5 mt-4">
+        <div className="flex items-center justify-between gap-3 mb-5">
           {/* Personal Transcribe folder breadcrumb */}
           {activeFolderId ? (
             <div className="flex items-center gap-2 min-w-0">
