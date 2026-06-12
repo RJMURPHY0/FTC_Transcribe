@@ -453,9 +453,9 @@ export default function RecordingsList({
                 href={`/recordings/${rec.id}`}
                 onClick={isSelecting ? (e) => { e.preventDefault(); toggle(rec.id, e); } : undefined}
                 className={`
-                  flex flex-col gap-3 rounded-2xl border bg-surface-card p-5 pr-20 transition-colors
+                  flex flex-col gap-3 rounded-2xl border bg-surface-card p-5 pr-20 transition-all duration-150
                   active:scale-[0.99] touch-manipulation
-                  ${isSelecting ? 'pl-12 cursor-pointer' : 'pl-5'}
+                  ${isSelecting ? 'pl-12 cursor-pointer' : 'pl-5 group-hover:pl-12'}
                   ${isSelected
                     ? 'border-brand/50 bg-brand/5'
                     : 'border-surface-border hover:border-surface-muted'}

@@ -20,6 +20,40 @@ import {
 
 export const dynamic = 'force-dynamic';
 
+// ── Async server component so member data streams in without blocking the page ─
+async function AdminFiltersLoader({
+  orgs,
+  activeOrgId,
+  activeTeamId,
+  activeAssigneeId,
+}: {
+  orgs: import('@/lib/contacts-db').Org[];
+  activeOrgId: string | null;
+  activeTeamId: string | null;
+  activeAssigneeId: string | null;
+}) {
+  const members = activeOrgId
+    ? await getOrgMembers(activeOrgId, activeTeamId)
+    : await getAllOrgMembers();
+  return (
+    <AdminFilters
+      orgs={orgs}
+      members={members}
+      activeOrgId={activeOrgId}
+      activeAssigneeId={activeAssigneeId}
+    />
+  );
+}
+
+function AdminFiltersFallback() {
+  return (
+    <div className="flex items-center gap-2">
+      <div className="h-8 w-36 rounded-xl bg-surface-raised animate-pulse" />
+      <div className="h-8 w-28 rounded-xl bg-surface-raised animate-pulse" />
+    </div>
+  );
+}
+
 function formatEta(seconds: number): string {
   if (seconds < 60) return '< 1 min';
   return `~${Math.ceil(seconds / 60)} min`;
@@ -58,14 +92,10 @@ export default async function Home({
     ]).catch(() => {});
   }
 
-  // ── Org/team/assignee data (super admin only) ─────────────────────────────
-  const orgs      = canSeeAll ? await getOrganisations() : [];
-  const orgTeams  = canSeeAll && activeOrgId ? await getOrgTeams(activeOrgId) : [];
-  const members   = canSeeAll
-    ? activeOrgId
-      ? await getOrgMembers(activeOrgId, activeTeamId)
-      : await getAllOrgMembers()
-    : [];
+  // ── Org data (fast queries — needed for breadcrumbs and folder cards) ──────
+  const orgs     = canSeeAll ? await getOrganisations() : [];
+  const orgTeams = canSeeAll && activeOrgId ? await getOrgTeams(activeOrgId) : [];
+  const activeOrg = orgs.find(o => o.id === activeOrgId) ?? null;
 
   // ── Recording scope ───────────────────────────────────────────────────────
   let userScope: Record<string, unknown> = {};
@@ -122,7 +152,6 @@ export default async function Home({
 
   const folderList   = folders.map(f => ({ id: f.id, name: f.name }));
   const activeFolder = activeFolderId ? folders.find(f => f.id === activeFolderId) : null;
-  const activeOrg    = orgs.find(o => o.id === activeOrgId) ?? null;
   const activeTeam   = orgTeams.find(t => t.id === activeTeamId) ?? null;
 
   // ── Breadcrumb back URL ───────────────────────────────────────────────────
@@ -179,14 +208,14 @@ export default async function Home({
           </div>
         )}
 
-        {/* ── Super-admin filter dropdowns ── */}
+        {/* ── Super-admin filter dropdowns (members stream in separately) ── */}
         {canSeeAll && (
           <div className="mb-5">
-            <Suspense>
-              <AdminFilters
+            <Suspense fallback={<AdminFiltersFallback />}>
+              <AdminFiltersLoader
                 orgs={orgs}
-                members={members}
                 activeOrgId={activeOrgId}
+                activeTeamId={activeTeamId}
                 activeAssigneeId={activeAssigneeId}
               />
             </Suspense>
