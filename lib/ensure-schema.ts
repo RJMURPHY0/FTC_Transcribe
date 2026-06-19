@@ -13,6 +13,7 @@ export async function ensureSchema() {
     await prisma.$executeRaw`ALTER TABLE "Folder"    ADD COLUMN IF NOT EXISTS "userId" TEXT`;
     await prisma.$executeRaw`CREATE INDEX IF NOT EXISTS "Recording_userId_idx" ON "Recording" ("userId")`;
     await prisma.$executeRaw`CREATE INDEX IF NOT EXISTS "Folder_userId_idx"    ON "Folder"    ("userId")`;
+    await prisma.$executeRaw`ALTER TABLE "Summary" ADD COLUMN IF NOT EXISTS "actionItemsChecked" TEXT NOT NULL DEFAULT '[]'`;
     await prisma.$executeRaw`
       CREATE TABLE IF NOT EXISTS transcribe_permissions (
         user_id     TEXT        NOT NULL PRIMARY KEY,

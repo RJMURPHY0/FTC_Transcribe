@@ -32,8 +32,9 @@ export default function LoginPage() {
       return;
     }
 
-    router.push('/');
-    router.refresh();
+    // Hard redirect — faster than router.push + router.refresh (avoids double round-trip).
+    // The session cookie is already set by signInWithPassword, so the server sees it immediately.
+    window.location.href = '/';
   }
 
   return (

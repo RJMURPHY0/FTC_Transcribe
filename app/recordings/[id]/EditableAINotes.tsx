@@ -168,17 +168,19 @@ export default function EditableAINotes({
   recordingId,
   recordingTitle,
   initialSummary,
+  initialCheckedIndices = [],
 }: {
-  recordingId:    string;
-  recordingTitle: string;
-  initialSummary: AISummary;
+  recordingId:            string;
+  recordingTitle:         string;
+  initialSummary:         AISummary;
+  initialCheckedIndices?: number[];
 }) {
   const [data,         setData]        = useState<AISummary>(initialSummary);
   const [editing,      setEditing]     = useState<Section | null>(null);
   const [draftText,    setDraftText]   = useState('');
   const [draftList,    setDraftList]   = useState<string[]>([]);
   const [draftTopics,  setDraftTopics] = useState<TopicSection[]>([]);
-  const [checkedItems,  setCheckedItems] = useState<Set<number>>(new Set());
+  const [checkedItems,  setCheckedItems] = useState<Set<number>>(() => new Set(initialCheckedIndices));
   const [saving,        setSaving]       = useState(false);
   const [saveError,     setSaveError]    = useState('');
   const [downloading,   setDownloading]  = useState(false);
@@ -366,11 +368,17 @@ export default function EditableAINotes({
                 <li key={i} className="flex items-start gap-3">
                   <button
                     type="button"
-                    onClick={() => setCheckedItems(prev => {
-                      const next = new Set(prev);
+                    onClick={() => {
+                      const next = new Set(checkedItems);
                       done ? next.delete(i) : next.add(i);
-                      return next;
-                    })}
+                      setCheckedItems(next);
+                      // fire-and-forget save — UI is already updated optimistically
+                      fetch(`/api/recordings/${recordingId}/summary`, {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ actionItemsChecked: Array.from(next) }),
+                      }).catch(() => {/* silent — non-critical */});
+                    }}
                     title={done ? 'Mark incomplete' : 'Mark complete'}
                     className={`mt-0.5 w-5 h-5 rounded border flex items-center justify-center flex-shrink-0 transition-colors
                       ${done

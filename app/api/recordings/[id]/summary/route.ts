@@ -15,14 +15,15 @@ export async function PATCH(
 
   try {
     const body = await request.json() as Record<string, unknown>;
-    const { overview, keyPoints, actionItems, decisions, topics } = body;
+    const { overview, keyPoints, actionItems, decisions, topics, actionItemsChecked } = body;
 
     const data: Record<string, string> = {};
-    if (overview !== undefined)    data.overview    = String(overview).slice(0, 5000);
-    if (keyPoints !== undefined)   data.keyPoints   = Array.isArray(keyPoints)   ? JSON.stringify(keyPoints.slice(0, 20).map(String))   : '[]';
-    if (actionItems !== undefined) data.actionItems = Array.isArray(actionItems) ? JSON.stringify(actionItems.slice(0, 20).map(String)) : '[]';
-    if (decisions !== undefined)   data.decisions   = Array.isArray(decisions)   ? JSON.stringify(decisions.slice(0, 20).map(String))   : '[]';
-    if (topics !== undefined)      data.topics      = Array.isArray(topics)      ? JSON.stringify(topics.slice(0, 10))                  : '[]';
+    if (overview !== undefined)            data.overview            = String(overview).slice(0, 5000);
+    if (keyPoints !== undefined)           data.keyPoints           = Array.isArray(keyPoints)           ? JSON.stringify(keyPoints.slice(0, 20).map(String))                    : '[]';
+    if (actionItems !== undefined)         data.actionItems         = Array.isArray(actionItems)         ? JSON.stringify(actionItems.slice(0, 20).map(String))                  : '[]';
+    if (decisions !== undefined)           data.decisions           = Array.isArray(decisions)           ? JSON.stringify(decisions.slice(0, 20).map(String))                    : '[]';
+    if (topics !== undefined)              data.topics              = Array.isArray(topics)              ? JSON.stringify(topics.slice(0, 10))                                   : '[]';
+    if (actionItemsChecked !== undefined)  data.actionItemsChecked  = Array.isArray(actionItemsChecked)  ? JSON.stringify(actionItemsChecked.filter(Number.isInteger).slice(0, 50)) : '[]';
 
     if (Object.keys(data).length === 0) {
       return NextResponse.json({ error: 'Nothing to update.' }, { status: 400 });

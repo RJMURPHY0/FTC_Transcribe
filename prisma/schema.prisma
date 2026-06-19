@@ -112,15 +112,16 @@ model Transcript {
 }
 
 model Summary {
-  id          String    @id @default(cuid())
-  recordingId String    @unique
-  recording   Recording @relation(fields: [recordingId], references: [id], onDelete: Cascade)
-  overview    String
-  keyPoints   String
-  actionItems String
-  decisions   String
-  topics      String    @default("[]")
-  createdAt   DateTime  @default(now())
+  id                 String    @id @default(cuid())
+  recordingId        String    @unique
+  recording          Recording @relation(fields: [recordingId], references: [id], onDelete: Cascade)
+  overview           String
+  keyPoints          String
+  actionItems        String
+  decisions          String
+  topics             String    @default("[]")
+  actionItemsChecked String    @default("[]")
+  createdAt          DateTime  @default(now())
 }
 
 // Speaker voice profiles — cross-recording speaker identification

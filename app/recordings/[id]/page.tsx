@@ -45,10 +45,11 @@ export default async function RecordingPage({ params }: { params: { id: string }
     } catch { return fallback; }
   }
 
-  const actions:   string[]       = recording.summary ? safeJson<string[]>(recording.summary.actionItems, []) : [];
-  const points:    string[]       = recording.summary ? safeJson<string[]>(recording.summary.keyPoints,   []) : [];
-  const decisions: string[]       = recording.summary ? safeJson<string[]>(recording.summary.decisions,   []) : [];
-  const topics:    TopicSection[] = recording.summary ? safeJson<TopicSection[]>(recording.summary.topics, []) : [];
+  const actions:         string[]       = recording.summary ? safeJson<string[]>(recording.summary.actionItems,         []) : [];
+  const points:          string[]       = recording.summary ? safeJson<string[]>(recording.summary.keyPoints,           []) : [];
+  const decisions:       string[]       = recording.summary ? safeJson<string[]>(recording.summary.decisions,           []) : [];
+  const topics:          TopicSection[] = recording.summary ? safeJson<TopicSection[]>(recording.summary.topics,        []) : [];
+  const checkedIndices:  number[]       = recording.summary ? safeJson<number[]>((recording.summary as Record<string, unknown>).actionItemsChecked as string, []) : [];
 
   const rawSegmentsParsed = safeJson<TranscriptSegment[]>(
     recording.transcript?.segments as string | undefined,
@@ -176,6 +177,7 @@ export default async function RecordingPage({ params }: { params: { id: string }
               <EditableAINotes
                 recordingId={recording.id}
                 recordingTitle={recording.title}
+                initialCheckedIndices={checkedIndices}
                 initialSummary={{
                   overview:    recording.summary.overview,
                   keyPoints:   points,
