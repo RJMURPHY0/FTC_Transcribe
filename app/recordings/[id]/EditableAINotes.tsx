@@ -178,6 +178,7 @@ export default function EditableAINotes({
   const [draftText,    setDraftText]   = useState('');
   const [draftList,    setDraftList]   = useState<string[]>([]);
   const [draftTopics,  setDraftTopics] = useState<TopicSection[]>([]);
+  const [checkedItems,  setCheckedItems] = useState<Set<number>>(new Set());
   const [saving,        setSaving]       = useState(false);
   const [saveError,     setSaveError]    = useState('');
   const [downloading,   setDownloading]  = useState(false);
@@ -359,14 +360,34 @@ export default function EditableAINotes({
           <ListEditor items={draftList} onChange={setDraftList} placeholder="Action item…" />
         ) : data.actionItems.length > 0 ? (
           <ul className="space-y-3">
-            {data.actionItems.map((item, i) => (
-              <li key={i} className="flex items-start gap-3">
-                <span className="mt-0.5 w-5 h-5 rounded border border-surface-muted flex items-center justify-center text-xs text-ftc-mid flex-shrink-0">
-                  {i + 1}
-                </span>
-                <span className="text-sm text-ftc-gray leading-relaxed">{item}</span>
-              </li>
-            ))}
+            {data.actionItems.map((item, i) => {
+              const done = checkedItems.has(i);
+              return (
+                <li key={i} className="flex items-start gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setCheckedItems(prev => {
+                      const next = new Set(prev);
+                      done ? next.delete(i) : next.add(i);
+                      return next;
+                    })}
+                    title={done ? 'Mark incomplete' : 'Mark complete'}
+                    className={`mt-0.5 w-5 h-5 rounded border flex items-center justify-center flex-shrink-0 transition-colors
+                      ${done
+                        ? 'bg-brand border-brand text-white'
+                        : 'border-surface-muted hover:border-brand/60 text-transparent'
+                      }`}
+                  >
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>
+                  </button>
+                  <span className={`text-sm leading-relaxed transition-colors ${done ? 'line-through text-ftc-mid' : 'text-ftc-gray'}`}>
+                    {item}
+                  </span>
+                </li>
+              );
+            })}
           </ul>
         ) : (
           <p className="text-sm text-ftc-mid">No action items found.</p>
