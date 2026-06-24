@@ -8,6 +8,7 @@ import {
   generateTopics,
 } from '@/lib/ai';
 import type { RawSegment, MeetingType } from '@/lib/ai';
+import { ensureSchema } from '@/lib/ensure-schema';
 import { backupToAirtable } from '@/lib/airtable-backup';
 import { notifyTeamsChannel } from '@/lib/integrations/teams-notify';
 import { indexTranscript } from '@/lib/embeddings';
@@ -64,9 +65,10 @@ function isMissingFinalizeTablesError(err: unknown): boolean {
 
 
 async function analyzeAndCompleteRecording(recordingId: string): Promise<FinalizeResult> {
+  await ensureSchema(); // self-heal: make sure new Summary columns exist before writing
   const [transcript, recording] = await Promise.all([
     prisma.transcript.findUnique({ where: { recordingId } }),
-    prisma.recording.findUnique({ where: { id: recordingId }, select: { meetingType: true } }),
+    prisma.recording.findUnique({ where: { id: recordingId }, select: { meetingType: true, createdAt: true } }),
   ]);
   if (!transcript || !transcript.fullText.trim()) {
     await prisma.recording.update({ where: { id: recordingId }, data: { status: 'failed' } }).catch(() => {});
@@ -86,7 +88,7 @@ async function analyzeAndCompleteRecording(recordingId: string): Promise<Finaliz
   // Run analysis/title/topics in parallel with diarization, then resolve names
   const [diarizedRaw, analysis, shortTitle, topics] = await Promise.all([
     diarizeSegments(rawSegments),
-    analyzeTranscript(transcript.fullText, meetingType),
+    analyzeTranscript(transcript.fullText, meetingType, recording?.createdAt ?? new Date()),
     generateTitle(transcript.fullText),
     generateTopics(rawSegments),
   ]);
@@ -127,6 +129,7 @@ async function analyzeAndCompleteRecording(recordingId: string): Promise<Finaliz
         overview: analysis.overview,
         keyPoints: JSON.stringify(analysis.keyPoints),
         actionItems: JSON.stringify(analysis.actionItems),
+        actionItemsDue: JSON.stringify(analysis.actionItemsDue),
         decisions: JSON.stringify(analysis.decisions),
         topics: JSON.stringify(topics),
       },
@@ -134,6 +137,7 @@ async function analyzeAndCompleteRecording(recordingId: string): Promise<Finaliz
         overview: analysis.overview,
         keyPoints: JSON.stringify(analysis.keyPoints),
         actionItems: JSON.stringify(analysis.actionItems),
+        actionItemsDue: JSON.stringify(analysis.actionItemsDue),
         decisions: JSON.stringify(analysis.decisions),
         topics: JSON.stringify(topics),
       },

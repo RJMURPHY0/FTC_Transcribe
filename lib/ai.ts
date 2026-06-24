@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
 import fs from 'fs';
+import { normaliseDue } from './action-items';
 
 // ── Transcription: Groq (free Whisper) preferred, OpenAI Whisper as fallback ──
 const GROQ_KEY = process.env.GROQ_API_KEY;
@@ -42,6 +43,8 @@ export interface AnalysisResult {
   overview: string;
   keyPoints: string[];
   actionItems: string[];
+  // Parallel to actionItems: ISO `YYYY-MM-DD` due date, or null when none was stated.
+  actionItemsDue: (string | null)[];
   decisions: string[];
 }
 
@@ -422,6 +425,7 @@ Format:
   "overview": "2-3 sentence summary of the meeting's purpose and outcomes",
   "keyPoints": ["important context, background, or discussion highlight"],
   "actionItems": ["Person to do specific task"],
+  "actionItemDates": ["YYYY-MM-DD or null — one entry per action item, in the same order"],
   "decisions": ["What was agreed or resolved"]
 }
 
@@ -429,6 +433,7 @@ Rules:
 - overview: 2-3 sentences covering the meeting purpose and main outcomes
 - keyPoints: 3-7 items — important context, background info, or notable discussion points only. Do NOT include tasks or decisions here
 - actionItems: specific tasks assigned to a person. Format as "Name to do X". Empty array if none. Do NOT repeat anything already in keyPoints or decisions
+- actionItemDates: MUST be the same length as actionItems and in the same order. For each action item, if a deadline or due date was stated in the meeting (including relative ones like "by Friday", "tomorrow", "next week", "end of month"), resolve it to an absolute date in YYYY-MM-DD form. If NO deadline was mentioned for that item, use null. Never invent a date that was not discussed.
 - decisions: firm agreements or resolutions reached in the meeting. Empty array if none. Do NOT repeat anything already in keyPoints or actionItems
 - Each piece of information belongs in exactly ONE section — no duplicates across sections`;
   }
@@ -437,12 +442,17 @@ Rules:
 // ~48 000 words — enough for a 4-6 hour meeting; well within Haiku's 200k token context window
 const MAX_TRANSCRIPT_CHARS = 200_000;
 
-export async function analyzeTranscript(transcript: string, meetingType: MeetingType = 'general'): Promise<AnalysisResult> {
+export async function analyzeTranscript(
+  transcript: string,
+  meetingType: MeetingType = 'general',
+  meetingDate: Date = new Date(),
+): Promise<AnalysisResult> {
   if (isMockAnthropic || !anthropic) {
     return {
       overview: 'Demo summary — add your ANTHROPIC_API_KEY to .env.local to enable AI analysis.',
       keyPoints: ['Add ANTHROPIC_API_KEY to .env.local', 'Restart the dev server'],
       actionItems: [],
+      actionItemsDue: [],
       decisions: [],
     };
   }
@@ -454,6 +464,8 @@ export async function analyzeTranscript(transcript: string, meetingType: Meeting
 
   const systemPrompt = meetingTypePrompt(meetingType);
   const isGeneral = meetingType === 'general';
+  const meetingDateIso = meetingDate.toISOString().slice(0, 10);
+  const dateAnchor = `\nThe meeting took place on ${meetingDateIso}. Resolve any relative deadlines (e.g. "by Friday", "next week") against this date.`;
 
   try {
     const message = await anthropic.messages.create({
@@ -469,13 +481,16 @@ Return ONLY valid JSON in this exact format:
   "overview": "string",
   "keyPoints": ["string"],
   "actionItems": ["string"],
+  "actionItemDates": ["YYYY-MM-DD or null, one per action item, same order"],
   "decisions": ["string"]
 }
 
 Rules:
 - Each item belongs in exactly ONE section — no duplicates across sections
 - actionItems: format as "Name to do X" where possible
+- actionItemDates: same length and order as actionItems. Use a YYYY-MM-DD date only if a deadline was stated for that item (relative deadlines too); otherwise null. Never invent dates.
 - Empty arrays are fine if no items found`}
+${dateAnchor}
 
 TRANSCRIPT:
 ${truncated}`,
@@ -490,10 +505,15 @@ ${truncated}`,
       const jsonMatch = content.text.match(/\{[\s\S]*\}/);
       if (!jsonMatch) throw new Error('No JSON in response');
       const r = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
+      const actionItems = Array.isArray(r.actionItems) ? (r.actionItems as string[]) : [];
+      const rawDates    = Array.isArray(r.actionItemDates) ? (r.actionItemDates as unknown[]) : [];
+      // Align dates to the action-item count: one ISO date or null per item.
+      const actionItemsDue = actionItems.map((_, i) => normaliseDue(rawDates[i]));
       return {
         overview:    typeof r.overview === 'string' ? r.overview : '',
         keyPoints:   Array.isArray(r.keyPoints)   ? (r.keyPoints   as string[]) : [],
-        actionItems: Array.isArray(r.actionItems) ? (r.actionItems as string[]) : [],
+        actionItems,
+        actionItemsDue,
         decisions:   Array.isArray(r.decisions)   ? (r.decisions   as string[]) : [],
       };
     } catch {
@@ -501,6 +521,7 @@ ${truncated}`,
         overview: content.text.slice(0, 500),
         keyPoints: [],
         actionItems: [],
+        actionItemsDue: [],
         decisions: [],
       };
     }
@@ -509,6 +530,7 @@ ${truncated}`,
       overview: 'Analysis could not be completed — retry the recording to regenerate.',
       keyPoints: [],
       actionItems: [],
+      actionItemsDue: [],
       decisions: [],
     };
   }

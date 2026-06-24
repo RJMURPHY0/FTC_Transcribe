@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
 import { prisma } from '@/lib/db';
+import { parseDueArray, formatDue } from '@/lib/action-items';
 
 export const dynamic = 'force-dynamic';
 
@@ -80,6 +81,20 @@ export async function POST(
     const keyPoints   = recording.summary ? safeParseArray(recording.summary.keyPoints)   : [];
     const decisions   = recording.summary ? safeParseArray(recording.summary.decisions)   : [];
 
+    // Completion + due-date context so the assistant knows what's done / outstanding.
+    const rawChecked = recording.summary ? safeParseArray(recording.summary.actionItemsChecked) : [];
+    const checkedIdx = new Set<number>(rawChecked.map(Number).filter(Number.isInteger));
+    const dueDates = recording.summary
+      ? parseDueArray((recording.summary as Record<string, unknown>).actionItemsDue as string, actionItems.length)
+      : [];
+    const actionItemsBlock = actionItems.length
+      ? actionItems.map((a, i) => {
+          const status = checkedIdx.has(i) ? 'DONE' : 'OPEN';
+          const due = formatDue(dueDates[i]) ?? 'no date set';
+          return `${i + 1}. [${status}] (due: ${due}) ${a}`;
+        }).join('\n')
+      : 'None';
+
     // Build speaker-attributed transcript from segments so named speakers can be queried
     let transcriptContext: string;
     try {
@@ -96,7 +111,7 @@ export async function POST(
 MEETING: ${recording.title}
 DATE: ${new Date(recording.createdAt).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
 
-${recording.summary ? `SUMMARY:\n${recording.summary.overview}\n\nACTION ITEMS:\n${actionItems.length ? actionItems.map((a, i) => `${i + 1}. ${a}`).join('\n') : 'None'}\n\nKEY POINTS:\n${keyPoints.map((p) => `• ${p}`).join('\n')}\n\nDECISIONS:\n${decisions.map((d) => `• ${d}`).join('\n')}` : ''}
+${recording.summary ? `SUMMARY:\n${recording.summary.overview}\n\nACTION ITEMS (status and due date shown for each):\n${actionItemsBlock}\n\nKEY POINTS:\n${keyPoints.map((p) => `• ${p}`).join('\n')}\n\nDECISIONS:\n${decisions.map((d) => `• ${d}`).join('\n')}` : ''}
 
 FULL TRANSCRIPT (with speaker labels):
 ${transcriptContext}
@@ -105,7 +120,22 @@ Guidelines:
 - Answer only from the transcript and notes above
 - When asked about a specific person, search the transcript for their name as a speaker label
 - If something isn't mentioned, say so clearly
-- Keep answers concise but complete`;
+- Keep answers concise but complete
+- Each action item is tagged [DONE] (already completed/ticked off) or [OPEN] (still outstanding), with its due date. Use these tags: if the user asks for outstanding/remaining tasks, list only [OPEN] ones; if they ask what's been done, list the [DONE] ones.
+
+WRITING STYLE (important):
+- Write in plain, natural English like you're talking to a colleague. Simple words, short sentences.
+- NEVER use markdown or any formatting symbols. No asterisks, no #, no backticks, no bold, no italics, no markdown tables.
+- For lists, write each item on its own line starting with a dash and a space ("- "). Nothing fancier.
+- No preamble like "Certainly!" or "Great question". Just answer.
+
+SHOWING AN ACTION-ITEM CHECKLIST:
+- When the user asks to see, list, review, or tick off action items / tasks / to-dos, do NOT type the items out yourself. Instead reply with one short friendly sentence, then on its own final line output exactly one marker:
+  [[CHECKLIST:open]]  → show only outstanding (not yet done) items
+  [[CHECKLIST:done]]  → show only completed items
+  [[CHECKLIST:all]]   → show every item
+- Choose the filter from their wording: "outstanding/remaining/still to do/what's left" → open; "completed/done/finished" → done; otherwise → all.
+- The app turns that marker into a live, tickable checklist for the user, so you don't need to repeat the items.`;
 
     let response;
     for (let attempt = 0; attempt < 2; attempt++) {

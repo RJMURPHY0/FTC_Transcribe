@@ -121,6 +121,7 @@ model Summary {
   decisions          String
   topics             String    @default("[]")
   actionItemsChecked String    @default("[]")
+  actionItemsDue     String    @default("[]")
   createdAt          DateTime  @default(now())
 }
 

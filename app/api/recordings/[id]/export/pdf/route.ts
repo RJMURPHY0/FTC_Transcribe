@@ -8,6 +8,7 @@ import {
   renderToBuffer,
 } from '@react-pdf/renderer';
 import type { TopicSection } from '@/lib/ai';
+import { parseDueArray, formatDue } from '@/lib/action-items';
 
 export const dynamic = 'force-dynamic';
 // PDF generation is CPU-intensive — use Node.js runtime (default), not Edge
@@ -64,6 +65,7 @@ const styles = StyleSheet.create({
   bulletText: { flex: 1, fontSize: 11, color: DARK, lineHeight: 1.5 },
   numberedRow: { flexDirection: 'row', marginBottom: 5, paddingLeft: 8 },
   numLabel: { fontSize: 11, fontFamily: 'Helvetica-Bold', color: ORANGE, marginRight: 6, width: 16 },
+  dueText: { fontSize: 9, color: MID, fontFamily: 'Helvetica-Oblique', marginTop: 1 },
   checkRow: { flexDirection: 'row', marginBottom: 5, paddingLeft: 8 },
   checkMark: { fontSize: 11, color: ORANGE, marginRight: 6, width: 12 },
   topicRow: { flexDirection: 'row', marginBottom: 5, paddingLeft: 8, alignItems: 'center' },
@@ -103,6 +105,7 @@ interface DocProps {
   overview: string;
   keyPoints: string[];
   actionItems: string[];
+  actionDue: (string | null)[];
   decisions: string[];
   topics: TopicSection[];
   segments: Array<{ speaker: string; start: number; text: string }>;
@@ -110,7 +113,7 @@ interface DocProps {
 }
 
 function TranscribePDF({
-  title, createdAt, overview, keyPoints, actionItems, decisions, topics, segments, logoData,
+  title, createdAt, overview, keyPoints, actionItems, actionDue, decisions, topics, segments, logoData,
 }: DocProps) {
   const dateStr = createdAt.toLocaleDateString('en-GB', {
     weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
@@ -162,7 +165,11 @@ function TranscribePDF({
           ...actionItems.map((item, i) =>
             React.createElement(View, { key: i, style: styles.numberedRow },
               React.createElement(Text, { style: styles.numLabel }, `${i + 1}.`),
-              React.createElement(Text, { style: styles.bulletText }, item),
+              React.createElement(View, { style: { flex: 1 } },
+                React.createElement(Text, { style: styles.bulletText }, item),
+                React.createElement(Text, { style: styles.dueText },
+                  formatDue(actionDue[i]) ? `Due ${formatDue(actionDue[i])}` : 'No date set'),
+              ),
             )
           ),
         ),
@@ -235,6 +242,7 @@ export async function GET(
   const s = recording.summary;
   const keyPoints:   string[]       = safeJson(s?.keyPoints,   []);
   const actionItems: string[]       = safeJson(s?.actionItems, []);
+  const actionDue:   (string|null)[]= parseDueArray((s as Record<string, unknown> | undefined)?.actionItemsDue as string, actionItems.length);
   const decisions:   string[]       = safeJson(s?.decisions,   []);
   const topics:      TopicSection[] = safeJson(s?.topics,      []);
   const rawSegs = safeJson<Array<{ speaker: string; start: number; end: number; text: string }>>(
@@ -266,6 +274,7 @@ export async function GET(
         overview: s?.overview ?? '',
         keyPoints,
         actionItems,
+        actionDue,
         decisions,
         topics,
         segments,

@@ -8,6 +8,7 @@ import ProcessingPoller from './ProcessingPoller';
 import EditableTitle from './EditableTitle';
 import ChatPanel from './ChatPanel';
 import EditableAINotes from './EditableAINotes';
+import { ActionItemsProvider } from './ActionItemsContext';
 import SpeakerPanel from './SpeakerPanel';
 import TranscriptPlayer from './TranscriptPlayer';
 import type { TranscriptSegment, TopicSection } from '@/lib/ai';
@@ -50,6 +51,7 @@ export default async function RecordingPage({ params }: { params: { id: string }
   const decisions:       string[]       = recording.summary ? safeJson<string[]>(recording.summary.decisions,           []) : [];
   const topics:          TopicSection[] = recording.summary ? safeJson<TopicSection[]>(recording.summary.topics,        []) : [];
   const checkedIndices:  number[]       = recording.summary ? safeJson<number[]>((recording.summary as Record<string, unknown>).actionItemsChecked as string, []) : [];
+  const actionDue:       (string|null)[]= recording.summary ? safeJson<(string|null)[]>((recording.summary as Record<string, unknown>).actionItemsDue as string, []) : [];
 
   const rawSegmentsParsed = safeJson<TranscriptSegment[]>(
     recording.transcript?.segments as string | undefined,
@@ -158,6 +160,12 @@ export default async function RecordingPage({ params }: { params: { id: string }
         )}
 
         {/* Three-column grid: Chat | AI Notes | Transcript */}
+        <ActionItemsProvider
+          recordingId={recording.id}
+          initialItems={actions}
+          initialDue={actionDue}
+          initialChecked={checkedIndices}
+        >
         <div className="detail-grid">
 
           {/* ── LEFT: Chat ── */}
@@ -177,11 +185,9 @@ export default async function RecordingPage({ params }: { params: { id: string }
               <EditableAINotes
                 recordingId={recording.id}
                 recordingTitle={recording.title}
-                initialCheckedIndices={checkedIndices}
                 initialSummary={{
                   overview:    recording.summary.overview,
                   keyPoints:   points,
-                  actionItems: actions,
                   decisions,
                   topics,
                 }}
@@ -230,6 +236,7 @@ export default async function RecordingPage({ params }: { params: { id: string }
           </div>
 
         </div>
+        </ActionItemsProvider>
       </main>
     </div>
   );

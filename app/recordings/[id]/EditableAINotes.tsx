@@ -2,13 +2,14 @@
 
 import { useState } from 'react';
 import type { TopicSection } from '@/lib/ai';
+import { formatDue, dueStatus } from '@/lib/action-items';
+import { useActionItems } from './ActionItemsContext';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface AISummary {
   overview:    string;
   keyPoints:   string[];
-  actionItems: string[];
   decisions:   string[];
   topics:      TopicSection[];
 }
@@ -21,6 +22,56 @@ function formatTimestamp(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = Math.floor(seconds % 60);
   return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+// Inline due-date control for a single action item. Shows the date (or
+// "No date set") and opens a native date picker via an invisible overlay.
+function DueDateControl({
+  iso, done, onChange,
+}: {
+  iso:      string | null;
+  done:     boolean;
+  onChange: (next: string | null) => void;
+}) {
+  const label = formatDue(iso);
+  const status = dueStatus(iso);
+  const colour =
+    done                  ? 'text-ftc-mid' :
+    status === 'overdue'  ? 'text-red-400' :
+    status === 'today'    ? 'text-amber-400' :
+    label                 ? 'text-ftc-gray' :
+                            'text-ftc-mid';
+
+  return (
+    <div className="flex items-center gap-1.5 mt-1">
+      <span className={`relative inline-flex items-center gap-1.5 text-xs ${colour} ${done ? 'line-through' : ''} cursor-pointer hover:text-brand transition-colors`}>
+        <svg className="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+        </svg>
+        {label ? `Due ${label}` : 'No date set'}
+        {status === 'overdue' && !done && <span className="font-medium">· overdue</span>}
+        <input
+          type="date"
+          aria-label="Set due date"
+          value={iso ?? ''}
+          onChange={(e) => onChange(e.target.value || null)}
+          className="absolute inset-0 opacity-0 cursor-pointer w-full"
+        />
+      </span>
+      {iso && (
+        <button
+          type="button"
+          onClick={() => onChange(null)}
+          title="Clear date"
+          className="text-surface-muted hover:text-red-400 transition-colors"
+        >
+          <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      )}
+    </div>
+  );
 }
 
 // ─── Section card with edit/save/cancel header ────────────────────────────────
@@ -168,19 +219,17 @@ export default function EditableAINotes({
   recordingId,
   recordingTitle,
   initialSummary,
-  initialCheckedIndices = [],
 }: {
-  recordingId:            string;
-  recordingTitle:         string;
-  initialSummary:         AISummary;
-  initialCheckedIndices?: number[];
+  recordingId:    string;
+  recordingTitle: string;
+  initialSummary: AISummary;
 }) {
+  const actionItems = useActionItems();
   const [data,         setData]        = useState<AISummary>(initialSummary);
   const [editing,      setEditing]     = useState<Section | null>(null);
   const [draftText,    setDraftText]   = useState('');
   const [draftList,    setDraftList]   = useState<string[]>([]);
   const [draftTopics,  setDraftTopics] = useState<TopicSection[]>([]);
-  const [checkedItems,  setCheckedItems] = useState<Set<number>>(() => new Set(initialCheckedIndices));
   const [saving,        setSaving]       = useState(false);
   const [saveError,     setSaveError]    = useState('');
   const [downloading,   setDownloading]  = useState(false);
@@ -193,8 +242,10 @@ export default function EditableAINotes({
       setDraftText(data.overview);
     } else if (section === 'topics') {
       setDraftTopics(data.topics.map(t => ({ ...t })));
+    } else if (section === 'actionItems') {
+      setDraftList([...actionItems.items]);
     } else {
-      setDraftList([...data[section as keyof Pick<AISummary, 'keyPoints' | 'actionItems' | 'decisions'>]]);
+      setDraftList([...data[section as keyof Pick<AISummary, 'keyPoints' | 'decisions'>]]);
     }
     setEditing(section);
   };
@@ -202,8 +253,16 @@ export default function EditableAINotes({
   const cancel = () => { setEditing(null); setSaveError(''); };
 
   const save = async (section: Section) => {
-    setSaving(true);
     setSaveError('');
+
+    // Action items live in the shared store (synced with the chat checklist).
+    if (section === 'actionItems') {
+      actionItems.replaceItems(draftList.map(s => s.trim()).filter(s => s !== ''));
+      setEditing(null);
+      return;
+    }
+
+    setSaving(true);
 
     const value: unknown =
       section === 'overview' ? draftText :
@@ -360,25 +419,15 @@ export default function EditableAINotes({
       <SectionCard title="Action Items" {...sectionProps('actionItems')}>
         {isEdit('actionItems') ? (
           <ListEditor items={draftList} onChange={setDraftList} placeholder="Action item…" />
-        ) : data.actionItems.length > 0 ? (
+        ) : actionItems.items.length > 0 ? (
           <ul className="space-y-3">
-            {data.actionItems.map((item, i) => {
-              const done = checkedItems.has(i);
+            {actionItems.items.map((item, i) => {
+              const done = actionItems.checked.has(i);
               return (
                 <li key={i} className="flex items-start gap-3">
                   <button
                     type="button"
-                    onClick={() => {
-                      const next = new Set(checkedItems);
-                      done ? next.delete(i) : next.add(i);
-                      setCheckedItems(next);
-                      // fire-and-forget save — UI is already updated optimistically
-                      fetch(`/api/recordings/${recordingId}/summary`, {
-                        method: 'PATCH',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ actionItemsChecked: Array.from(next) }),
-                      }).catch(() => {/* silent — non-critical */});
-                    }}
+                    onClick={() => actionItems.toggleChecked(i)}
                     title={done ? 'Mark incomplete' : 'Mark complete'}
                     className={`mt-0.5 w-5 h-5 rounded border flex items-center justify-center flex-shrink-0 transition-colors
                       ${done
@@ -390,9 +439,16 @@ export default function EditableAINotes({
                       <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                     </svg>
                   </button>
-                  <span className={`text-sm leading-relaxed transition-colors ${done ? 'line-through text-ftc-mid' : 'text-ftc-gray'}`}>
-                    {item}
-                  </span>
+                  <div className="flex-1 min-w-0">
+                    <span className={`text-sm leading-relaxed transition-colors ${done ? 'line-through text-ftc-mid' : 'text-ftc-gray'}`}>
+                      {item}
+                    </span>
+                    <DueDateControl
+                      iso={actionItems.due[i] ?? null}
+                      done={done}
+                      onChange={(next) => actionItems.setDue(i, next)}
+                    />
+                  </div>
                 </li>
               );
             })}

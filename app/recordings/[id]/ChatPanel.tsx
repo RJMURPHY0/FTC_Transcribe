@@ -2,6 +2,8 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
+import { formatDue, dueStatus } from '@/lib/action-items';
+import { useActionItems } from './ActionItemsContext';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -9,11 +11,84 @@ interface Message {
 }
 
 const SUGGESTIONS = [
+  'Show my outstanding action items',
   'What were the key decisions made?',
-  'Who has action items and what are they?',
-  'Summarise the main points in bullet form',
+  'Which action items are already done?',
   'What topics were left unresolved?',
 ];
+
+const CHECKLIST_RE = /\[\[CHECKLIST:(open|done|all)\]\]/i;
+
+// The chat model is told never to use markdown, but strip the common symbols
+// just in case so replies always read as plain text.
+function stripMarkdown(text: string): string {
+  return text
+    .replace(CHECKLIST_RE, '')
+    .replace(/\*\*(.+?)\*\*/g, '$1')   // **bold**
+    .replace(/__(.+?)__/g, '$1')       // __bold__
+    .replace(/(?<!\w)[*_](.+?)[*_](?!\w)/g, '$1') // *italic* / _italic_
+    .replace(/`([^`]+)`/g, '$1')       // `code`
+    .replace(/^#{1,6}\s+/gm, '')       // # headings
+    .replace(/^\s*[*+]\s+/gm, '- ')    // normalise bullets to "- "
+    .trim();
+}
+
+// Live, tickable checklist rendered inside a chat reply. Shares the same store
+// as the Action Items panel, so ticking here updates there instantly too.
+function ChatChecklist({ filter }: { filter: 'open' | 'done' | 'all' }) {
+  const { items, due, checked, toggleChecked } = useActionItems();
+
+  const indices = items
+    .map((_, i) => i)
+    .filter((i) => filter === 'all' || (filter === 'done' ? checked.has(i) : !checked.has(i)));
+
+  if (items.length === 0) {
+    return <p className="text-sm text-ftc-mid mt-2">There are no action items for this meeting.</p>;
+  }
+  if (indices.length === 0) {
+    return (
+      <p className="text-sm text-ftc-mid mt-2">
+        {filter === 'open' ? 'Nothing outstanding — every action item is done.' : 'No completed action items yet.'}
+      </p>
+    );
+  }
+
+  return (
+    <div className="mt-2 space-y-2 rounded-xl border border-surface-border bg-surface-raised p-3">
+      {indices.map((i) => {
+        const done = checked.has(i);
+        const label = formatDue(due[i]);
+        const status = dueStatus(due[i]);
+        const dueColour =
+          done                 ? 'text-ftc-mid' :
+          status === 'overdue' ? 'text-red-400' :
+          status === 'today'   ? 'text-amber-400' :
+                                 'text-ftc-mid';
+        return (
+          <div key={i} className="flex items-start gap-2.5">
+            <button
+              type="button"
+              onClick={() => toggleChecked(i)}
+              title={done ? 'Mark incomplete' : 'Mark complete'}
+              className={`mt-0.5 w-[18px] h-[18px] rounded border flex items-center justify-center flex-shrink-0 transition-colors
+                ${done ? 'bg-brand border-brand text-white' : 'border-surface-muted hover:border-brand/60 text-transparent'}`}
+            >
+              <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+            </button>
+            <div className="min-w-0">
+              <p className={`text-sm leading-snug ${done ? 'line-through text-ftc-mid' : 'text-ftc-gray'}`}>{items[i]}</p>
+              <p className={`text-xs mt-0.5 ${dueColour} ${done ? 'line-through' : ''}`}>
+                {label ? `Due ${label}${status === 'overdue' && !done ? ' · overdue' : ''}` : 'No date set'}
+              </p>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 export default function ChatPanel({ recordingId }: { recordingId: string }) {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -153,22 +228,28 @@ export default function ChatPanel({ recordingId }: { recordingId: string }) {
           </div>
         )}
 
-        {messages.map((msg, i) => (
-          <div key={i} className={`flex items-end gap-2 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-            {msg.role === 'assistant' && (
-              <div className="w-6 h-6 rounded-full bg-brand/15 border border-brand/20 flex items-center justify-center flex-shrink-0 mb-0.5">
-                <span className="text-[9px] font-bold text-brand">AI</span>
+        {messages.map((msg, i) => {
+          const checklist = msg.role === 'assistant' ? CHECKLIST_RE.exec(msg.content) : null;
+          const filter = checklist ? (checklist[1].toLowerCase() as 'open' | 'done' | 'all') : null;
+          const text = msg.role === 'assistant' ? stripMarkdown(msg.content) : msg.content;
+          return (
+            <div key={i} className={`flex items-end gap-2 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+              {msg.role === 'assistant' && (
+                <div className="w-6 h-6 rounded-full bg-brand/15 border border-brand/20 flex items-center justify-center flex-shrink-0 mb-0.5">
+                  <span className="text-[9px] font-bold text-brand">AI</span>
+                </div>
+              )}
+              <div className={`max-w-[78%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap ${
+                msg.role === 'user'
+                  ? 'btn-brand text-white rounded-br-sm'
+                  : 'bg-surface-raised text-ftc-gray rounded-bl-sm border border-surface-border'
+              }`}>
+                {text && <span>{text}</span>}
+                {filter && <ChatChecklist filter={filter} />}
               </div>
-            )}
-            <div className={`max-w-[78%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap ${
-              msg.role === 'user'
-                ? 'btn-brand text-white rounded-br-sm'
-                : 'bg-surface-raised text-ftc-gray rounded-bl-sm border border-surface-border'
-            }`}>
-              {msg.content}
             </div>
-          </div>
-        ))}
+          );
+        })}
 
         {loading && (
           <div className="flex items-end gap-2 justify-start">

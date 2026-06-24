@@ -8,6 +8,7 @@ import {
   convertInchesToTwip,
 } from 'docx';
 import type { TopicSection } from '@/lib/ai';
+import { parseDueArray, formatDue } from '@/lib/action-items';
 
 export const dynamic = 'force-dynamic';
 
@@ -128,11 +129,16 @@ function bulletPoint(text: string): Paragraph {
   });
 }
 
-function numberedItem(n: number, text: string): Paragraph {
+function numberedItem(n: number, text: string, due?: string | null): Paragraph {
+  const dueLabel = formatDue(due);
   return new Paragraph({
     children: [
       new TextRun({ text: `${n}.  `, bold: true, color: ORANGE, size: 22, font: FONT_HEADING }),
       new TextRun({ text, color: DARK, size: 22, font: FONT_BODY }),
+      new TextRun({
+        text: dueLabel ? `   (Due ${dueLabel})` : '   (No date set)',
+        color: MID, size: 18, italics: true, font: FONT_BODY,
+      }),
     ],
     indent: { left: 360 },
     spacing: { after: 120 },
@@ -203,6 +209,7 @@ export async function GET(
   const s = recording.summary;
   const keyPoints:   string[]       = safeJson(s.keyPoints,   []);
   const actionItems: string[]       = safeJson(s.actionItems, []);
+  const actionDue:   (string|null)[]= parseDueArray((s as Record<string, unknown>).actionItemsDue as string, actionItems.length);
   const decisions:   string[]       = safeJson(s.decisions,   []);
   const topics:      TopicSection[] = safeJson(s.topics,      []);
 
@@ -233,7 +240,7 @@ export async function GET(
 
   if (actionItems.length > 0) {
     children.push(sectionHeading('Action Items'));
-    actionItems.forEach((item, i) => children.push(numberedItem(i + 1, item)));
+    actionItems.forEach((item, i) => children.push(numberedItem(i + 1, item, actionDue[i])));
     children.push(spacer(160));
   }
 
