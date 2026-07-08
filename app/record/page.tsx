@@ -46,6 +46,7 @@ export default function RecordPage() {
   const [voiceLevel,    setVoiceLevel]    = useState(0);
   const [captions,      setCaptions]      = useState<string[]>([]);
   const [captionsOpen,  setCaptionsOpen]  = useState(false);
+  const [isPaused,      setIsPaused]      = useState(false);
 
   const router = useRouter();
 
@@ -385,6 +386,27 @@ export default function RecordPage() {
     }
   }, [startRecorder, startVAD, startLiveCaptions, rotateChunk, requestWakeLock, releaseWakeLock, source, meetingType]);
 
+  const pause = useCallback(() => {
+    if (state !== 'recording' || isPaused) return;
+    if (recorderRef.current?.state === 'recording') {
+      recorderRef.current.pause();
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+      setIsPaused(true);
+    }
+  }, [state, isPaused]);
+
+  const resume = useCallback(() => {
+    if (state !== 'recording' || !isPaused) return;
+    if (recorderRef.current?.state === 'paused') {
+      recorderRef.current.resume();
+      timerRef.current = setInterval(() => setSeconds((s) => s + 1), 1000);
+      setIsPaused(false);
+    }
+  }, [state, isPaused]);
+
   const stop = useCallback(() => {
     if (state !== 'recording') return;
 
@@ -392,14 +414,18 @@ export default function RecordPage() {
     setState('uploading');
     stopVAD();
     stopLiveCaptions();
+    setIsPaused(false);
 
     if (chunkTimerRef.current) {
       clearTimeout(chunkTimerRef.current);
       chunkTimerRef.current = null;
     }
 
-    if (recorderRef.current?.state === 'recording') {
-      recorderRef.current.stop();
+    if (recorderRef.current?.state !== 'inactive') {
+      if (recorderRef.current?.state === 'paused') {
+        recorderRef.current.resume();
+      }
+      recorderRef.current?.stop();
     }
 
     streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -476,39 +502,72 @@ export default function RecordPage() {
           })}
         </div>
 
-        {/* Record button */}
-        <div className="relative flex items-center justify-center">
-          {state === 'recording' && (
-            <>
-              <div className="absolute rounded-full w-36 h-36 pulse-ring bg-red-500/15" />
-              <div className="absolute rounded-full w-36 h-36 pulse-ring-delay bg-red-500/15" />
-            </>
-          )}
-          <button
-            type="button"
-            onClick={handleClick}
-            disabled={isProcessing}
-            aria-label={state === 'recording' ? 'Stop recording' : 'Start recording'}
-            className={`relative w-32 h-32 rounded-full flex items-center justify-center transition-all duration-200 touch-manipulation select-none ${btnClass}`}
-          >
-            {state === 'recording' ? (
-              <div className="w-10 h-10 rounded-2xl bg-white" />
-            ) : isProcessing ? (
-              <div className="w-9 h-9 rounded-full border-[3px] border-surface-border border-t-brand animate-spin" />
-            ) : (
-              <svg className="w-14 h-14 text-white" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-                <path d="M19 10v2a7 7 0 0 1-14 0v-2H3v2a9 9 0 0 0 8 8.94V22H9v2h6v-2h-2v-1.06A9 9 0 0 0 21 12v-2h-2z" />
-              </svg>
+        {/* Record button & Pause/Resume controls */}
+        <div className="flex flex-col items-center gap-6">
+          <div className="relative flex items-center justify-center gap-4">
+            {state === 'recording' && (
+              <>
+                <div className="absolute rounded-full w-36 h-36 pulse-ring bg-red-500/15" />
+                <div className="absolute rounded-full w-36 h-36 pulse-ring-delay bg-red-500/15" />
+              </>
             )}
-          </button>
+            <button
+              type="button"
+              onClick={handleClick}
+              disabled={isProcessing}
+              aria-label={state === 'recording' ? 'Stop recording' : 'Start recording'}
+              className={`relative w-32 h-32 rounded-full flex items-center justify-center transition-all duration-200 touch-manipulation select-none ${btnClass}`}
+            >
+              {state === 'recording' ? (
+                <div className="w-10 h-10 rounded-2xl bg-white" />
+              ) : isProcessing ? (
+                <div className="w-9 h-9 rounded-full border-[3px] border-surface-border border-t-brand animate-spin" />
+              ) : (
+                <svg className="w-14 h-14 text-white" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2H3v2a9 9 0 0 0 8 8.94V22H9v2h6v-2h-2v-1.06A9 9 0 0 0 21 12v-2h-2z" />
+                </svg>
+              )}
+            </button>
+
+            {/* Pause/Resume buttons */}
+            {state === 'recording' && (
+              <div className="flex gap-2 animate-in fade-in-50 slide-in-from-left-4 duration-300">
+                {isPaused ? (
+                  <button
+                    type="button"
+                    onClick={resume}
+                    className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold bg-emerald-500 hover:bg-emerald-600 text-white transition-colors touch-manipulation"
+                    title="Resume recording"
+                  >
+                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                      <path d="M8 5v14l11-7z" />
+                    </svg>
+                    Resume
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={pause}
+                    className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold bg-amber-500 hover:bg-amber-600 text-white transition-colors touch-manipulation"
+                    title="Pause recording"
+                  >
+                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                      <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z" />
+                    </svg>
+                    Pause
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Status */}
         <div className="text-center space-y-1.5 max-w-xs">
           <p className="font-medium text-ftc-gray">
             {state === 'idle'      && 'Tap to start recording'}
-            {state === 'recording' && 'Recording — tap to stop'}
+            {state === 'recording' && (isPaused ? 'Paused — tap Resume to continue' : 'Recording — tap to stop')}
             {state === 'uploading' && 'Saving final segment…'}
             {state === 'queued'    && 'Sending for analysis…'}
             {state === 'error'     && 'Something went wrong'}
