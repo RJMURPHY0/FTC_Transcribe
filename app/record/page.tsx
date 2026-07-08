@@ -61,6 +61,9 @@ export default function RecordPage() {
   const chunkStartRef   = useRef(0);
   const isActiveRef     = useRef(false);
   const isStartingRef   = useRef(false);
+  const isPausingRef    = useRef(false);                    // onstop is flushing a pause, not a final stop
+  const pauseOffsetRef  = useRef(0);                        // frozen upload offset for the flushed tail
+  const pauseHeaderRef  = useRef<ArrayBuffer | null>(null); // frozen WebM header for the flushed tail
   const noSleepRef      = useRef<{ enable(): Promise<boolean>; disable(): void } | null>(null);
   const webmHeaderRef   = useRef<ArrayBuffer | null>(null);
 
@@ -73,15 +76,13 @@ export default function RecordPage() {
   const vadIntervalRef  = useRef<ReturnType<typeof setInterval> | null>(null);
   const speechMsRef     = useRef(0); // ms of detected speech in current 2-min window
 
-  // Timer — only runs during recording
+  // Timer — runs only while actively recording (frozen while paused)
   useEffect(() => {
-    if (state === 'recording') {
+    if (state === 'recording' && !isPaused) {
       timerRef.current = setInterval(() => setSeconds((s) => s + 1), 1000);
-    } else {
-      if (timerRef.current) clearInterval(timerRef.current);
     }
-    return () => { if (timerRef.current) clearInterval(timerRef.current); };
-  }, [state]);
+    return () => { if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; } };
+  }, [state, isPaused]);
 
   const startVAD = useCallback((stream: MediaStream) => {
     try {
@@ -252,7 +253,10 @@ export default function RecordPage() {
     chunkTimerRef.current = setTimeout(rotateChunk, CHUNK_MS);
 
     let blobsForUpload = blobs;
-    if (offset === 0) {
+    if (!webmHeaderRef.current) {
+      // First chunk of this recorder segment — it already carries the WebM
+      // header. Capture it so later chunks of the SAME segment decode standalone.
+      // (Keying on the header ref, not offset===0, keeps post-resume segments valid.)
       try {
         const raw = new Uint8Array(await new Blob(blobs, { type: mimeRef.current }).arrayBuffer());
         for (let i = 0; i < raw.length - 3; i++) {
@@ -267,7 +271,7 @@ export default function RecordPage() {
       } catch (err) {
         console.warn('[rotateChunk] WebM header extraction failed:', err);
       }
-    } else if (webmHeaderRef.current) {
+    } else {
       blobsForUpload = [new Blob([webmHeaderRef.current], { type: mimeRef.current }), ...blobs];
     }
 
@@ -305,27 +309,35 @@ export default function RecordPage() {
     };
 
     mr.onstop = async () => {
+      const pausing = isPausingRef.current;
+      isPausingRef.current = false;
       const blobs = chunkBlobsRef.current;
       chunkBlobsRef.current = [];
-      const offset = timeOffsetRef.current;
+      // Pause froze its own upload offset + header; a final stop uses the live refs.
+      const offset = pausing ? pauseOffsetRef.current : timeOffsetRef.current;
+      const header = pausing ? pauseHeaderRef.current : webmHeaderRef.current;
 
       try {
         let blobsForUpload = blobs;
-        if (offset > 0 && webmHeaderRef.current) {
-          blobsForUpload = [new Blob([webmHeaderRef.current], { type: mime }), ...blobs];
+        if (offset > 0 && header) {
+          blobsForUpload = [new Blob([header], { type: mime }), ...blobs];
         }
         const blob = new Blob(blobsForUpload, { type: mime });
         if (blob.size >= 1000) {
           await uploadChunk(blob, offset);
           setChunksSaved((n) => n + 1);
         }
-        setState('queued');
 
+        // Paused: this segment is safely uploaded — stay paused, keep recording alive.
+        if (pausing) return;
+
+        setState('queued');
         const id = recordingIdRef.current;
         if (!id) return;
         fetch(`/api/recordings/${id}/finalize`, { method: 'POST', keepalive: true }).catch(() => {});
         router.push(`/recordings/${id}`);
       } catch (err) {
+        if (pausing) { setChunksFailed((n) => n + 1); return; }
         isActiveRef.current = false;
         setErrorMsg(err instanceof Error ? err.message : 'Upload failed. Please try again.');
         setState('error');
@@ -388,30 +400,60 @@ export default function RecordPage() {
 
   const pause = useCallback(() => {
     if (state !== 'recording' || isPaused) return;
-    if (recorderRef.current?.state === 'recording') {
-      recorderRef.current.pause();
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
-      setIsPaused(true);
-    }
-  }, [state, isPaused]);
+    const mr = recorderRef.current;
+    if (!mr || mr.state === 'inactive') return;
 
-  const resume = useCallback(() => {
+    setIsPaused(true);              // freezes the timer via the effect
+    isPausingRef.current = true;    // onstop: flush this segment, don't finalize
+
+    // Freeze the upload offset + header for the flushed tail, then advance the
+    // audio timeline synchronously so a fast resume starts the next segment cleanly.
+    // (Freezing guards against resume's startRecorder resetting these mid-flush.)
+    pauseOffsetRef.current = timeOffsetRef.current;
+    pauseHeaderRef.current = webmHeaderRef.current;
+    timeOffsetRef.current += (Date.now() - chunkStartRef.current) / 1000;
+
+    if (chunkTimerRef.current) { clearTimeout(chunkTimerRef.current); chunkTimerRef.current = null; }
+
+    mr.stop(); // flushes buffered audio → onstop uploads it as a self-contained chunk
+
+    // Fully release the microphone so iOS shows the mic-off indicator and plays
+    // its tone. Permission persists for the session, so resume won't re-prompt.
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
+    stopVAD();
+    stopLiveCaptions();
+  }, [state, isPaused, stopVAD, stopLiveCaptions]);
+
+  const resume = useCallback(async () => {
     if (state !== 'recording' || !isPaused) return;
-    if (recorderRef.current?.state === 'paused') {
-      recorderRef.current.resume();
-      timerRef.current = setInterval(() => setSeconds((s) => s + 1), 1000);
-      setIsPaused(false);
+    try {
+      // Re-acquire the mic. The browser already granted permission this session,
+      // so no dialog appears — iOS just reactivates the mic.
+      const preferredMicId = localStorage.getItem('preferredMicId');
+      const audioConstraint: MediaTrackConstraints | boolean = preferredMicId
+        ? { deviceId: { ideal: preferredMicId } }
+        : true;
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraint });
+      streamRef.current = stream;
+
+      startVAD(stream);
+      startRecorder(stream, mimeRef.current);          // fresh segment; timeOffsetRef carries over
+      chunkTimerRef.current = setTimeout(rotateChunk, CHUNK_MS);
+      if (recordingIdRef.current) void startLiveCaptions(recordingIdRef.current);
+
+      setIsPaused(false);            // restarts the timer via the effect
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Could not access the microphone to resume.');
+      // Stay paused so the user can tap Resume again.
     }
-  }, [state, isPaused]);
+  }, [state, isPaused, startVAD, startRecorder, rotateChunk, startLiveCaptions]);
 
   const stop = useCallback(() => {
     if (state !== 'recording') return;
 
+    const wasPaused = isPaused;
     isActiveRef.current = false;
-    setState('uploading');
     stopVAD();
     stopLiveCaptions();
     setIsPaused(false);
@@ -421,16 +463,27 @@ export default function RecordPage() {
       chunkTimerRef.current = null;
     }
 
-    if (recorderRef.current?.state !== 'inactive') {
-      if (recorderRef.current?.state === 'paused') {
-        recorderRef.current.resume();
+    if (wasPaused) {
+      // Paused: the segment was already flushed and the mic already released.
+      // Nothing left to record — just finalize and go.
+      setState('queued');
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+      void releaseWakeLock();
+      const id = recordingIdRef.current;
+      if (id) {
+        fetch(`/api/recordings/${id}/finalize`, { method: 'POST', keepalive: true }).catch(() => {});
+        router.push(`/recordings/${id}`);
       }
-      recorderRef.current?.stop();
+      return;
     }
 
+    setState('uploading');
+    if (recorderRef.current && recorderRef.current.state !== 'inactive') {
+      recorderRef.current.stop(); // onstop uploads the tail → finalize → navigate
+    }
     streamRef.current?.getTracks().forEach((t) => t.stop());
     void releaseWakeLock();
-  }, [state, stopVAD, stopLiveCaptions, releaseWakeLock]);
+  }, [state, isPaused, stopVAD, stopLiveCaptions, releaseWakeLock, router]);
 
   const handleClick = () => {
     if (state === 'recording') stop();
@@ -504,7 +557,7 @@ export default function RecordPage() {
 
         {/* Record button & Pause/Resume controls */}
         <div className="flex flex-col items-center gap-6">
-          <div className="relative flex items-center justify-center gap-4">
+          <div className="relative flex items-center justify-center">
             {state === 'recording' && (
               <>
                 <div className="absolute rounded-full w-36 h-36 pulse-ring bg-red-500/15" />
@@ -529,38 +582,40 @@ export default function RecordPage() {
                 </svg>
               )}
             </button>
-
-            {/* Pause/Resume buttons */}
-            {state === 'recording' && (
-              <div className="flex gap-2 animate-in fade-in-50 slide-in-from-left-4 duration-300">
-                {isPaused ? (
-                  <button
-                    type="button"
-                    onClick={resume}
-                    className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold bg-emerald-500 hover:bg-emerald-600 text-white transition-colors touch-manipulation"
-                    title="Resume recording"
-                  >
-                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                      <path d="M8 5v14l11-7z" />
-                    </svg>
-                    Resume
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={pause}
-                    className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold bg-amber-500 hover:bg-amber-600 text-white transition-colors touch-manipulation"
-                    title="Pause recording"
-                  >
-                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                      <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z" />
-                    </svg>
-                    Pause
-                  </button>
-                )}
-              </div>
-            )}
           </div>
+
+          {/* Pause/Resume — sits directly beneath the stop button */}
+          {state === 'recording' && (
+            <div className="animate-in fade-in-50 slide-in-from-top-1 duration-300">
+              {isPaused ? (
+                <button
+                  type="button"
+                  onClick={resume}
+                  aria-label="Resume recording"
+                  className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold bg-emerald-500 hover:bg-emerald-600 text-white transition-colors touch-manipulation"
+                  title="Resume recording"
+                >
+                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                  Resume
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={pause}
+                  aria-label="Pause recording"
+                  className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold bg-amber-500 hover:bg-amber-600 text-white transition-colors touch-manipulation"
+                  title="Pause recording"
+                >
+                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z" />
+                  </svg>
+                  Pause
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Status */}
