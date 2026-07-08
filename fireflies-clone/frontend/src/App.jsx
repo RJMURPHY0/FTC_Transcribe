@@ -3,10 +3,11 @@ import './index.css'
 
 function App() {
   const [isRecording, setIsRecording] = useState(false)
+  const [isPaused, setIsPaused] = useState(false)
   const [isProcessing, setIsProcessing] = useState(false)
   const [results, setResults] = useState(null)
   const [error, setError] = useState('')
-  
+
   const mediaRecorderRef = useRef(null)
   const audioChunksRef = useRef([])
 
@@ -38,11 +39,26 @@ function App() {
     }
   }
 
+  const pauseRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.pause()
+      setIsPaused(true)
+    }
+  }
+
+  const resumeRecording = () => {
+    if (mediaRecorderRef.current && isRecording && isPaused) {
+      mediaRecorderRef.current.resume()
+      setIsPaused(false)
+    }
+  }
+
   const stopRecording = () => {
     if (mediaRecorderRef.current && isRecording) {
       mediaRecorderRef.current.stop()
       mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop())
       setIsRecording(false)
+      setIsPaused(false)
     }
   }
 
@@ -140,16 +156,43 @@ function App() {
 
           <div className="record-section">
             <h2>Live Capture</h2>
-            <button 
-              className={`record-btn-large ${isRecording ? 'recording' : ''}`}
-              onClick={handleRecordClick}
-              disabled={isProcessing}
-            >
-              {isRecording ? '⏹' : '🎤'}
-            </button>
+            <div className="record-controls">
+              <button
+                className={`record-btn-large ${isRecording ? 'recording' : ''}`}
+                onClick={handleRecordClick}
+                disabled={isProcessing}
+              >
+                {isRecording ? '⏹' : '🎤'}
+              </button>
+              {isRecording && (
+                <div className="pause-resume-group">
+                  {isPaused ? (
+                    <button
+                      className="btn-control btn-resume"
+                      onClick={resumeRecording}
+                      title="Resume recording"
+                    >
+                      ▶ Resume
+                    </button>
+                  ) : (
+                    <button
+                      className="btn-control btn-pause"
+                      onClick={pauseRecording}
+                      title="Pause recording"
+                    >
+                      ⏸ Pause
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
             <div className="status-msg">
-              {isRecording ? "Recording active. Click square to stop." : 
-               isProcessing ? "Transcribing & summarizing..." : 
+              {isRecording ? (
+                isPaused ?
+                  "Recording paused. Click Resume to continue or Stop to finish." :
+                  "Recording active. Click Pause to pause or Stop to finish."
+              ) :
+               isProcessing ? "Transcribing & summarizing..." :
                "Click the microphone to record a meeting"}
             </div>
             {error && <div style={{ color: '#ef4444', marginTop: '10px' }}>{error}</div>}

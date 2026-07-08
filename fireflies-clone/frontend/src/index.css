@@ -241,6 +241,14 @@ body {
   margin-bottom: 15px;
 }
 
+.record-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  margin-bottom: 15px;
+}
+
 .record-btn-large {
   width: 64px;
   height: 64px;
@@ -251,20 +259,76 @@ body {
   display: flex;
   justify-content: center;
   align-items: center;
-  margin: 0 auto 15px;
   color: white;
   font-size: 24px;
   box-shadow: 0 4px 12px rgba(124, 58, 237, 0.3);
-  transition: transform 0.2s;
+  transition: transform 0.2s, box-shadow 0.2s;
+  flex-shrink: 0;
 }
 
-.record-btn-large:hover {
+.record-btn-large:hover:not(:disabled) {
   transform: scale(1.05);
+  box-shadow: 0 6px 16px rgba(124, 58, 237, 0.4);
 }
 
 .record-btn-large.recording {
   background: #ef4444;
   animation: pulse 2s infinite;
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
+}
+
+.pause-resume-group {
+  display: flex;
+  gap: 10px;
+  animation: slideIn 0.3s ease-out;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateX(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.btn-control {
+  padding: 10px 20px;
+  border: none;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 0.9rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.btn-pause {
+  background: #fbbf24;
+  color: #78350f;
+}
+
+.btn-pause:hover {
+  background: #f59e0b;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(245, 158, 11, 0.2);
+}
+
+.btn-resume {
+  background: #34d399;
+  color: #065f46;
+}
+
+.btn-resume:hover {
+  background: #10b981;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(16, 185, 129, 0.2);
 }
 
 @keyframes pulse {
