@@ -562,8 +562,8 @@ export default function RecordPage() {
           <div className="relative flex items-center justify-center">
             {state === 'recording' && (
               <>
-                <div className="absolute rounded-full w-36 h-36 pulse-ring bg-red-500/15" />
-                <div className="absolute rounded-full w-36 h-36 pulse-ring-delay bg-red-500/15" />
+                <div className="absolute rounded-full w-36 h-36 pulse-ring bg-red-500/15 pointer-events-none" />
+                <div className="absolute rounded-full w-36 h-36 pulse-ring-delay bg-red-500/15 pointer-events-none" />
               </>
             )}
             <button
@@ -586,9 +586,11 @@ export default function RecordPage() {
             </button>
           </div>
 
-          {/* Pause/Resume — sits directly beneath the stop button */}
+          {/* Pause/Resume — sits directly beneath the stop button.
+              relative z-10 keeps it above the (decorative) pulse rings so a tap
+              during their expansion always lands on the button. */}
           {state === 'recording' && (
-            <div className="animate-in fade-in-50 slide-in-from-top-1 duration-300">
+            <div className="relative z-10 animate-in fade-in-50 slide-in-from-top-1 duration-300">
               {isPaused ? (
                 <button
                   type="button"
