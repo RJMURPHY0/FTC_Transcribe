@@ -499,21 +499,23 @@ export default function RecordPage() {
 
   return (
     <div className="min-h-screen flex flex-col bg-surface">
-      {/* Header */}
-      <header className="border-b border-surface-border bg-surface/80 backdrop-blur-md">
-        <div className="max-w-5xl mx-auto px-4 py-3 flex items-center gap-3">
+      {/* Header — sticky + stacked above the (flex-centered) body so its taps
+          are never swallowed by overflowing content or the iOS mic pill. */}
+      <header className="sticky top-0 z-30 border-b border-surface-border bg-surface/95 backdrop-blur-md">
+        <div className="max-w-5xl mx-auto px-2 py-2 flex items-center gap-2">
           <Link
             href="/"
-            className="flex items-center gap-1.5 text-sm font-medium text-ftc-mid hover:text-ftc-gray transition-colors p-2 -ml-2 rounded-xl touch-manipulation"
+            aria-label="Back"
+            className="flex items-center gap-1.5 text-sm font-medium text-ftc-mid hover:text-ftc-gray active:bg-surface-raised transition-colors px-3 py-2.5 rounded-xl touch-manipulation shrink-0"
           >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
             </svg>
             Back
           </Link>
-          <div className="flex items-center gap-2">
-            <img src="/logo.png" alt="FTC Transcribe" className="h-6 object-contain" />
-            <span className="font-semibold text-sm text-ftc-gray border-l border-surface-border pl-2">New Recording</span>
+          <div className="flex items-center gap-2 min-w-0">
+            <img src="/logo.png" alt="FTC Transcribe" className="h-6 object-contain shrink-0" />
+            <span className="font-semibold text-sm text-ftc-gray border-l border-surface-border pl-2 truncate">New Recording</span>
           </div>
         </div>
       </header>
