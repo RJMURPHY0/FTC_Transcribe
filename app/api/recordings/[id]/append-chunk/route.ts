@@ -117,7 +117,7 @@ async function transcribeChunkBackground(
       return;
     }
 
-    const { text, segments } = await transcribeChunk(blob.audioData as Buffer, mimeType);
+    const { text, segments, voiceData } = await transcribeChunk(blob.audioData as Buffer, mimeType);
 
     await prisma.chunkTranscript.update({
       where: { jobId_chunkId: { jobId, chunkId } },
@@ -125,6 +125,7 @@ async function transcribeChunkBackground(
         status: 'succeeded',
         transcript: text.trim(),
         segments: JSON.stringify(segments),
+        voiceData: voiceData ? JSON.stringify(voiceData) : '',
         processedAt: new Date(),
         lastError: '',
       },

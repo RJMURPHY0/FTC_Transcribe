@@ -19,6 +19,9 @@ prisma/migrations/
 # Uploads
 uploads/
 
+# Voice-ID ONNX models (downloaded at runtime / via models/README)
+models/
+
 # OS
 .DS_Store
 Thumbs.db

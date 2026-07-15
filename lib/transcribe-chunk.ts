@@ -5,8 +5,19 @@ import { transcribeAudio } from '@/lib/ai';
 import type { RawSegment } from '@/lib/ai';
 import { isDeepgramReady, transcribeWithDeepgram } from '@/lib/deepgram';
 import type { DeepgramRawSegment } from '@/lib/deepgram';
+import { analyzeChunkVoices, isVoiceIdEnabled } from '@/lib/voice-id';
+import type { ChunkVoiceData } from '@/lib/voice-id';
 
 export const MAX_CHUNK_ATTEMPTS = 4;
+
+function extForMime(mimeType: string): string {
+  return mimeType.includes('mp4') ? '.mp4'
+    : mimeType.includes('ogg') ? '.ogg'
+    : mimeType.includes('wav') ? '.wav'
+    : mimeType.includes('mpeg') ? '.mp3'
+    : mimeType.includes('m4a') ? '.m4a'
+    : '.webm';
+}
 
 export async function withTempFile<T>(
   data: Buffer,
@@ -57,19 +68,27 @@ export async function transcribeChunkWithDeepgramRetry(
   }
 
   console.warn('[transcribe-chunk] Deepgram failed after retries, falling back to Groq/OpenAI');
-  const ext = mimeType.includes('mp4') ? '.mp4' : mimeType.includes('ogg') ? '.ogg' : '.webm';
-  return transcribeChunkWithRetry(audioData, ext);
+  return transcribeChunkWithRetry(audioData, extForMime(mimeType));
 }
 
 export async function transcribeChunk(
   audioData: Buffer,
   mimeType: string,
-): Promise<{ text: string; segments: RawSegment[] | DeepgramRawSegment[] }> {
+): Promise<{ text: string; segments: RawSegment[] | DeepgramRawSegment[]; voiceData: ChunkVoiceData | null }> {
+  // Acoustic voice analysis (diarization + voiceprints) runs in parallel with
+  // transcription — it reads the waveform, not the text. Never blocks or fails the chunk.
+  const voicePromise: Promise<ChunkVoiceData | null> = isVoiceIdEnabled
+    ? analyzeChunkVoices(audioData, mimeType).catch(() => null)
+    : Promise.resolve(null);
+
   if (isDeepgramReady) {
     const result = await transcribeChunkWithDeepgramRetry(audioData, mimeType);
-    return { text: result.text, segments: 'segments' in result ? result.segments : result.rawSegments };
+    return {
+      text: result.text,
+      segments: 'segments' in result ? result.segments : result.rawSegments,
+      voiceData: await voicePromise,
+    };
   }
-  const ext = mimeType.includes('mp4') ? '.mp4' : mimeType.includes('ogg') ? '.ogg' : '.webm';
-  const result = await transcribeChunkWithRetry(audioData, ext);
-  return { text: result.text, segments: result.rawSegments };
+  const result = await transcribeChunkWithRetry(audioData, extForMime(mimeType));
+  return { text: result.text, segments: result.rawSegments, voiceData: await voicePromise };
 }

@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
+import { getAuthUser } from '@/lib/auth';
+import { cosineSim } from '@/lib/voice-id';
 import type { TranscriptSegment } from '@/lib/ai';
 
 export const dynamic = 'force-dynamic';
@@ -60,6 +62,50 @@ export async function PATCH(
     where: { recordingId: params.id },
     data: { segments: JSON.stringify(updated) },
   });
+
+  // Relearn loop: renaming "Speaker 2" → "Dave" teaches the system Dave's voice.
+  // The recording's stored voiceprint for that speaker becomes a VoiceProfile,
+  // so future recordings auto-label Dave without any enrollment.
+  try {
+    const user = await getAuthUser().catch(() => null);
+    const embeddings = await prisma.speakerEmbedding.findMany({ where: { recordingId: params.id } });
+    for (const [from, to] of Object.entries(renames)) {
+      if (/^Speaker \d+$/i.test(to)) continue; // renaming to a generic label teaches nothing
+      const row = embeddings.find(e => e.speakerLabel === from);
+      if (!row) continue;
+
+      let rowEmbedding: number[];
+      try { rowEmbedding = JSON.parse(row.embedding) as number[]; } catch { continue; }
+
+      // Skip if we already have a near-identical sample for this person
+      const existing = await prisma.voiceProfile.findMany({
+        where: { personName: to },
+        select: { embedding: true },
+      });
+      const isDuplicate = existing.some(p => {
+        try { return cosineSim(rowEmbedding, JSON.parse(p.embedding) as number[]) > 0.95; }
+        catch { return false; }
+      });
+
+      if (!isDuplicate) {
+        await prisma.voiceProfile.create({
+          data: {
+            userId: user?.id ?? null,
+            personName: to,
+            embedding: row.embedding,
+            durationS: row.durationS,
+            source: 'relabel',
+          },
+        });
+      }
+      await prisma.speakerEmbedding.update({
+        where: { id: row.id },
+        data: { speakerLabel: to },
+      });
+    }
+  } catch (err) {
+    console.warn('[speakers] voiceprint relearn failed:', err);
+  }
 
   return NextResponse.json({ ok: true });
 }

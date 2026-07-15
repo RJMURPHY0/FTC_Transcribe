@@ -14,6 +14,8 @@ import { notifyTeamsChannel } from '@/lib/integrations/teams-notify';
 import { indexTranscript } from '@/lib/embeddings';
 import { alignSpeakersAcrossChunks } from '@/lib/deepgram';
 import type { DeepgramRawSegment } from '@/lib/deepgram';
+import { resolveGlobalSpeakers, matchProfiles } from '@/lib/voice-id';
+import type { ChunkForAlignment, ChunkVoiceData } from '@/lib/voice-id';
 import {
   transcribeChunk,
   transcribeChunkWithRetry,
@@ -93,10 +95,16 @@ async function analyzeAndCompleteRecording(recordingId: string): Promise<Finaliz
     generateTopics(rawSegments),
   ]);
 
-  // Replace speaker labels with real names where confident
+  // Replace speaker labels with real names where confident. Only generic
+  // "Speaker N" labels are eligible — names already assigned by voice ID
+  // (or a previous manual rename) are never overwritten by the LLM guess.
   const speakerNames = await identifySpeakerNames(diarizedRaw);
+  const isGeneric = (label: string) => /^Speaker \d+$/.test(label);
   const diarized = Object.keys(speakerNames).length > 0
-    ? diarizedRaw.map(seg => ({ ...seg, speaker: speakerNames[seg.speaker] ?? seg.speaker }))
+    ? diarizedRaw.map(seg => ({
+        ...seg,
+        speaker: isGeneric(seg.speaker) ? (speakerNames[seg.speaker] ?? seg.speaker) : seg.speaker,
+      }))
     : diarizedRaw;
 
   const dateStr = new Date().toLocaleDateString('en-GB', {
@@ -355,14 +363,14 @@ async function finalizeWithJobs(recordingId: string): Promise<FinalizeResult> {
               return;
             }
 
-            const { text: chunkText, segments: chunkSegments } = await transcribeChunk(
+            const { text: chunkText, segments: chunkSegments, voiceData: chunkVoice } = await transcribeChunk(
               blob.audioData as Buffer,
               chunkMeta.mimeType,
             );
 
             await prisma.chunkTranscript.update({
               where: { jobId_chunkId: { jobId: lock.id, chunkId: chunkMeta.id } },
-              data: { status: 'succeeded', transcript: chunkText.trim(), segments: JSON.stringify(chunkSegments), processedAt: new Date(), lastError: '' },
+              data: { status: 'succeeded', transcript: chunkText.trim(), segments: JSON.stringify(chunkSegments), voiceData: chunkVoice ? JSON.stringify(chunkVoice) : '', processedAt: new Date(), lastError: '' },
             });
           } catch (err) {
             const msg = err instanceof Error ? err.message : 'Chunk transcription failed';
@@ -399,11 +407,18 @@ async function finalizeWithJobs(recordingId: string): Promise<FinalizeResult> {
     const allSegments: Array<RawSegment & { speaker?: string }> = [];
     const deepgramChunkData: Array<{ segments: DeepgramRawSegment[]; offset: number }> = [];
     let hasDeepgramChunks = false;
+    const voiceChunks: ChunkForAlignment[] = [];
 
     for (const row of rows) {
       if (row.transcript.trim()) fullText += (fullText ? ' ' : '') + row.transcript.trim();
       try {
         const parsed = JSON.parse(row.segments) as Array<{ start: number; end: number; text: string; speaker?: number | string }>;
+        let voiceData: ChunkVoiceData | null = null;
+        try {
+          if (row.voiceData) voiceData = JSON.parse(row.voiceData) as ChunkVoiceData;
+        } catch { /* treat as no voice data */ }
+        voiceChunks.push({ offset: row.offset, segments: parsed, voiceData });
+
         if (parsed.length > 0 && typeof parsed[0].speaker === 'number') {
           hasDeepgramChunks = true;
           deepgramChunkData.push({ segments: parsed as DeepgramRawSegment[], offset: row.offset });
@@ -413,7 +428,52 @@ async function finalizeWithJobs(recordingId: string): Promise<FinalizeResult> {
       } catch { /* skip unparseable chunk */ }
     }
 
-    if (hasDeepgramChunks) {
+    // Acoustic speaker resolution: cluster per-chunk voiceprints into global
+    // speakers, then match against enrolled voice profiles. When it succeeds it
+    // replaces both the naive Deepgram cross-chunk alignment and (downstream)
+    // the LLM text diarization.
+    let voiceResolved = false;
+    try {
+      const resolved = resolveGlobalSpeakers(voiceChunks);
+      if (resolved && resolved.segments.length > 0) {
+        const profileRows = await prisma.voiceProfile.findMany({
+          select: { personName: true, embedding: true },
+        }).catch(() => [] as Array<{ personName: string; embedding: string }>);
+        const profiles = profileRows
+          .map((p) => {
+            try { return { personName: p.personName, embedding: JSON.parse(p.embedding) as number[] }; }
+            catch { return null; }
+          })
+          .filter((p): p is { personName: string; embedding: number[] } => !!p);
+
+        const matches = matchProfiles(resolved.speakerEmbeddings, profiles);
+        allSegments.length = 0;
+        allSegments.push(...resolved.segments.map(s => ({
+          ...s,
+          speaker: matches[s.speaker] ?? s.speaker,
+        })));
+
+        // Persist per-speaker voiceprints for this recording (idempotent on re-run) —
+        // used by the relearn loop when the user renames a speaker.
+        await prisma.speakerEmbedding.deleteMany({ where: { recordingId } }).catch(() => {});
+        await prisma.speakerEmbedding.createMany({
+          data: resolved.speakerEmbeddings.map(se => ({
+            recordingId,
+            speakerLabel: matches[se.label] ?? se.label,
+            embedding: JSON.stringify(se.embedding),
+            durationS: se.durationS,
+          })),
+        }).catch(() => {});
+
+        voiceResolved = true;
+        const matched = Object.entries(matches).map(([l, n]) => `${l}→${n}`).join(', ');
+        console.log(`[finalize] voice ID resolved ${resolved.speakerEmbeddings.length} speakers${matched ? ` (${matched})` : ''}`);
+      }
+    } catch (err) {
+      console.warn('[finalize] voice speaker resolution failed, using fallback:', err);
+    }
+
+    if (!voiceResolved && hasDeepgramChunks) {
       const sorted = deepgramChunkData.sort((a, b) => a.offset - b.offset);
       allSegments.push(...alignSpeakersAcrossChunks(sorted));
     }

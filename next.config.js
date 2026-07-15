@@ -28,7 +28,27 @@ const securityHeaders = [
   },
 ];
 
+// Voice-ID native deps: keep out of the webpack bundle (loaded via require at
+// runtime) and force-trace the platform binaries that dynamic requires hide
+// from Vercel's file tracer.
+const voiceIdTraceIncludes = [
+  './node_modules/sherpa-onnx-node/**',
+  './node_modules/sherpa-onnx-linux-x64/**',
+  './node_modules/ffmpeg-static/**',
+];
+
 const nextConfig = {
+  experimental: {
+    serverComponentsExternalPackages: ['sherpa-onnx-node', 'ffmpeg-static'],
+    outputFileTracingIncludes: {
+      '/api/recordings/[id]/append-chunk': voiceIdTraceIncludes,
+      '/api/recordings/[id]/finalize': voiceIdTraceIncludes,
+      '/api/recordings/[id]/rediarize': voiceIdTraceIncludes,
+      '/api/jobs/finalize': voiceIdTraceIncludes,
+      '/api/voice-profiles': voiceIdTraceIncludes,
+      '/api/transcribe': voiceIdTraceIncludes,
+    },
+  },
   async headers() {
     return [
       {

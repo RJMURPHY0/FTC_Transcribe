@@ -36,6 +36,7 @@ model Recording {
   finalizeJob FinalizeJob?
   transcript  Transcript?
   summary     Summary?
+  speakerEmbeddings SpeakerEmbedding[]
 
   @@index([userId])
 }
@@ -93,6 +94,7 @@ model ChunkTranscript {
   lastError    String      @default("")
   transcript   String      @default("")
   segments     String      @default("[]")
+  voiceData    String      @default("")
   processedAt  DateTime?
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
@@ -123,6 +125,35 @@ model Summary {
   actionItemsChecked String    @default("[]")
   actionItemsDue     String    @default("[]")
   createdAt          DateTime  @default(now())
+}
+
+// Acoustic voice profiles — one row per enrollment phrase or relabel sample.
+// embedding is a JSON array of 192 floats from the CAM++ speaker model.
+model VoiceProfile {
+  id          String   @id @default(cuid())
+  userId      String?
+  personName  String
+  embedding   String
+  durationS   Float    @default(0)
+  source      String   @default("enrollment") // enrollment | relabel
+  deviceLabel String   @default("")
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+  @@index([personName])
+}
+
+// Per-recording global speaker voiceprints — powers matching + relearn-on-rename
+model SpeakerEmbedding {
+  id           String    @id @default(cuid())
+  recordingId  String
+  recording    Recording @relation(fields: [recordingId], references: [id], onDelete: Cascade)
+  speakerLabel String
+  embedding    String
+  durationS    Float     @default(0)
+  createdAt    DateTime  @default(now())
+
+  @@index([recordingId])
 }
 
 // Speaker voice profiles — cross-recording speaker identification

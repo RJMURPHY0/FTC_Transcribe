@@ -237,6 +237,27 @@ export default function SettingsPage() {
           </div>
         </section>
 
+        {/* ── Voice Profiles ── */}
+        <section>
+          <h2 className="text-xs font-semibold uppercase tracking-widest text-ftc-mid mb-3">
+            Voice Identification
+          </h2>
+          <Link
+            href="/voice-setup"
+            className="flex items-center justify-between rounded-2xl border border-surface-border bg-surface-card p-5 hover:border-brand/40 transition-colors touch-manipulation"
+          >
+            <div>
+              <p className="text-sm text-ftc-gray font-medium">Voice profiles</p>
+              <p className="text-xs text-ftc-mid mt-1">
+                Teach the app who's who — enrolled voices are named automatically in every recording.
+              </p>
+            </div>
+            <svg className="w-4 h-4 text-ftc-mid shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+            </svg>
+          </Link>
+        </section>
+
         {/* ── Audio Quality ── */}
         <section>
           <h2 className="text-xs font-semibold uppercase tracking-widest text-ftc-mid mb-3">

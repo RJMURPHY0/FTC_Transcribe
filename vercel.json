@@ -20,6 +20,9 @@
     },
     "app/api/jobs/finalize/route.ts": {
       "maxDuration": 800
+    },
+    "app/api/voice-profiles/route.ts": {
+      "maxDuration": 120
     }
   },
   "crons": [

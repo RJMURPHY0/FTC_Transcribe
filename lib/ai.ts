@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
 import fs from 'fs';
 import { normaliseDue } from './action-items';
+import { openRouterComplete, isOpenRouterReady } from './openrouter';
 
 // ── Transcription: Groq (free Whisper) preferred, OpenAI Whisper as fallback ──
 const GROQ_KEY = process.env.GROQ_API_KEY;
@@ -23,6 +24,41 @@ const transcriptionModel = isGroqReady ? 'whisper-large-v3-turbo' : 'whisper-1';
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
 const isMockAnthropic = !ANTHROPIC_KEY || ANTHROPIC_KEY === 'your_anthropic_api_key_here';
 const anthropic = isMockAnthropic ? null : new Anthropic({ apiKey: ANTHROPIC_KEY });
+
+// At least one LLM route available (OpenRouter ladder and/or Anthropic)
+const isLlmReady = isOpenRouterReady || !isMockAnthropic;
+
+// Unified text completion. Cheap tasks go OpenRouter-first (free/cheap models);
+// the main analysis goes Anthropic-first for reliability. Each side falls back
+// to the other, so a dead key or saturated free model never kills the pipeline.
+async function llmComplete(
+  prompt: string,
+  maxTokens: number,
+  opts?: { preferAnthropic?: boolean },
+): Promise<string | null> {
+  const viaAnthropic = async (): Promise<string | null> => {
+    if (isMockAnthropic || !anthropic) return null;
+    try {
+      const message = await anthropic.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: maxTokens,
+        messages: [{ role: 'user', content: prompt }],
+      });
+      const content = message.content[0];
+      return content?.type === 'text' ? content.text : null;
+    } catch {
+      return null;
+    }
+  };
+  const viaOpenRouter = () => openRouterComplete(prompt, maxTokens);
+
+  const order = opts?.preferAnthropic ? [viaAnthropic, viaOpenRouter] : [viaOpenRouter, viaAnthropic];
+  for (const attempt of order) {
+    const text = await attempt();
+    if (text?.trim()) return text;
+  }
+  return null;
+}
 
 export interface RawSegment {
   start: number;
@@ -129,7 +165,6 @@ async function diarizeBatch(
   prevSpeaker: string,
   prevText: string,
   prevEnd: number,
-  client: Anthropic,
 ): Promise<string[]> {
   const segmentList = segments
     .map((s, i) => {
@@ -144,13 +179,8 @@ async function diarizeBatch(
     ? `Last segment before this batch — ${prevSpeaker}: "${prevText}"\n\n`
     : '';
 
-  const message = await client.messages.create({
-    model: 'claude-haiku-4-5-20251001',
-    max_tokens: 2048,
-    messages: [
-      {
-        role: 'user',
-        content: `${contextHint}Label each segment with the speaker.
+  const responseText = await llmComplete(
+    `${contextHint}Label each segment with the speaker.
 
 Each line shows: [index] timestamp +gap: text [no-end?]
 - "+Xs" = seconds of silence before this segment started
@@ -176,15 +206,13 @@ Segments:
 ${segmentList}
 
 Return ONLY a JSON array, one label per segment: ["Speaker 1","Speaker 1","Speaker 2",...]`,
-      },
-    ],
-  });
+    2048,
+  );
 
-  const content = message.content[0];
-  if (content.type !== 'text') return segments.map(() => prevSpeaker || 'Speaker 1');
+  if (!responseText) return segments.map(() => prevSpeaker || 'Speaker 1');
 
   try {
-    const jsonMatch = content.text.match(/\[[\s\S]*\]/);
+    const jsonMatch = responseText.match(/\[[\s\S]*\]/);
     if (!jsonMatch) throw new Error('No JSON array in response');
     const labels = JSON.parse(jsonMatch[0]) as string[];
     return segments.map((_, i) => labels[i] ?? prevSpeaker ?? 'Speaker 1');
@@ -219,8 +247,8 @@ export async function diarizeSegments(rawSegments: Array<RawSegment & { speaker?
     return rawSegments as TranscriptSegment[];
   }
 
-  // Without Claude, label everything Speaker 1
-  if (isMockAnthropic || !anthropic) {
+  // Without any LLM route, label everything Speaker 1
+  if (!isLlmReady) {
     return rawSegments.map((s) => ({ ...s, speaker: 'Speaker 1' }));
   }
 
@@ -232,7 +260,7 @@ export async function diarizeSegments(rawSegments: Array<RawSegment & { speaker?
   // Process in batches so long meetings (hundreds of segments) don't hit context/timeout limits
   for (let i = 0; i < rawSegments.length; i += DIARIZE_BATCH_SIZE) {
     const batch = rawSegments.slice(i, i + DIARIZE_BATCH_SIZE);
-    const labels = await diarizeBatch(batch, prevSpeaker, prevText, prevEnd, anthropic);
+    const labels = await diarizeBatch(batch, prevSpeaker, prevText, prevEnd);
     allLabels.push(...labels);
     prevSpeaker = labels[labels.length - 1] ?? prevSpeaker;
     prevText = batch[batch.length - 1]?.text.trim() ?? prevText;
@@ -247,7 +275,7 @@ export async function diarizeSegments(rawSegments: Array<RawSegment & { speaker?
 export async function identifySpeakerNames(
   segments: TranscriptSegment[],
 ): Promise<Record<string, string>> {
-  if (!segments.length || isMockAnthropic || !anthropic) return {};
+  if (!segments.length || !isLlmReady) return {};
 
   // Collect the first 6 segments per speaker (introductions) + 30 from the middle
   const perSpeaker = new Map<string, string[]>();
@@ -271,12 +299,8 @@ export async function identifySpeakerNames(
   const speakers = [...perSpeaker.keys()];
 
   try {
-    const message = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 256,
-      messages: [{
-        role: 'user',
-        content: `Analyse this meeting transcript excerpt and identify the real name of each speaker.
+    const responseText = await llmComplete(
+      `Analyse this meeting transcript excerpt and identify the real name of each speaker.
 
 Only assign a name if you are HIGHLY CONFIDENT — the person introduces themselves ("I'm John", "This is Sarah"), is addressed directly by name ("Thanks, John"), or their identity is unambiguous from context.
 
@@ -288,13 +312,11 @@ Transcript excerpt:
 ${sample}
 
 Return ONLY a JSON object, e.g. {"Speaker 1": "John Smith", "Speaker 2": null}`,
-      }],
-    });
+      256,
+    );
+    if (!responseText) return {};
 
-    const content = message.content[0];
-    if (content.type !== 'text') return {};
-
-    const jsonMatch = content.text.match(/\{[\s\S]*\}/);
+    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
     if (!jsonMatch) return {};
 
     const raw = JSON.parse(jsonMatch[0]) as Record<string, string | null>;
@@ -311,25 +333,19 @@ Return ONLY a JSON object, e.g. {"Speaker 1": "John Smith", "Speaker 2": null}`,
 }
 
 export async function generateTitle(transcript: string): Promise<string | null> {
-  if (isMockAnthropic || !anthropic || !transcript.trim()) return null;
+  if (!isLlmReady || !transcript.trim()) return null;
 
   try {
-    const message = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 24,
-      messages: [
-        {
-          role: 'user',
-          content: `Write a 3-4 word meeting title. Return ONLY the title — no quotes, no punctuation at the end.
+    const raw = await llmComplete(
+      `Write a 3-4 word meeting title. Return ONLY the title — no quotes, no punctuation at the end.
 
 Good examples: "Q3 Budget Review", "New Hire Onboarding", "Product Roadmap Planning", "Weekly Team Standup", "Client Discovery Call"
 
 Transcript excerpt:
 ${transcript.slice(0, 600)}`,
-        },
-      ],
-    });
-    const text = message.content[0]?.type === 'text' ? message.content[0].text.trim() : null;
+      32,
+    );
+    const text = raw?.trim().replace(/^["']|["']$/g, '') ?? null;
     // Reject anything that looks too long or malformed
     if (!text || !text.trim() || text.length > 60 || text.includes('\n')) return null;
     return text;
@@ -339,7 +355,7 @@ ${transcript.slice(0, 600)}`,
 }
 
 export async function generateTopics(rawSegments: RawSegment[]): Promise<TopicSection[]> {
-  if (!rawSegments.length || isMockAnthropic || !anthropic) return [];
+  if (!rawSegments.length || !isLlmReady) return [];
 
   // Sample up to ~80 evenly-spaced segments so the prompt stays short
   const step = Math.max(1, Math.floor(rawSegments.length / 80));
@@ -349,13 +365,8 @@ export async function generateTopics(rawSegments: RawSegment[]): Promise<TopicSe
     .join('\n');
 
   try {
-    const message = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 512,
-      messages: [
-        {
-          role: 'user',
-          content: `Identify distinct topic sections in this meeting transcript.
+    const responseText = await llmComplete(
+      `Identify distinct topic sections in this meeting transcript.
 
 Return a JSON array where each item is {"time": <start in seconds, as a number>, "title": "<3-5 word topic name>"}.
 
@@ -368,14 +379,11 @@ Timeline:
 ${timeline}
 
 Return ONLY the JSON array, nothing else.`,
-        },
-      ],
-    });
+      512,
+    );
+    if (!responseText) return [];
 
-    const content = message.content[0];
-    if (content.type !== 'text') return [];
-
-    const jsonMatch = content.text.match(/\[[\s\S]*\]/);
+    const jsonMatch = responseText.match(/\[[\s\S]*\]/);
     if (!jsonMatch) return [];
 
     const parsed = JSON.parse(jsonMatch[0]) as TopicSection[];
@@ -447,10 +455,10 @@ export async function analyzeTranscript(
   meetingType: MeetingType = 'general',
   meetingDate: Date = new Date(),
 ): Promise<AnalysisResult> {
-  if (isMockAnthropic || !anthropic) {
+  if (!isLlmReady) {
     return {
-      overview: 'Demo summary — add your ANTHROPIC_API_KEY to .env.local to enable AI analysis.',
-      keyPoints: ['Add ANTHROPIC_API_KEY to .env.local', 'Restart the dev server'],
+      overview: 'Demo summary — add an ANTHROPIC_API_KEY or OPENROUTER_API_KEY to .env.local to enable AI analysis.',
+      keyPoints: ['Add ANTHROPIC_API_KEY or OPENROUTER_API_KEY to .env.local', 'Restart the dev server'],
       actionItems: [],
       actionItemsDue: [],
       decisions: [],
@@ -468,13 +476,10 @@ export async function analyzeTranscript(
   const dateAnchor = `\nThe meeting took place on ${meetingDateIso}. Resolve any relative deadlines (e.g. "by Friday", "next week") against this date.`;
 
   try {
-    const message = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 1024,
-      messages: [
-        {
-          role: 'user',
-          content: `${systemPrompt}${isGeneral ? '' : `
+    // Anthropic first for the main analysis (most reliable JSON); OpenRouter
+    // ladder as automatic fallback if the key is missing/dead or rate-limited.
+    const responseText = await llmComplete(
+      `${systemPrompt}${isGeneral ? '' : `
 
 Return ONLY valid JSON in this exact format:
 {
@@ -494,15 +499,14 @@ ${dateAnchor}
 
 TRANSCRIPT:
 ${truncated}`,
-        },
-      ],
-    });
+      1024,
+      { preferAnthropic: true },
+    );
 
-    const content = message.content[0];
-    if (content.type !== 'text') throw new Error('Unexpected Claude response type');
+    if (!responseText) throw new Error('No LLM response');
 
     try {
-      const jsonMatch = content.text.match(/\{[\s\S]*\}/);
+      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
       if (!jsonMatch) throw new Error('No JSON in response');
       const r = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
       const actionItems = Array.isArray(r.actionItems) ? (r.actionItems as string[]) : [];
@@ -518,7 +522,7 @@ ${truncated}`,
       };
     } catch {
       return {
-        overview: content.text.slice(0, 500),
+        overview: responseText.slice(0, 500),
         keyPoints: [],
         actionItems: [],
         actionItemsDue: [],
