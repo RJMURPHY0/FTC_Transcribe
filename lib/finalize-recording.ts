@@ -36,9 +36,7 @@ const MAX_CHUNKS_PER_RUN = 100;
 // Estimated processing time in seconds shown on the home-page list.
 // Chunks are pre-transcribed as they upload; finalize only needs AI analysis (~45s).
 // Small per-chunk buffer covers the rare case where background transcription didn't finish.
-export function estimateSeconds(chunkCount: number): number {
-  return 45 + Math.min(chunkCount * 3, 30);
-}
+export { estimateSeconds } from '@/lib/estimate';
 
 async function runConcurrent<T>(tasks: (() => Promise<T>)[], limit: number): Promise<T[]> {
   const results: (T | undefined)[] = new Array(tasks.length);

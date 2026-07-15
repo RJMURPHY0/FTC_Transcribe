@@ -7,7 +7,7 @@ import RecordingsList from '@/components/RecordingsList';
 import LogoutButton from '@/components/LogoutButton';
 import AdminFilters from '@/components/AdminFilters';
 import SearchBar from '@/components/SearchBar';
-import { estimateSeconds } from '@/lib/finalize-recording';
+import { estimateSeconds } from '@/lib/estimate';
 import { getAuthUser } from '@/lib/auth';
 import { ensureSchema } from '@/lib/ensure-schema';
 import AutoClaim from '@/components/AutoClaim';

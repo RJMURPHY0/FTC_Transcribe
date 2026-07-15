@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { prisma } from '@/lib/db';
-import { estimateSeconds } from '@/lib/finalize-recording';
+import { estimateSeconds } from '@/lib/estimate';
 import DeleteButton from './DeleteButton';
 import RetryButton from './RetryButton';
 import ProcessingPoller from './ProcessingPoller';
