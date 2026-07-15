@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-const DEFAULT: [number, number, number] = [1.43, 2, 1.2];
+const DEFAULT: [number, number, number] = [1.5, 2, 1.6];
 const MIN_FR = 0.45;
 
 interface Props {

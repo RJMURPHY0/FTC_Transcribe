@@ -121,7 +121,7 @@
   .detail-grid {
     /* var lets the client component override the ratios without breaking the
        mobile single-column stack (inline styles would beat the media query) */
-    grid-template-columns: var(--detail-cols, 1.43fr 0.5rem 2fr 0.5rem 1.2fr);
+    grid-template-columns: var(--detail-cols, 1.5fr 0.5rem 2fr 0.5rem 1.6fr);
     align-items: start;
     gap: 0;
   }

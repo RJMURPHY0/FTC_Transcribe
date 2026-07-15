@@ -83,7 +83,7 @@ export default async function RecordingPage({ params }: { params: { id: string }
     <div className="min-h-screen flex flex-col bg-surface">
       {/* Sticky header */}
       <header className="sticky top-0 z-20 border-b border-surface-border bg-surface/80 backdrop-blur-md">
-        <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-3">
+        <div className="max-w-[1800px] mx-auto px-4 py-3 flex items-center gap-3">
           <Link
             href="/"
             className="flex items-center gap-1.5 text-sm font-medium text-ftc-mid hover:text-ftc-gray transition-colors p-2 -ml-2 rounded-xl touch-manipulation flex-shrink-0"
@@ -126,7 +126,7 @@ export default async function RecordingPage({ params }: { params: { id: string }
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto w-full px-4 py-6 flex-1">
+      <main className="max-w-[1800px] mx-auto w-full px-4 py-6 flex-1">
         {/* Auto-retry + auto-refresh when queued or processing */}
         {(isUploading || isProcessing) && <ProcessingPoller id={recording.id} />}
 
