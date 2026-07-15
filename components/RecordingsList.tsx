@@ -45,6 +45,11 @@ interface UndoState {
 
 const UNDO_SECONDS = 6;
 
+// Cards above this index skip automatic full prefetch (they still prefetch on
+// hover/touch). Keeps the home render from fanning out a server render per
+// card while making the most-likely taps (recent meetings) open instantly.
+const FULL_PREFETCH_COUNT = 8;
+
 const COUNTDOWN_WIDTH: Record<number, string> = {
   6: 'w-full',
   5: 'w-5/6',
@@ -263,6 +268,16 @@ export default function RecordingsList({
 
   const isSelecting = selected.length > 0;
 
+  // Intent-based full prefetch: router.prefetch fetches the complete page data
+  // (not just the loading skeleton), so by the time the tap lands the meeting
+  // renders from cache. The Set avoids re-issuing on every hover.
+  const prefetchedRef = useRef<Set<string>>(new Set());
+  const prefetchRecording = (id: string) => {
+    if (prefetchedRef.current.has(id)) return;
+    prefetchedRef.current.add(id);
+    router.prefetch(`/recordings/${id}`);
+  };
+
   // Countdown tick for undo toast
   useEffect(() => {
     if (!undoState) return;
@@ -417,7 +432,7 @@ export default function RecordingsList({
   return (
     <>
       <ul className="space-y-3">
-        {visible.map((rec) => {
+        {visible.map((rec, idx) => {
           const actions = safeJson<string[]>(rec.summary?.actionItems, []);
           const points  = safeJson<string[]>(rec.summary?.keyPoints,   []);
           const selIdx  = selected.indexOf(rec.id);
@@ -454,7 +469,15 @@ export default function RecordingsList({
 
               <Link
                 href={`/recordings/${rec.id}`}
-                onClick={isSelecting ? (e) => { e.preventDefault(); toggle(rec.id, e); } : undefined}
+                prefetch={idx < FULL_PREFETCH_COUNT ? true : undefined}
+                onPointerEnter={() => prefetchRecording(rec.id)}
+                onTouchStart={() => prefetchRecording(rec.id)}
+                onClick={(e) => {
+                  if (isSelecting) { e.preventDefault(); toggle(rec.id, e); return; }
+                  // Lets the detail page's Back button use instant history
+                  // navigation (cache-restored, keeps scroll + filters).
+                  try { sessionStorage.setItem('came-from-list', '1'); } catch { /* ignore */ }
+                }}
                 className={`
                   flex flex-col gap-3 rounded-2xl border bg-surface-card p-5 pr-20 transition-all duration-150
                   active:scale-[0.99] touch-manipulation

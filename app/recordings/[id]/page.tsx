@@ -1,6 +1,6 @@
-import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { prisma } from '@/lib/db';
+import { prisma, withDbRetry } from '@/lib/db';
+import BackButton from './BackButton';
 import { estimateSeconds } from '@/lib/estimate';
 import DeleteButton from './DeleteButton';
 import RetryButton from './RetryButton';
@@ -34,10 +34,16 @@ function formatDate(date: Date) {
 
 export default async function RecordingPage({ params }: { params: { id: string } }) {
   await ensureSchema();
+  // withDbRetry + no catch: a transient DB blip must surface the error boundary
+  // (retry UI), not swallow into null → notFound() → a false 404 for a meeting
+  // that exists.
   const [recording, authUser] = await Promise.all([
-    prisma.recording
-      .findUnique({ where: { id: params.id }, include: { transcript: true, summary: true, _count: { select: { chunks: true } } } })
-      .catch(() => null),
+    withDbRetry(() =>
+      prisma.recording.findUnique({
+        where: { id: params.id },
+        include: { transcript: true, summary: true, _count: { select: { chunks: true } } },
+      }),
+    ),
     getAuthUser().catch(() => null),
   ]);
 
@@ -84,15 +90,7 @@ export default async function RecordingPage({ params }: { params: { id: string }
       {/* Sticky header */}
       <header className="sticky top-0 z-20 border-b border-surface-border bg-surface/80 backdrop-blur-md">
         <div className="max-w-[1800px] mx-auto px-4 py-3 flex items-center gap-3">
-          <Link
-            href="/"
-            className="flex items-center gap-1.5 text-sm font-medium text-ftc-mid hover:text-ftc-gray transition-colors p-2 -ml-2 rounded-xl touch-manipulation flex-shrink-0"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
-            </svg>
-            <span className="hidden sm:inline">Back</span>
-          </Link>
+          <BackButton />
 
           {/* Breadcrumb */}
           <div className="hidden sm:flex items-center gap-1.5 text-xs text-surface-muted">

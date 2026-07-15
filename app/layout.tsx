@@ -34,6 +34,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             __html: `try{var t=localStorage.getItem('ftc-theme');document.documentElement.classList.toggle('dark',t!=='light')}catch(e){}`,
           }}
         />
+        {/* Warm the TLS connection to Supabase before the first auth call —
+            saves a DNS + handshake round-trip on sign-in and SSO handoff. */}
+        {process.env.NEXT_PUBLIC_SUPABASE_URL && (
+          <link rel="preconnect" href={process.env.NEXT_PUBLIC_SUPABASE_URL} crossOrigin="anonymous" />
+        )}
         <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=4" />
         <link rel="icon" type="image/png" sizes="512x512" href="/icon-512.png?v=4" />
         <link rel="icon" type="image/png" sizes="32x32" href="/favicon.png?v=4" />

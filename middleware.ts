@@ -66,7 +66,10 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
+  // Skip public static assets entirely — they were already isPublic inside the
+  // handler, so running the edge function (cookie parse + client setup) for
+  // every logo/icon/manifest request was pure overhead on each page load.
   matcher: [
-    '/((?!_next/static|_next/image|favicon.ico).*)',
+    '/((?!_next/static|_next/image|favicon|icon|apple-touch-icon|logo|manifest|sw\\.js).*)',
   ],
 };

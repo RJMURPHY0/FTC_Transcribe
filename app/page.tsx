@@ -21,6 +21,12 @@ import {
 
 export const dynamic = 'force-dynamic';
 
+// Legacy-row claim gate: once per user per lambda instance (5-min TTL). The
+// client-side AutoClaim (once per browser session) is the primary mechanism —
+// re-running two UPDATEs on every home render only added pooler pressure.
+const claimGate = new Map<string, number>();
+const CLAIM_TTL_MS = 5 * 60 * 1000;
+
 // ── Async server component so org/member data streams in without blocking the page ─
 async function AdminFiltersLoader({
   orgs,
@@ -96,12 +102,14 @@ export default async function Home({
 
   // Legacy-row claim runs in parallel with everything else (AutoClaim on the
   // client is the primary mechanism — this is belt and braces)
-  const claimPromise = userId
-    ? Promise.all([
-        prisma.recording.updateMany({ where: { userId: null }, data: { userId } }),
-        prisma.folder.updateMany({ where: { userId: null }, data: { userId } }),
-      ]).catch(() => {})
-    : Promise.resolve();
+  let claimPromise: Promise<unknown> = Promise.resolve();
+  if (userId && Date.now() - (claimGate.get(userId) ?? 0) > CLAIM_TTL_MS) {
+    claimGate.set(userId, Date.now());
+    claimPromise = Promise.all([
+      prisma.recording.updateMany({ where: { userId: null }, data: { userId } }),
+      prisma.folder.updateMany({ where: { userId: null }, data: { userId } }),
+    ]).catch(() => {});
+  }
 
   // ── Org data — external Contacts API call, only awaited when the breadcrumb
   // or team cards actually need it (org filter active). Otherwise the filter
@@ -132,12 +140,14 @@ export default async function Home({
 
   let folders: { id: string; name: string; _count: { recordings: number } }[] = [];
   let recordings: Awaited<ReturnType<typeof prisma.recording.findMany<{
-    include: { summary: true; _count: { select: { chunks: true } } };
+    include: {
+      summary: { select: { overview: true; keyPoints: true; actionItems: true } };
+      _count: { select: { chunks: true } };
+    };
   }>>> = [];
 
-  // All queries fire concurrently — previously the four counts ran one after
-  // another, adding 4 sequential round-trips to the EU database per page load.
-  const countScope = { ...(canSeeAll ? {} : userId ? { userId } : {}), deletedAt: null };
+  // Stats scope: null = unscoped (super admin sees everything).
+  const statsUserId = canSeeAll ? null : userId;
   const folderScope = inOrgFolderView
     ? { userId: '__no_match__' }                            // don't load personal folders in org view
     : canSeeAll ? {} : userId ? { userId } : {};
@@ -148,7 +158,7 @@ export default async function Home({
   // so the UI shows a Refresh prompt instead of a false empty state.
   let recordingsFailed = false;
 
-  const [folderResult, recordingResult, allCount, completed, thisWeek, teamsCount] = await Promise.all([
+  const [folderResult, recordingResult, countsRows] = await Promise.all([
     withDbRetry(() => prisma.folder.findMany({
       where: folderScope,
       orderBy: { createdAt: 'asc' },
@@ -161,20 +171,32 @@ export default async function Home({
         ...userScope,
         deletedAt: null,
       },
-      include: { summary: true, _count: { select: { chunks: true } } },
+      // Cards only render overview + key-point/action counts — pulling the full
+      // summary row (topics, decisions, checked state) inflated every list load.
+      include: {
+        summary: { select: { overview: true, keyPoints: true, actionItems: true } },
+        _count: { select: { chunks: true } },
+      },
       orderBy: { createdAt: 'desc' },
       take: limit + 1,
     })).catch(() => { recordingsFailed = true; return []; }),
-    withDbRetry(() => prisma.recording.count({ where: countScope })).catch(() => 0),
-    withDbRetry(() => prisma.recording.count({ where: { ...countScope, status: 'completed' } })).catch(() => 0),
-    withDbRetry(() => prisma.recording.count({
-      where: { ...countScope, createdAt: { gte: new Date(Date.now() - 7 * 86400_000) } },
-    })).catch(() => 0),
-    withDbRetry(() => prisma.recording.count({ where: { ...countScope, source: 'teams' } })).catch(() => 0),
+    // All four stat tiles in one round-trip instead of four parallel counts —
+    // one pooled connection instead of four per home render.
+    withDbRetry(() => prisma.$queryRaw<{ all: number; completed: number; week: number; teams: number }[]>`
+      SELECT
+        COUNT(*)::int                                                         AS "all",
+        COUNT(*) FILTER (WHERE "status" = 'completed')::int                   AS "completed",
+        COUNT(*) FILTER (WHERE "createdAt" >= NOW() - INTERVAL '7 days')::int AS "week",
+        COUNT(*) FILTER (WHERE "source" = 'teams')::int                       AS "teams"
+      FROM "Recording"
+      WHERE "deletedAt" IS NULL
+        AND (${statsUserId}::text IS NULL OR "userId" = ${statsUserId}::text)
+    `).catch(() => []),
     claimPromise,
   ]);
   folders = folderResult;
   recordings = recordingResult;
+  const { all: allCount = 0, completed = 0, week: thisWeek = 0, teams: teamsCount = 0 } = countsRows[0] ?? {};
 
   // Trim the sentinel extra row and decide whether to offer "Show more".
   const hasMore = recordings.length > limit;

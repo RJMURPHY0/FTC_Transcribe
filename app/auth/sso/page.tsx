@@ -24,10 +24,10 @@ export default function SsoPage() {
     const supabase = createClient();
     supabase.auth
       .setSession({ access_token: accessToken, refresh_token: refreshToken })
-      .then(() => {
-        router.replace('/');
-        router.refresh();
-      })
+      // No router.refresh() — this is a fresh document load, so the router
+      // cache is empty and replace('/') already fetches home fresh; the extra
+      // refresh double-fetched the entire dashboard on every SSO sign-in.
+      .then(() => router.replace('/'))
       .catch(() => router.replace('/login'));
   }, [router]);
 
