@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-export default function QuickDeleteButton({ id }: { id: string }) {
+export default function QuickDeleteButton({ id, onDeleted }: { id: string; onDeleted?: () => void }) {
   const [step, setStep]       = useState<'idle' | 'confirm' | 'deleting'>('idle');
   const router                = useRouter();
 
@@ -11,12 +11,16 @@ export default function QuickDeleteButton({ id }: { id: string }) {
     e.preventDefault();
     e.stopPropagation();
     setStep('deleting');
+    // Optimistic: hide the card immediately — the server soft-delete is a
+    // single UPDATE, and router.refresh() reconciles in the background.
+    onDeleted?.();
     try {
       const res = await fetch(`/api/recordings/${id}`, { method: 'DELETE' });
-      if (res.ok) router.refresh();
-      else setStep('confirm');
+      if (!res.ok) alert('Delete failed — the recording will reappear.');
+      router.refresh();
     } catch {
-      setStep('confirm');
+      alert('Network error — the recording will reappear.');
+      router.refresh();
     }
   };
 

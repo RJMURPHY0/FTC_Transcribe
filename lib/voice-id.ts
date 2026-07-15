@@ -51,6 +51,8 @@ const MODELS = {
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 let sherpaModule: any | null | undefined;
+let sherpaError: string | null = null;
+let modelsError: string | null = null;
 
 function getSherpa(): any | null {
   if (sherpaModule !== undefined) return sherpaModule;
@@ -88,7 +90,8 @@ function getSherpa(): any | null {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     sherpaModule = require('sherpa-onnx-node');
   } catch (err) {
-    console.warn('[voice-id] sherpa-onnx unavailable — voice ID disabled:', err instanceof Error ? err.message : err);
+    sherpaError = err instanceof Error ? err.message : String(err);
+    console.warn('[voice-id] sherpa-onnx unavailable — voice ID disabled:', sherpaError);
     sherpaModule = null;
   }
   return sherpaModule;
@@ -145,7 +148,8 @@ function ensureModels(): Promise<string | null> {
         ]);
         return dir;
       } catch (err) {
-        console.warn('[voice-id] model download failed — voice ID disabled:', err instanceof Error ? err.message : err);
+        modelsError = err instanceof Error ? err.message : String(err);
+        console.warn('[voice-id] model download failed — voice ID disabled:', modelsError);
         modelsReady = null; // allow retry on a later invocation
         return null;
       }
@@ -517,13 +521,27 @@ export function resolveGlobalSpeakers(chunks: ChunkForAlignment[]): ResolvedSpea
 
 // ── Runtime probe (used by /api/health?voice=1) ───────────────────────────────
 
-export async function probeVoiceId(): Promise<{ ok: boolean; dim?: number; error?: string }> {
+export async function probeVoiceId(): Promise<{ ok: boolean; dim?: number; error?: string; diag?: Record<string, unknown> }> {
+  const diag: Record<string, unknown> = {
+    platform: process.platform,
+    cwd: process.cwd(),
+    nodePkg: existsSync(path.join(process.cwd(), 'node_modules', 'sherpa-onnx-node')),
+    platformPkg: existsSync(path.join(
+      process.cwd(), 'node_modules',
+      process.platform === 'win32' ? 'sherpa-onnx-win-x64' : 'sherpa-onnx-linux-x64',
+    )),
+    modelsDir: modelsDir(),
+  };
   try {
     const extractor = await getExtractor();
-    if (!extractor) return { ok: false, error: 'extractor unavailable (addon or model load failed — see logs)' };
+    if (!extractor) {
+      diag.sherpaError = sherpaError;
+      diag.modelsError = modelsError;
+      return { ok: false, error: 'extractor unavailable', diag };
+    }
     return { ok: true, dim: extractor.dim as number };
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    return { ok: false, error: err instanceof Error ? err.message : String(err), diag };
   }
 }
 

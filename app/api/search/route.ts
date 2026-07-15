@@ -19,7 +19,7 @@ export async function GET(req: NextRequest) {
   if (vectorHits.length > 0) {
     const recIds = vectorHits.map(h => h.recordingId);
     const recordings = await prisma.recording.findMany({
-      where: { id: { in: recIds }, status: 'completed' },
+      where: { id: { in: recIds }, status: 'completed', deletedAt: null },
       select: { id: true, title: true, createdAt: true, meetingType: true, source: true },
     });
     const byId = Object.fromEntries(recordings.map(r => [r.id, r]));
@@ -46,13 +46,13 @@ export async function GET(req: NextRequest) {
 
   const [titleMatches, transcriptMatches] = await Promise.all([
     prisma.recording.findMany({
-      where:   { title: { contains: q, mode: 'insensitive' }, status: 'completed', ...userScope },
+      where:   { title: { contains: q, mode: 'insensitive' }, status: 'completed', deletedAt: null, ...userScope },
       select:  { id: true, title: true, createdAt: true, meetingType: true, source: true },
       orderBy: { createdAt: 'desc' },
       take:    10,
     }),
     prisma.transcript.findMany({
-      where:   { fullText: { contains: q, mode: 'insensitive' }, recording: { status: 'completed', ...userScope } },
+      where:   { fullText: { contains: q, mode: 'insensitive' }, recording: { status: 'completed', deletedAt: null, ...userScope } },
       select:  {
         recordingId: true,
         fullText:    true,

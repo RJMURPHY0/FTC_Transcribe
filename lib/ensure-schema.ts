@@ -21,6 +21,8 @@ export async function ensureSchema() {
         can_see_all BOOLEAN     NOT NULL DEFAULT FALSE,
         granted_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )`;
+    await prisma.$executeRaw`ALTER TABLE "Recording" ADD COLUMN IF NOT EXISTS "deletedAt" TIMESTAMP(3)`;
+    await prisma.$executeRaw`CREATE INDEX IF NOT EXISTS "Recording_deletedAt_idx" ON "Recording" ("deletedAt")`;
     await prisma.$executeRaw`ALTER TABLE "ChunkTranscript" ADD COLUMN IF NOT EXISTS "voiceData" TEXT NOT NULL DEFAULT ''`;
     await prisma.$executeRaw`
       CREATE TABLE IF NOT EXISTS "VoiceProfile" (

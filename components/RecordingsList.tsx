@@ -255,6 +255,7 @@ export default function RecordingsList({
 }) {
   const router = useRouter();
   const [selected, setSelected] = useState<string[]>([]);
+  const [hiddenIds, setHiddenIds] = useState<string[]>([]);
   const [merging, setMerging] = useState(false);
   const [bulkFolderBusy, setBulkFolderBusy] = useState(false);
   const [undoState, setUndoState] = useState<UndoState | null>(null);
@@ -361,8 +362,8 @@ export default function RecordingsList({
     // Clear undo state BEFORE the null-transition effect fires deletion
     prevUndoRef.current = null;
     setUndoState(null);
-    // Delete the newly merged recording to restore the original state
-    await fetch(`/api/recordings/${mergedId}`, { method: 'DELETE' });
+    // Hard-delete the just-created merged recording to restore the original state
+    await fetch(`/api/recordings/${mergedId}?hard=1`, { method: 'DELETE' });
     router.refresh();
   };
 
@@ -407,14 +408,16 @@ export default function RecordingsList({
     }
   };
 
-  if (recordings.length === 0) {
+  const visible = recordings.filter((r) => !hiddenIds.includes(r.id));
+
+  if (visible.length === 0) {
     return null;
   }
 
   return (
     <>
       <ul className="space-y-3">
-        {recordings.map((rec) => {
+        {visible.map((rec) => {
           const actions = safeJson<string[]>(rec.summary?.actionItems, []);
           const points  = safeJson<string[]>(rec.summary?.keyPoints,   []);
           const selIdx  = selected.indexOf(rec.id);
@@ -539,7 +542,7 @@ export default function RecordingsList({
                     currentFolderId={rec.folderId}
                     folders={folders}
                   />
-                  <QuickDeleteButton id={rec.id} />
+                  <QuickDeleteButton id={rec.id} onDeleted={() => setHiddenIds((prev) => [...prev, rec.id])} />
                 </div>
               )}
             </li>

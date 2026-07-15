@@ -18,7 +18,7 @@ export async function GET(
       where: { id: params.id },
       include: { transcript: true, summary: true },
     });
-    if (!recording) {
+    if (!recording || recording.deletedAt) {
       return NextResponse.json({ error: 'Recording not found.' }, { status: 404 });
     }
     return NextResponse.json(recording);
@@ -63,14 +63,24 @@ export async function PATCH(
 }
 
 export async function DELETE(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: { id: string } },
 ) {
   if (!CUID_RE.test(params.id)) {
     return NextResponse.json({ error: 'Invalid recording ID.' }, { status: 400 });
   }
   try {
-    await prisma.recording.delete({ where: { id: params.id } });
+    // Soft delete by default: instant (no cascade over audio blobs), hidden from
+    // all lists immediately, hard-purged by the cron after 30 days.
+    // ?hard=1 deletes immediately (used by merge-undo to remove the merged copy).
+    if (request.nextUrl.searchParams.get('hard') === '1') {
+      await prisma.recording.delete({ where: { id: params.id } });
+    } else {
+      await prisma.recording.update({
+        where: { id: params.id },
+        data: { deletedAt: new Date(), folderId: null },
+      });
+    }
     return NextResponse.json({ success: true });
   } catch {
     return NextResponse.json({ error: 'Failed to delete recording.' }, { status: 500 });

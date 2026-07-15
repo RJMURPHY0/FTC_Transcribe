@@ -36,7 +36,7 @@ export default async function RecordingPage({ params }: { params: { id: string }
     .findUnique({ where: { id: params.id }, include: { transcript: true, summary: true, _count: { select: { chunks: true } } } })
     .catch(() => null);
 
-  if (!recording) notFound();
+  if (!recording || recording.deletedAt) notFound();
 
   function safeJson<T>(value: string | null | undefined, fallback: T): T {
     if (!value) return fallback;

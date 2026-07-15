@@ -40,15 +40,22 @@ const voiceIdTraceIncludes = [
 const nextConfig = {
   experimental: {
     serverComponentsExternalPackages: ['sherpa-onnx-node', 'ffmpeg-static'],
-    outputFileTracingIncludes: {
-      '/api/recordings/[id]/append-chunk': voiceIdTraceIncludes,
-      '/api/recordings/[id]/finalize': voiceIdTraceIncludes,
-      '/api/recordings/[id]/rediarize': voiceIdTraceIncludes,
-      '/api/jobs/finalize': voiceIdTraceIncludes,
-      '/api/voice-profiles': voiceIdTraceIncludes,
-      '/api/transcribe': voiceIdTraceIncludes,
-      '/api/health': voiceIdTraceIncludes,
-    },
+    // Both key forms — with and without /route — since Next matches the
+    // compiled route entry name, which differs across versions.
+    outputFileTracingIncludes: Object.fromEntries(
+      [
+        '/api/recordings/[id]/append-chunk',
+        '/api/recordings/[id]/finalize',
+        '/api/recordings/[id]/rediarize',
+        '/api/jobs/finalize',
+        '/api/voice-profiles',
+        '/api/transcribe',
+        '/api/health',
+      ].flatMap((route) => [
+        [route, voiceIdTraceIncludes],
+        [`${route}/route`, voiceIdTraceIncludes],
+      ]),
+    ),
   },
   async headers() {
     return [

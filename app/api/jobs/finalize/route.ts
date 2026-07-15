@@ -115,6 +115,13 @@ export async function GET(request: NextRequest) {
     data: { status: 'failed' },
   }).catch(() => {});
 
+  // Purge soft-deleted recordings after 30 days (hard delete cascades
+  // transcripts, summaries, chunks, and speaker embeddings)
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  await prisma.recording.deleteMany({
+    where: { deletedAt: { lt: thirtyDaysAgo } },
+  }).catch(() => {});
+
   const stats = await runWorker();
   return NextResponse.json({ ok: true, ...stats });
 }

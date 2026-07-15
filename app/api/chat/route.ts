@@ -49,7 +49,7 @@ export async function POST(request: NextRequest) {
     }
 
     const recordings = await prisma.recording.findMany({
-      where: { status: 'completed' },
+      where: { status: 'completed', deletedAt: null },
       include: { transcript: true, summary: true },
       orderBy: { createdAt: 'desc' },
       take: 30,

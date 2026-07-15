@@ -30,6 +30,8 @@ model Recording {
   meetingType String   @default("general")
   folderId    String?
   userId      String?
+  // Soft delete: hidden from all lists immediately, hard-purged by cron after 30 days
+  deletedAt   DateTime?
 
   folder      Folder?      @relation(fields: [folderId], references: [id])
   chunks      ChunkBlob[]
@@ -39,6 +41,7 @@ model Recording {
   speakerEmbeddings SpeakerEmbedding[]
 
   @@index([userId])
+  @@index([deletedAt])
 }
 
 // Mirrors auth.users — stores per-user Transcribe permission flags.

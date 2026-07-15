@@ -20,24 +20,27 @@ import {
 
 export const dynamic = 'force-dynamic';
 
-// ── Async server component so member data streams in without blocking the page ─
+// ── Async server component so org/member data streams in without blocking the page ─
 async function AdminFiltersLoader({
   orgs,
   activeOrgId,
   activeTeamId,
   activeAssigneeId,
 }: {
-  orgs: import('@/lib/contacts-db').Org[];
+  // null = fetch inside this Suspense boundary (keeps the external Contacts
+  // API call off the page's critical path)
+  orgs: import('@/lib/contacts-db').Org[] | null;
   activeOrgId: string | null;
   activeTeamId: string | null;
   activeAssigneeId: string | null;
 }) {
-  const members = activeOrgId
-    ? await getOrgMembers(activeOrgId, activeTeamId)
-    : await getAllOrgMembers();
+  const [orgList, members] = await Promise.all([
+    orgs ? Promise.resolve(orgs) : getOrganisations(),
+    activeOrgId ? getOrgMembers(activeOrgId, activeTeamId) : getAllOrgMembers(),
+  ]);
   return (
     <AdminFilters
-      orgs={orgs}
+      orgs={orgList}
       members={members}
       activeOrgId={activeOrgId}
       activeAssigneeId={activeAssigneeId}
@@ -85,17 +88,21 @@ export default async function Home({
   const userId    = authUser?.id ?? null;
   const canSeeAll = authUser?.canSeeAll ?? false;
 
-  if (userId) {
-    await Promise.all([
-      prisma.recording.updateMany({ where: { userId: null }, data: { userId } }),
-      prisma.folder.updateMany({ where: { userId: null }, data: { userId } }),
-    ]).catch(() => {});
-  }
+  // Legacy-row claim runs in parallel with everything else (AutoClaim on the
+  // client is the primary mechanism — this is belt and braces)
+  const claimPromise = userId
+    ? Promise.all([
+        prisma.recording.updateMany({ where: { userId: null }, data: { userId } }),
+        prisma.folder.updateMany({ where: { userId: null }, data: { userId } }),
+      ]).catch(() => {})
+    : Promise.resolve();
 
-  // ── Org data (fast queries — needed for breadcrumbs and folder cards) ──────
-  const orgs     = canSeeAll ? await getOrganisations() : [];
+  // ── Org data — external Contacts API call, only awaited when the breadcrumb
+  // or team cards actually need it (org filter active). Otherwise the filter
+  // dropdown fetches it inside its own Suspense boundary.
+  const orgs     = canSeeAll && activeOrgId ? await getOrganisations() : null;
   const orgTeams = canSeeAll && activeOrgId ? await getOrgTeams(activeOrgId) : [];
-  const activeOrg = orgs.find(o => o.id === activeOrgId) ?? null;
+  const activeOrg = orgs?.find(o => o.id === activeOrgId) ?? null;
 
   // ── Recording scope ───────────────────────────────────────────────────────
   let userScope: Record<string, unknown> = {};
@@ -119,36 +126,39 @@ export default async function Home({
     include: { summary: true; _count: { select: { chunks: true } } };
   }>>> = [];
 
-  try {
-    const folderScope = inOrgFolderView
-      ? { userId: '__no_match__' }                            // don't load personal folders in org view
-      : canSeeAll ? {} : userId ? { userId } : {};
+  // All queries fire concurrently — previously the four counts ran one after
+  // another, adding 4 sequential round-trips to the EU database per page load.
+  const countScope = { ...(canSeeAll ? {} : userId ? { userId } : {}), deletedAt: null };
+  const folderScope = inOrgFolderView
+    ? { userId: '__no_match__' }                            // don't load personal folders in org view
+    : canSeeAll ? {} : userId ? { userId } : {};
 
-    [folders, recordings] = await Promise.all([
-      prisma.folder.findMany({
-        where: folderScope,
-        orderBy: { createdAt: 'asc' },
-        include: { _count: { select: { recordings: true } } },
-      }),
-      prisma.recording.findMany({
-        where: {
-          ...(activeFolderId ? { folderId: activeFolderId } : { folderId: null }),
-          ...(activeSource   ? { source: activeSource }    : {}),
-          ...userScope,
-        },
-        include: { summary: true, _count: { select: { chunks: true } } },
-        orderBy: { createdAt: 'desc' },
-      }),
-    ]);
-  } catch { /* DB not ready */ }
-
-  const countScope = canSeeAll ? {} : userId ? { userId } : {};
-  const allCount   = await prisma.recording.count({ where: countScope }).catch(() => 0);
-  const completed  = await prisma.recording.count({ where: { ...countScope, status: 'completed' } }).catch(() => 0);
-  const thisWeek   = await prisma.recording.count({
-    where: { ...countScope, createdAt: { gte: new Date(Date.now() - 7 * 86400_000) } },
-  }).catch(() => 0);
-  const teamsCount = await prisma.recording.count({ where: { ...countScope, source: 'teams' } }).catch(() => 0);
+  const [folderResult, recordingResult, allCount, completed, thisWeek, teamsCount] = await Promise.all([
+    prisma.folder.findMany({
+      where: folderScope,
+      orderBy: { createdAt: 'asc' },
+      include: { _count: { select: { recordings: { where: { deletedAt: null } } } } },
+    }).catch(() => []),
+    prisma.recording.findMany({
+      where: {
+        ...(activeFolderId ? { folderId: activeFolderId } : { folderId: null }),
+        ...(activeSource   ? { source: activeSource }    : {}),
+        ...userScope,
+        deletedAt: null,
+      },
+      include: { summary: true, _count: { select: { chunks: true } } },
+      orderBy: { createdAt: 'desc' },
+    }).catch(() => []),
+    prisma.recording.count({ where: countScope }).catch(() => 0),
+    prisma.recording.count({ where: { ...countScope, status: 'completed' } }).catch(() => 0),
+    prisma.recording.count({
+      where: { ...countScope, createdAt: { gte: new Date(Date.now() - 7 * 86400_000) } },
+    }).catch(() => 0),
+    prisma.recording.count({ where: { ...countScope, source: 'teams' } }).catch(() => 0),
+    claimPromise,
+  ]);
+  folders = folderResult;
+  recordings = recordingResult;
 
   const folderList   = folders.map(f => ({ id: f.id, name: f.name }));
   const activeFolder = activeFolderId ? folders.find(f => f.id === activeFolderId) : null;
