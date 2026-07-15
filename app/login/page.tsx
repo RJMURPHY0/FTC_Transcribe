@@ -62,7 +62,7 @@ export default function LoginPage() {
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="w-full rounded-xl border border-surface-border bg-surface px-4 py-2.5 text-sm text-ftc-gray placeholder-surface-muted focus:outline-none focus:ring-2 focus:ring-brand/50 focus:border-brand transition-colors"
+                className="w-full rounded-xl border border-gray-200 dark:border-transparent bg-white px-4 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-brand/60 transition-colors"
                 placeholder="you@example.com"
               />
             </div>
@@ -79,7 +79,7 @@ export default function LoginPage() {
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="w-full rounded-xl border border-surface-border bg-surface px-4 py-2.5 pr-11 text-sm text-ftc-gray placeholder-surface-muted focus:outline-none focus:ring-2 focus:ring-brand/50 focus:border-brand transition-colors"
+                  className="w-full rounded-xl border border-gray-200 dark:border-transparent bg-white px-4 py-2.5 pr-11 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-brand/60 transition-colors"
                   placeholder="••••••••"
                 />
                 <button
@@ -87,7 +87,7 @@ export default function LoginPage() {
                   onClick={() => setShowPassword((v) => !v)}
                   aria-label={showPassword ? 'Hide password' : 'Show password'}
                   aria-pressed={showPassword}
-                  className="absolute inset-y-0 right-0 flex items-center px-3 text-ftc-mid hover:text-ftc-gray focus:outline-none focus-visible:ring-2 focus-visible:ring-brand/50 rounded-r-xl transition-colors"
+                  className="absolute inset-y-0 right-0 flex items-center px-3 text-gray-400 hover:text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand/50 rounded-r-xl transition-colors"
                 >
                   {showPassword ? (
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
