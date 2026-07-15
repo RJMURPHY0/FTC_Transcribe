@@ -150,7 +150,7 @@ model VoiceProfile {
   personName  String
   embedding   String
   durationS   Float    @default(0)
-  source      String   @default("enrollment") // enrollment | relabel
+  source      String   @default("enrollment") // enrollment | relabel | auto | match
   deviceLabel String   @default("")
   createdAt   DateTime @default(now())
 

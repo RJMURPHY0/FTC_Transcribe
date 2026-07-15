@@ -14,7 +14,7 @@ import { notifyTeamsChannel } from '@/lib/integrations/teams-notify';
 import { indexTranscript } from '@/lib/embeddings';
 import { alignSpeakersAcrossChunks } from '@/lib/deepgram';
 import type { DeepgramRawSegment } from '@/lib/deepgram';
-import { resolveGlobalSpeakers, matchProfiles, cosineSim } from '@/lib/voice-id';
+import { resolveGlobalSpeakers, matchProfilesDetailed, cosineSim } from '@/lib/voice-id';
 import type { ChunkForAlignment, ChunkVoiceData } from '@/lib/voice-id';
 import {
   transcribeChunk,
@@ -521,7 +521,9 @@ async function finalizeWithJobs(recordingId: string): Promise<FinalizeResult> {
           })
           .filter((p): p is { personName: string; embedding: number[] } => !!p);
 
-        const matches = matchProfiles(resolved.speakerEmbeddings, profiles);
+        const detailedMatches = matchProfilesDetailed(resolved.speakerEmbeddings, profiles);
+        const matches: Record<string, string> = {};
+        for (const [label, m] of Object.entries(detailedMatches)) matches[label] = m.name;
         allSegments.length = 0;
         allSegments.push(...resolved.segments.map(s => ({
           ...s,
@@ -539,6 +541,42 @@ async function finalizeWithJobs(recordingId: string): Promise<FinalizeResult> {
             durationS: se.durationS,
           })),
         }).catch(() => {});
+
+        // Continuous learning: a confidently matched voice contributes this
+        // meeting's voiceprint as a fresh sample, so a person's profile keeps
+        // tracking their voice across devices and time without re-enrollment.
+        try {
+          const LEARN_SIM = parseFloat(process.env.VOICE_LEARN_THRESHOLD ?? '0.6');
+          const DUP_SIM = parseFloat(process.env.VOICE_LEARN_DUP_SIM ?? '0.95');
+          const MAX_SAMPLES_PER_PERSON = 12;
+          const candidates = resolved.speakerEmbeddings.filter(se => {
+            const m = detailedMatches[se.label];
+            return m && m.sim >= LEARN_SIM && se.durationS >= 3;
+          });
+          if (candidates.length) {
+            const owner = await prisma.recording.findUnique({
+              where: { id: recordingId }, select: { userId: true },
+            }).catch(() => null);
+            for (const se of candidates) {
+              const m = detailedMatches[se.label];
+              const personSamples = profiles.filter(p => p.personName === m.name);
+              if (personSamples.length >= MAX_SAMPLES_PER_PERSON) continue;
+              if (personSamples.some(p => cosineSim(se.embedding, p.embedding) > DUP_SIM)) continue;
+              await prisma.voiceProfile.create({
+                data: {
+                  userId: owner?.userId ?? null,
+                  personName: m.name,
+                  embedding: JSON.stringify(se.embedding),
+                  durationS: se.durationS,
+                  source: 'match',
+                },
+              });
+              console.log(`[finalize] learned new voice sample for ${m.name} (sim ${m.sim.toFixed(2)}, ${se.durationS.toFixed(1)}s)`);
+            }
+          }
+        } catch (err) {
+          console.warn('[finalize] match-learn failed:', err);
+        }
 
         voiceResolved = true;
         const matched = Object.entries(matches).map(([l, n]) => `${l}→${n}`).join(', ');

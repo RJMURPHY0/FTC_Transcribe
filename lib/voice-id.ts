@@ -538,6 +538,19 @@ export function matchProfiles(
   profiles: ProfileRow[],
 ): Record<string, string> {
   const result: Record<string, string> = {};
+  for (const [label, m] of Object.entries(matchProfilesDetailed(speakerEmbeddings, profiles))) {
+    result[label] = m.name;
+  }
+  return result;
+}
+
+// Like matchProfiles but keeps the winning similarity — callers use it to decide
+// whether a match is confident enough to learn from.
+export function matchProfilesDetailed(
+  speakerEmbeddings: ResolvedSpeakers['speakerEmbeddings'],
+  profiles: ProfileRow[],
+): Record<string, { name: string; sim: number }> {
+  const result: Record<string, { name: string; sim: number }> = {};
   if (!profiles.length) return result;
   for (const sp of speakerEmbeddings) {
     let bestName: string | null = null;
@@ -546,7 +559,7 @@ export function matchProfiles(
       const sim = cosineSim(sp.embedding, p.embedding);
       if (sim >= bestSim) { bestSim = sim; bestName = p.personName; }
     }
-    if (bestName) result[sp.label] = bestName;
+    if (bestName) result[sp.label] = { name: bestName, sim: bestSim };
   }
   return result;
 }

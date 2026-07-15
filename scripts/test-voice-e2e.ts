@@ -98,6 +98,16 @@ async function main() {
     console.log('   ❌ voice matching did not label David — inspect above');
   }
 
+  const learned = await prisma.voiceProfile.findMany({
+    where: { personName: 'David Miller', source: 'match' },
+    select: { durationS: true },
+  });
+  console.log(`   match-learned samples for David: ${learned.length}`);
+
+  console.log('── 5. Cleanup test data');
+  await prisma.recording.delete({ where: { id: rec.id } }).catch(() => {});
+  await prisma.voiceProfile.deleteMany({ where: { personName: 'David Miller' } });
+
   await prisma.$disconnect();
 }
 
