@@ -5,29 +5,34 @@ const config: Config = {
     './app/**/*.{js,ts,jsx,tsx,mdx}',
     './components/**/*.{js,ts,jsx,tsx,mdx}',
   ],
+  darkMode: 'class',
   theme: {
     extend: {
       colors: {
-        // Page / surface backgrounds — warm charcoal tones from FTC dark (#4e4e4c)
+        // ── Theme-aware tokens ──
+        // Values are RGB channel triples set in globals.css per [data-theme].
+        // The rgb(var(--x) / <alpha-value>) form keeps Tailwind opacity
+        // modifiers (bg-surface/80, border-brand/50, …) working in both themes.
+        // Page / surface backgrounds — warm charcoal (dark) / warm off-white (light)
         surface: {
-          DEFAULT: '#0e0e0d',  // page bg
-          card:    '#181817',  // card
-          raised:  '#222221',  // elevated card
-          border:  '#2e2e2c',  // border
-          muted:   '#3a3a38',  // subtle border / inactive
-          dark:    '#4e4e4c',  // FTC dark grey
+          DEFAULT: 'rgb(var(--c-surface) / <alpha-value>)',        // page bg
+          card:    'rgb(var(--c-surface-card) / <alpha-value>)',   // card
+          raised:  'rgb(var(--c-surface-raised) / <alpha-value>)', // elevated / filled input
+          border:  'rgb(var(--c-surface-border) / <alpha-value>)', // border
+          muted:   'rgb(var(--c-surface-muted) / <alpha-value>)',  // subtle border / faint text
+          dark:    'rgb(var(--c-surface-dark) / <alpha-value>)',   // FTC dark grey
         },
-        // FTC primary orange
+        // FTC primary orange — same accent in both themes
         brand: {
-          light:   '#f5a830',
-          DEFAULT: '#f39200',
-          dark:    '#d97f00',
+          light:   'rgb(var(--c-brand-light) / <alpha-value>)',
+          DEFAULT: 'rgb(var(--c-brand) / <alpha-value>)',
+          dark:    'rgb(var(--c-brand-dark) / <alpha-value>)',
         },
-        // FTC neutral greys
+        // FTC neutral text greys
         ftc: {
-          gray:    '#dadada',  // FTC light grey — primary text on dark bg
-          mid:     '#a0a09e',  // muted text
-          dark:    '#4e4e4c',  // FTC dark charcoal
+          gray:    'rgb(var(--c-ftc-gray) / <alpha-value>)',  // primary text
+          mid:     'rgb(var(--c-ftc-mid) / <alpha-value>)',   // muted text
+          dark:    'rgb(var(--c-ftc-dark) / <alpha-value>)',  // FTC dark charcoal
         },
       },
       boxShadow: {

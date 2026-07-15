@@ -3,6 +3,49 @@
 @tailwind utilities;
 
 @layer base {
+  /* ── Theme tokens ──
+     RGB channel triples consumed by tailwind.config.ts as
+     rgb(var(--c-x) / <alpha-value>). Default (:root) is LIGHT; the .dark
+     class (set by the pre-paint script in layout.tsx, key "ftc-theme")
+     layers the original dark palette on top. Brand orange is shared, so
+     it lives only on :root and .dark inherits it. */
+  :root {
+    color-scheme: light;
+
+    /* surfaces — warm off-white page, white cards */
+    --c-surface:        237 236 233;
+    --c-surface-card:   255 255 255;
+    --c-surface-raised: 238 237 234;
+    --c-surface-border: 224 222 217;
+    --c-surface-muted:  120 117 110; /* faint text / hover border — readable */
+    --c-surface-dark:   87 85 79;
+
+    /* FTC primary orange — same accent in both themes */
+    --c-brand-light: 245 168 48;
+    --c-brand:       243 146 0;
+    --c-brand-dark:  217 127 0;
+
+    /* text greys */
+    --c-ftc-gray: 28 27 24;   /* primary text — near-black */
+    --c-ftc-mid:  92 90 84;   /* secondary / muted text */
+    --c-ftc-dark: 87 85 79;
+  }
+
+  .dark {
+    color-scheme: dark;
+
+    --c-surface:        14 14 13;
+    --c-surface-card:   24 24 23;
+    --c-surface-raised: 34 34 33;
+    --c-surface-border: 46 46 44;
+    --c-surface-muted:  58 58 56;
+    --c-surface-dark:   78 78 76;
+
+    --c-ftc-gray: 218 218 218;
+    --c-ftc-mid:  160 160 158;
+    --c-ftc-dark: 78 78 76;
+  }
+
   html {
     -webkit-tap-highlight-color: transparent;
     scroll-behavior: smooth;
@@ -15,11 +58,28 @@
     padding-right: env(safe-area-inset-right);
     overflow-y: auto;
     overscroll-behavior-y: contain;
+    transition: background-color 0.2s ease, color 0.2s ease;
   }
 
   ::-webkit-scrollbar { width: 4px; }
   ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: #2e2e2c; border-radius: 99px; }
+  ::-webkit-scrollbar-thumb { background: rgb(var(--c-surface-muted)); border-radius: 99px; }
+
+  /* ── Light-mode contrast fixes ──
+     A few Tailwind palette colours are tuned for dark backgrounds and go
+     low-contrast on white. Darken them (and brand link text) in light mode
+     only (light = :root without the .dark class). */
+  html:not(.dark) .text-emerald-400 { color: #059669; }
+  html:not(.dark) .text-red-400     { color: #dc2626; }
+  html:not(.dark) .text-brand       { color: #b45f00; }
+
+  /* The FTC logo asset is the white-on-dark version. In light mode, invert its
+     lightness (white text/globe → dark) while hue-rotate keeps the orange leaf
+     orange — a readable colour logo on light backgrounds. Excludes the chatbot
+     logo (chatbot-logo.png). */
+  html:not(.dark) img[src$="/logo.png"] {
+    filter: invert(1) hue-rotate(180deg);
+  }
 }
 
 /* ── FTC brand gradients ── */
@@ -144,12 +204,12 @@
     position: absolute;
     inset: 0 40%;
     border-radius: 9999px;
-    background: var(--surface-border, #262626);
+    background: rgb(var(--c-surface-border));
     transition: background 0.15s;
   }
   .detail-resize-handle:hover::before,
   .detail-resize-handle.dragging::before {
-    background: var(--brand, #f97316);
+    background: rgb(var(--c-brand));
     inset: 0 35%;
   }
   .transcript-panel {

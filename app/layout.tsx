@@ -25,8 +25,15 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" className="dark" suppressHydrationWarning>
       <head>
+        {/* Set theme before first paint to avoid a flash. Default is dark;
+            only switches to light when the user has chosen it (key: ftc-theme). */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `try{var t=localStorage.getItem('ftc-theme');document.documentElement.classList.toggle('dark',t!=='light')}catch(e){}`,
+          }}
+        />
         <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=4" />
         <link rel="icon" type="image/png" sizes="512x512" href="/icon-512.png?v=4" />
         <link rel="icon" type="image/png" sizes="32x32" href="/favicon.png?v=4" />

@@ -37,12 +37,24 @@ export default function SettingsPage() {
   const [health, setHealth]       = useState<Health | null>(null);
   const [healthLoading, setHL]    = useState(true);
   const [testResult, setTestResult] = useState('');
+  const [theme, setTheme]         = useState<'dark' | 'light'>('dark');
 
   // Load saved mic preference
   useEffect(() => {
     const saved = localStorage.getItem('preferredMicId') ?? '';
     setSelected(saved);
   }, []);
+
+  // Sync theme toggle with the current choice (set pre-paint in layout.tsx)
+  useEffect(() => {
+    setTheme(document.documentElement.classList.contains('dark') ? 'dark' : 'light');
+  }, []);
+
+  const applyTheme = (next: 'dark' | 'light') => {
+    setTheme(next);
+    localStorage.setItem('ftc-theme', next);
+    document.documentElement.classList.toggle('dark', next === 'dark');
+  };
 
   // Fetch health status
   useEffect(() => {
@@ -191,6 +203,73 @@ export default function SettingsPage() {
           </div>
         </section>
 
+        {/* ── Appearance ── */}
+        <section>
+          <h2 className="text-xs font-semibold uppercase tracking-widest text-ftc-mid mb-3">
+            Appearance
+          </h2>
+          <div className="rounded-2xl border border-surface-border bg-surface-card p-5">
+            <label className="block text-xs text-ftc-mid mb-3">Theme</label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => applyTheme('light')}
+                aria-pressed={theme === 'light'}
+                className={`flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium border transition-colors touch-manipulation ${
+                  theme === 'light'
+                    ? 'bg-brand text-white border-brand'
+                    : 'bg-surface-raised text-ftc-mid border-surface-border hover:text-ftc-gray hover:border-surface-muted'
+                }`}
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <circle cx="12" cy="12" r="4" />
+                  <path strokeLinecap="round" d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+                </svg>
+                Light
+              </button>
+              <button
+                type="button"
+                onClick={() => applyTheme('dark')}
+                aria-pressed={theme === 'dark'}
+                className={`flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium border transition-colors touch-manipulation ${
+                  theme === 'dark'
+                    ? 'bg-brand text-white border-brand'
+                    : 'bg-surface-raised text-ftc-mid border-surface-border hover:text-ftc-gray hover:border-surface-muted'
+                }`}
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+                </svg>
+                Dark
+              </button>
+            </div>
+            <p className="text-xs text-surface-muted mt-3">
+              Saved on this device. Light mode is easier to read in bright conditions.
+            </p>
+          </div>
+        </section>
+
+        {/* ── Voice Profiles ── */}
+        <section>
+          <h2 className="text-xs font-semibold uppercase tracking-widest text-ftc-mid mb-3">
+            Voice Identification
+          </h2>
+          <Link
+            href="/voice-setup"
+            className="flex items-center justify-between rounded-2xl border border-surface-border bg-surface-card p-5 hover:border-brand/40 transition-colors touch-manipulation"
+          >
+            <div>
+              <p className="text-sm text-ftc-gray font-medium">Voice profiles</p>
+              <p className="text-xs text-ftc-mid mt-1">
+                Teach the app who's who — enrolled voices are named automatically in every recording.
+              </p>
+            </div>
+            <svg className="w-4 h-4 text-ftc-mid shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+            </svg>
+          </Link>
+        </section>
+
         {/* ── System Status ── */}
         <section>
           <h2 className="text-xs font-semibold uppercase tracking-widest text-ftc-mid mb-3">
@@ -235,27 +314,6 @@ export default function SettingsPage() {
               </>
             )}
           </div>
-        </section>
-
-        {/* ── Voice Profiles ── */}
-        <section>
-          <h2 className="text-xs font-semibold uppercase tracking-widest text-ftc-mid mb-3">
-            Voice Identification
-          </h2>
-          <Link
-            href="/voice-setup"
-            className="flex items-center justify-between rounded-2xl border border-surface-border bg-surface-card p-5 hover:border-brand/40 transition-colors touch-manipulation"
-          >
-            <div>
-              <p className="text-sm text-ftc-gray font-medium">Voice profiles</p>
-              <p className="text-xs text-ftc-mid mt-1">
-                Teach the app who's who — enrolled voices are named automatically in every recording.
-              </p>
-            </div>
-            <svg className="w-4 h-4 text-ftc-mid shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-            </svg>
-          </Link>
         </section>
 
         {/* ── Audio Quality ── */}
