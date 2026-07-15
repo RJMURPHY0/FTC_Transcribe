@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/db';
+import { prisma, withDbRetry } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 // ?voice=1 may download the voiceprint models (~35 MB) on a cold start
@@ -9,9 +9,11 @@ export async function GET(request: NextRequest) {
   let db = false;
   let recordings = -1;
   try {
-    recordings = await prisma.recording.count();
+    // Retry transient pooler/cold-start blips so a healthy DB isn't reported as
+    // "Not configured" on the Settings page.
+    recordings = await withDbRetry(() => prisma.recording.count());
     db = true;
-  } catch { /* */ }
+  } catch { /* genuinely unreachable */ }
 
   // Deep voice-ID probe on demand only — initialises the sherpa-onnx engine
   let voice: { ok: boolean; dim?: number; error?: string } | undefined;

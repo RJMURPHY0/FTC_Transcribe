@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { Suspense } from 'react';
-import { prisma } from '@/lib/db';
+import { prisma, withDbRetry } from '@/lib/db';
 import NewFolderButton from '@/components/NewFolderButton';
 import FolderActions from '@/components/FolderActions';
 import RecordingsList from '@/components/RecordingsList';
@@ -134,13 +134,19 @@ export default async function Home({
     ? { userId: '__no_match__' }                            // don't load personal folders in org view
     : canSeeAll ? {} : userId ? { userId } : {};
 
+  // The recordings query is the one that matters most: if it fails we must NOT
+  // silently render "No recordings yet" (that reads as data-loss). We retry
+  // transient blips and, only when it genuinely can't be loaded, flag an error
+  // so the UI shows a Refresh prompt instead of a false empty state.
+  let recordingsFailed = false;
+
   const [folderResult, recordingResult, allCount, completed, thisWeek, teamsCount] = await Promise.all([
-    prisma.folder.findMany({
+    withDbRetry(() => prisma.folder.findMany({
       where: folderScope,
       orderBy: { createdAt: 'asc' },
       include: { _count: { select: { recordings: { where: { deletedAt: null } } } } },
-    }).catch(() => []),
-    prisma.recording.findMany({
+    })).catch(() => []),
+    withDbRetry(() => prisma.recording.findMany({
       where: {
         ...(activeFolderId ? { folderId: activeFolderId } : { folderId: null }),
         ...(activeSource   ? { source: activeSource }    : {}),
@@ -149,13 +155,13 @@ export default async function Home({
       },
       include: { summary: true, _count: { select: { chunks: true } } },
       orderBy: { createdAt: 'desc' },
-    }).catch(() => []),
-    prisma.recording.count({ where: countScope }).catch(() => 0),
-    prisma.recording.count({ where: { ...countScope, status: 'completed' } }).catch(() => 0),
-    prisma.recording.count({
+    })).catch(() => { recordingsFailed = true; return []; }),
+    withDbRetry(() => prisma.recording.count({ where: countScope })).catch(() => 0),
+    withDbRetry(() => prisma.recording.count({ where: { ...countScope, status: 'completed' } })).catch(() => 0),
+    withDbRetry(() => prisma.recording.count({
       where: { ...countScope, createdAt: { gte: new Date(Date.now() - 7 * 86400_000) } },
-    }).catch(() => 0),
-    prisma.recording.count({ where: { ...countScope, source: 'teams' } }).catch(() => 0),
+    })).catch(() => 0),
+    withDbRetry(() => prisma.recording.count({ where: { ...countScope, source: 'teams' } })).catch(() => 0),
     claimPromise,
   ]);
   folders = folderResult;
@@ -429,7 +435,25 @@ export default async function Home({
         )}
 
         {/* ── Recording cards ── */}
-        {recordings.length === 0 ? (
+        {recordingsFailed ? (
+          // DB was unreachable — never imply the meetings are gone. Offer a retry.
+          <div className="flex flex-col items-center justify-center py-24 gap-5">
+            <div className="w-20 h-20 rounded-2xl border border-amber-500/30 bg-amber-500/10 flex items-center justify-center">
+              <svg className="w-9 h-9 text-amber-400" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m0 3.75h.008M10.34 3.94l-8.4 14.55A1.5 1.5 0 003.24 21h17.52a1.5 1.5 0 001.3-2.25l-8.4-14.55a1.5 1.5 0 00-2.62 0z" />
+              </svg>
+            </div>
+            <div className="text-center">
+              <p className="font-semibold text-ftc-gray mb-1">Couldn&apos;t load your recordings</p>
+              <p className="text-sm text-ftc-mid max-w-sm">
+                We couldn&apos;t reach the database just now — your meetings are safe. Refresh to try again.
+              </p>
+            </div>
+            <Link href="/" prefetch={false} className="btn-brand px-6 py-3 rounded-2xl text-sm font-semibold text-white touch-manipulation">
+              Refresh
+            </Link>
+          </div>
+        ) : recordings.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-24 gap-5">
             <div className="w-20 h-20 rounded-2xl border border-surface-border bg-surface-card flex items-center justify-center">
               <MicIcon className="w-9 h-9 text-surface-muted" />
