@@ -47,6 +47,7 @@ const nextConfig = {
       '/api/jobs/finalize': voiceIdTraceIncludes,
       '/api/voice-profiles': voiceIdTraceIncludes,
       '/api/transcribe': voiceIdTraceIncludes,
+      '/api/health': voiceIdTraceIncludes,
     },
   },
   async headers() {

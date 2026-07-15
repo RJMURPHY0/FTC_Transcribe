@@ -12,7 +12,7 @@
 // pipeline continues exactly as it did before voice ID existed.
 
 import { spawn } from 'child_process';
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync, readdirSync } from 'fs';
 import { readFile, writeFile, unlink, rename } from 'fs/promises';
 import os from 'os';
 import path from 'path';
@@ -61,9 +61,30 @@ function getSherpa(): any | null {
       if (!(process.env.PATH ?? '').includes(dllDir)) {
         process.env.PATH = `${dllDir};${process.env.PATH}`;
       }
+    } else if (process.platform === 'linux') {
+      // Preload sherpa's shared libraries with RTLD_GLOBAL so the addon's
+      // dependencies resolve WITHOUT LD_LIBRARY_PATH — a global LD_LIBRARY_PATH
+      // hijacks library resolution for every native module in the process
+      // (it broke Prisma's query engine in prod on 2026-07-15).
+      const pkgDir = path.join(process.cwd(), 'node_modules', 'sherpa-onnx-linux-x64');
+      if (existsSync(pkgDir)) {
+        const flags = os.constants.dlopen.RTLD_NOW | os.constants.dlopen.RTLD_GLOBAL;
+        const libs = readdirSync(pkgDir)
+          .filter((f) => f.includes('.so'))
+          // dependencies first: onnxruntime before the sherpa C API that links it
+          .sort((a, b) => (a.includes('onnxruntime') ? -1 : 0) - (b.includes('onnxruntime') ? -1 : 0));
+        // Two passes: pass 1 may fail for libs whose deps load later
+        for (let pass = 0; pass < 2; pass++) {
+          for (const lib of libs) {
+            try {
+              // process.dlopen throws on plain (non-addon) .so files, but the
+              // library itself stays loaded with global symbol visibility.
+              process.dlopen({ exports: {} } as unknown as NodeJS.Module, path.join(pkgDir, lib), flags);
+            } catch { /* expected for plain shared libraries */ }
+          }
+        }
+      }
     }
-    // Linux needs LD_LIBRARY_PATH=/var/task/node_modules/sherpa-onnx-linux-x64
-    // set as a real env var before the process starts (Vercel project env).
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     sherpaModule = require('sherpa-onnx-node');
   } catch (err) {
@@ -492,6 +513,18 @@ export function resolveGlobalSpeakers(chunks: ChunkForAlignment[]): ResolvedSpea
   }
 
   return { segments: outSegments, speakerEmbeddings };
+}
+
+// ── Runtime probe (used by /api/health?voice=1) ───────────────────────────────
+
+export async function probeVoiceId(): Promise<{ ok: boolean; dim?: number; error?: string }> {
+  try {
+    const extractor = await getExtractor();
+    if (!extractor) return { ok: false, error: 'extractor unavailable (addon or model load failed — see logs)' };
+    return { ok: true, dim: extractor.dim as number };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 // ── Profile matching ──────────────────────────────────────────────────────────
