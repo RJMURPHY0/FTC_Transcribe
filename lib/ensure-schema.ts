@@ -61,6 +61,16 @@ export async function ensureSchema() {
           REFERENCES "Recording"("id") ON DELETE CASCADE ON UPDATE CASCADE
       )`;
     await prisma.$executeRaw`CREATE INDEX IF NOT EXISTS "SpeakerEmbedding_recordingId_idx" ON "SpeakerEmbedding"("recordingId")`;
+    // Composite indexes matching the home/list + search query shapes so the
+    // planner serves lists from the index instead of scan+sort.
+    await prisma.$executeRaw`CREATE INDEX IF NOT EXISTS "Recording_userId_deletedAt_createdAt_idx" ON "Recording" ("userId", "deletedAt", "createdAt")`;
+    await prisma.$executeRaw`CREATE INDEX IF NOT EXISTS "Recording_folderId_deletedAt_createdAt_idx" ON "Recording" ("folderId", "deletedAt", "createdAt")`;
+    await prisma.$executeRaw`CREATE INDEX IF NOT EXISTS "Recording_userId_source_deletedAt_createdAt_idx" ON "Recording" ("userId", "source", "deletedAt", "createdAt")`;
+    // Trigram indexes turn search ILIKE contains(...) from full scans into
+    // index lookups over title + transcript text.
+    await prisma.$executeRaw`CREATE EXTENSION IF NOT EXISTS pg_trgm`;
+    await prisma.$executeRaw`CREATE INDEX IF NOT EXISTS "Recording_title_trgm_idx" ON "Recording" USING gin ("title" gin_trgm_ops)`;
+    await prisma.$executeRaw`CREATE INDEX IF NOT EXISTS "Transcript_fullText_trgm_idx" ON "Transcript" USING gin ("fullText" gin_trgm_ops)`;
     applied = true;
   } catch { /* already up to date or DB unavailable */ }
 }

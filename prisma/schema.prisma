@@ -18,41 +18,47 @@ model Folder {
 }
 
 model Recording {
-  id         String   @id @default(cuid())
-  title      String   @default("")
-  createdAt  DateTime @default(now())
-  duration   Int      @default(0)
-  fileSize   Int      @default(0)
-  mimeType   String   @default("")
-  audioPath  String   @default("")
-  status     String   @default("uploading")
-  source      String   @default("web")
-  meetingType String   @default("general")
-  folderId    String?
-  userId      String?
+  id                 String    @id @default(cuid())
+  title              String    @default("")
+  createdAt          DateTime  @default(now())
+  duration           Int       @default(0)
+  fileSize           Int       @default(0)
+  mimeType           String    @default("")
+  audioPath          String    @default("")
+  status             String    @default("uploading")
+  source             String    @default("web")
+  meetingType        String    @default("general")
+  folderId           String?
+  userId             String?
   // Soft delete: hidden from all lists immediately, hard-purged by cron after 30 days
-  deletedAt   DateTime?
+  deletedAt          DateTime?
   // Idempotency stamps — each side effect fires at most once per recording
   teamsNotifiedAt    DateTime?
   airtableBackedUpAt DateTime?
 
-  folder      Folder?      @relation(fields: [folderId], references: [id])
-  chunks      ChunkBlob[]
-  finalizeJob FinalizeJob?
-  transcript  Transcript?
-  summary     Summary?
+  folder            Folder?            @relation(fields: [folderId], references: [id])
+  chunks            ChunkBlob[]
+  finalizeJob       FinalizeJob?
+  transcript        Transcript?
+  summary           Summary?
   speakerEmbeddings SpeakerEmbedding[]
 
-  @@index([userId])
+  // deletedAt kept standalone for the 30-day purge cron (WHERE deletedAt < cutoff).
+  // Composite indexes match the home/list query shape: scope by user/folder,
+  // exclude soft-deleted, order by createdAt desc — so the planner can serve the
+  // list straight from the index instead of scanning + sorting.
   @@index([deletedAt])
+  @@index([userId, deletedAt, createdAt])
+  @@index([folderId, deletedAt, createdAt])
+  @@index([userId, source, deletedAt, createdAt])
 }
 
 // Mirrors auth.users — stores per-user Transcribe permission flags.
 // Written by FTC Contacts super admin; read here to scope recording visibility.
 model TranscribePermission {
-  userId     String   @id @map("user_id")
-  canSeeAll  Boolean  @default(false) @map("can_see_all")
-  grantedAt  DateTime @default(now()) @map("granted_at")
+  userId    String   @id @map("user_id")
+  canSeeAll Boolean  @default(false) @map("can_see_all")
+  grantedAt DateTime @default(now()) @map("granted_at")
 
   @@map("transcribe_permissions")
 }
@@ -76,16 +82,16 @@ model ChunkBlob {
 }
 
 model FinalizeJob {
-  id          String          @id @default(cuid())
-  recordingId String          @unique
-  recording   Recording       @relation(fields: [recordingId], references: [id], onDelete: Cascade)
-  status      String          @default("pending")
-  attempts    Int             @default(0)
+  id          String            @id @default(cuid())
+  recordingId String            @unique
+  recording   Recording         @relation(fields: [recordingId], references: [id], onDelete: Cascade)
+  status      String            @default("pending")
+  attempts    Int               @default(0)
   lockToken   String?
   lockUntil   DateTime?
-  lastError   String          @default("")
-  createdAt   DateTime        @default(now())
-  updatedAt   DateTime        @updatedAt
+  lastError   String            @default("")
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
   chunks      ChunkTranscript[]
 
   @@index([status, updatedAt])
@@ -93,20 +99,20 @@ model FinalizeJob {
 
 model ChunkTranscript {
   id          String      @id @default(cuid())
-  jobId        String
-  job          FinalizeJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  recordingId  String
-  chunkId      String
-  offset       Float       @default(0)
-  status       String      @default("pending")
-  attempts     Int         @default(0)
-  lastError    String      @default("")
-  transcript   String      @default("")
-  segments     String      @default("[]")
-  voiceData    String      @default("")
-  processedAt  DateTime?
-  createdAt    DateTime    @default(now())
-  updatedAt    DateTime    @updatedAt
+  jobId       String
+  job         FinalizeJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  recordingId String
+  chunkId     String
+  offset      Float       @default(0)
+  status      String      @default("pending")
+  attempts    Int         @default(0)
+  lastError   String      @default("")
+  transcript  String      @default("")
+  segments    String      @default("[]")
+  voiceData   String      @default("")
+  processedAt DateTime?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
 
   @@unique([jobId, chunkId])
   @@index([recordingId, status, offset])
@@ -170,7 +176,7 @@ model SpeakerProfile {
   id          String   @id @default(cuid())
   userId      String?
   name        String
-  features    String   // JSON: { avgSegDuration, avgPause, speakingRate, topWords }
+  features    String // JSON: { avgSegDuration, avgPause, speakingRate, topWords }
   sampleCount Int      @default(1)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt

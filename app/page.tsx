@@ -106,8 +106,11 @@ export default async function Home({
   // ── Org data — external Contacts API call, only awaited when the breadcrumb
   // or team cards actually need it (org filter active). Otherwise the filter
   // dropdown fetches it inside its own Suspense boundary.
-  const orgs     = canSeeAll && activeOrgId ? await getOrganisations() : null;
-  const orgTeams = canSeeAll && activeOrgId ? await getOrgTeams(activeOrgId) : [];
+  // Both external Contacts calls fire together — previously they ran one after
+  // the other, doubling the network latency on the org-breadcrumb critical path.
+  const [orgs, orgTeams] = canSeeAll && activeOrgId
+    ? await Promise.all([getOrganisations(), getOrgTeams(activeOrgId)])
+    : [null, [] as Awaited<ReturnType<typeof getOrgTeams>>];
   const activeOrg = orgs?.find(o => o.id === activeOrgId) ?? null;
 
   // ── Recording scope ───────────────────────────────────────────────────────
