@@ -135,12 +135,17 @@ export default function VoiceSetupPage() {
     if (mediaRef.current && mediaRef.current.state !== 'inactive') mediaRef.current.stop();
   }
 
-  const recordedCount = phrases.filter(p => p.blob && p.seconds >= MIN_SECONDS).length;
-  const canSubmit = name.trim().length > 1 && recordedCount >= MIN_PHRASES && !submitting;
+  // Any recording the user captured. The server is the source of truth on whether
+  // a sample is long/clear enough (it needs ≥2s of speech and returns a clear
+  // error otherwise), so we never block Save on a client-side duration figure —
+  // that measurement is unreliable on mobile and was the real "stays greyed" trap.
+  const capturedCount = phrases.filter(p => p.blob).length;
+  const goodCount = phrases.filter(p => p.blob && p.seconds >= MIN_SECONDS).length;
+  const canSubmit = name.trim().length > 1 && capturedCount >= MIN_PHRASES && !submitting;
   const disabledReason = name.trim().length <= 1
     ? 'Enter whose voice this is first.'
-    : recordedCount < MIN_PHRASES
-    ? `Record at least one phrase of ${MIN_SECONDS}+ seconds.`
+    : capturedCount < MIN_PHRASES
+    ? 'Record at least one phrase.'
     : '';
 
   async function submit() {
@@ -151,7 +156,7 @@ export default function VoiceSetupPage() {
       const form = new FormData();
       form.append('name', name.trim());
       phrases.forEach((p, i) => {
-        if (p.blob && p.seconds >= MIN_SECONDS) {
+        if (p.blob) {
           const ext = p.blob.type.includes('mp4') ? 'mp4' : 'webm';
           form.append('samples', p.blob, `phrase-${i + 1}.${ext}`);
         }
@@ -294,8 +299,8 @@ export default function VoiceSetupPage() {
 
             <div className="flex items-center justify-between pt-1">
               <span className="text-xs text-surface-muted">
-                {recordedCount}/{PHRASES.length} phrases recorded
-                {recordedCount < RECOMMENDED_PHRASES && ` (${RECOMMENDED_PHRASES}+ recommended)`}
+                {capturedCount}/{PHRASES.length} phrases recorded
+                {goodCount < RECOMMENDED_PHRASES && ` (${RECOMMENDED_PHRASES}+ of ${MIN_SECONDS}s+ recommended)`}
               </span>
               <button
                 onClick={() => void submit()}
