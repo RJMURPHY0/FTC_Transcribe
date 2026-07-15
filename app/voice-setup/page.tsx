@@ -65,49 +65,76 @@ export default function VoiceSetupPage() {
 
   async function startRecording() {
     setMessage(null);
+
+    if (typeof MediaRecorder === 'undefined') {
+      setMessage({ kind: 'err', text: 'This browser can\'t record audio. Try Safari or Chrome, or record on another device.' });
+      return;
+    }
+
+    let stream: MediaStream;
     try {
       const preferredMic = localStorage.getItem('preferredMicId');
-      const stream = await navigator.mediaDevices.getUserMedia({
+      stream = await navigator.mediaDevices.getUserMedia({
         audio: preferredMic ? { deviceId: { ideal: preferredMic } } : true,
       });
       streamRef.current = stream;
+    } catch {
+      setMessage({ kind: 'err', text: 'Microphone access denied — allow mic access in your browser and try again.' });
+      return;
+    }
 
-      // Live level meter
-      const ctx = new AudioContext();
-      audioCtxRef.current = ctx;
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 512;
-      ctx.createMediaStreamSource(stream).connect(analyser);
-      const buf = new Uint8Array(analyser.frequencyBinCount);
-      const tick = () => {
-        analyser.getByteTimeDomainData(buf);
-        let sum = 0;
-        for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
-        setLevel(Math.min(1, Math.sqrt(sum / buf.length) * 4));
-        rafRef.current = requestAnimationFrame(tick);
-      };
-      tick();
+    // Live level meter — best-effort only. AudioContext can throw on some
+    // mobile browsers; it must NEVER prevent recording, so it's isolated.
+    try {
+      const Ctx = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (Ctx) {
+        const ctx = new Ctx();
+        audioCtxRef.current = ctx;
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 512;
+        ctx.createMediaStreamSource(stream).connect(analyser);
+        const buf = new Uint8Array(analyser.frequencyBinCount);
+        const tick = () => {
+          analyser.getByteTimeDomainData(buf);
+          let sum = 0;
+          for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
+          setLevel(Math.min(1, Math.sqrt(sum / buf.length) * 4));
+          rafRef.current = requestAnimationFrame(tick);
+        };
+        tick();
+      }
+    } catch { /* meter is cosmetic — ignore */ }
 
+    try {
       const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm'
         : MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4'
         : '';
       const mr = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
       mediaRef.current = mr;
       chunksRef.current = [];
-      mr.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
+      mr.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunksRef.current.push(e.data); };
       mr.onstop = () => {
         const blob = new Blob(chunksRef.current, { type: mr.mimeType || 'audio/webm' });
         // Measure from wall-clock, not the drifting timer — accurate even if the
         // interval was throttled while recording on a phone.
         const seconds = startTsRef.current ? (Date.now() - startTsRef.current) / 1000 : elapsedRef.current;
+        stopStream();
+        setRecording(false);
+        setLevel(0);
+
+        // If the device handed back no audio, say so plainly instead of leaving
+        // Save silently greyed out. Don't record an empty blob.
+        if (blob.size === 0) {
+          setMessage({ kind: 'err', text: 'No audio was captured — check your mic isn\'t muted and record again.' });
+          return;
+        }
+
         setPhrases(prev => {
           const next = [...prev];
           next[current] = { blob, seconds: Math.round(seconds * 10) / 10 };
           return next;
         });
-        stopStream();
-        setRecording(false);
-        setLevel(0);
         // Auto-advance to the next un-recorded phrase
         setCurrent(c => {
           for (let i = c + 1; i < PHRASES.length; i++) return i;
@@ -115,7 +142,11 @@ export default function VoiceSetupPage() {
         });
       };
 
-      mr.start(250);
+      // No timeslice: iOS Safari records audio/mp4 and, when given a timeslice,
+      // emits fragmented chunks that concatenate into an empty/unplayable blob —
+      // which left `blob` unset and Save greyed out forever. A single dataavailable
+      // on stop gives one complete, valid clip on every platform.
+      mr.start();
       setRecording(true);
       setElapsed(0);
       elapsedRef.current = 0;
@@ -126,7 +157,9 @@ export default function VoiceSetupPage() {
         if (elapsedRef.current >= MAX_SECONDS) stopRecording();
       }, 100);
     } catch {
-      setMessage({ kind: 'err', text: 'Microphone access denied — allow mic access and try again.' });
+      stopStream();
+      setRecording(false);
+      setMessage({ kind: 'err', text: 'Couldn\'t start the recorder on this device. Try reloading the page.' });
     }
   }
 
@@ -139,8 +172,8 @@ export default function VoiceSetupPage() {
   // a sample is long/clear enough (it needs ≥2s of speech and returns a clear
   // error otherwise), so we never block Save on a client-side duration figure —
   // that measurement is unreliable on mobile and was the real "stays greyed" trap.
-  const capturedCount = phrases.filter(p => p.blob).length;
-  const goodCount = phrases.filter(p => p.blob && p.seconds >= MIN_SECONDS).length;
+  const capturedCount = phrases.filter(p => p.blob && p.blob.size > 0).length;
+  const goodCount = phrases.filter(p => p.blob && p.blob.size > 0 && p.seconds >= MIN_SECONDS).length;
   const canSubmit = name.trim().length > 1 && capturedCount >= MIN_PHRASES && !submitting;
   const disabledReason = name.trim().length <= 1
     ? 'Enter whose voice this is first.'
