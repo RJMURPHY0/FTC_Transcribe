@@ -14,7 +14,7 @@ import { notifyTeamsChannel } from '@/lib/integrations/teams-notify';
 import { indexTranscript } from '@/lib/embeddings';
 import { alignSpeakersAcrossChunks } from '@/lib/deepgram';
 import type { DeepgramRawSegment } from '@/lib/deepgram';
-import { resolveGlobalSpeakers, matchProfiles } from '@/lib/voice-id';
+import { resolveGlobalSpeakers, matchProfiles, cosineSim } from '@/lib/voice-id';
 import type { ChunkForAlignment, ChunkVoiceData } from '@/lib/voice-id';
 import {
   transcribeChunk,
@@ -69,11 +69,60 @@ function isMissingFinalizeTablesError(err: unknown): boolean {
 }
 
 
+// Self-introduction learning: when the LLM confidently maps a generic speaker
+// to a real name ("Hi, I'm Dave" → Speaker 2 = Dave) AND we have that speaker's
+// acoustic voiceprint for this recording, save it as an auto voice profile so
+// future meetings recognise them without any manual enrollment. The user can
+// refine it later in Settings → Voice Profiles.
+async function autoLearnVoiceProfiles(
+  recordingId: string,
+  speakerNames: Record<string, string>,
+  userId: string | null,
+): Promise<void> {
+  const namedGenerics = Object.entries(speakerNames).filter(
+    ([label, name]) => /^Speaker \d+$/.test(label) && name && !/^Speaker \d+$/i.test(name),
+  );
+  if (!namedGenerics.length) return;
+
+  try {
+    const embeddings = await prisma.speakerEmbedding.findMany({ where: { recordingId } });
+    if (!embeddings.length) return; // no acoustic data (legacy / mobile / voice-id-off path)
+
+    for (const [label, name] of namedGenerics) {
+      const row = embeddings.find(e => e.speakerLabel === label);
+      if (!row) continue;
+
+      let emb: number[];
+      try { emb = JSON.parse(row.embedding) as number[]; } catch { continue; }
+
+      // Skip if we already have a near-identical sample for this person
+      const existing = await prisma.voiceProfile.findMany({
+        where: { personName: name },
+        select: { embedding: true },
+      });
+      const duplicate = existing.some(p => {
+        try { return cosineSim(emb, JSON.parse(p.embedding) as number[]) > 0.95; }
+        catch { return false; }
+      });
+
+      if (!duplicate) {
+        await prisma.voiceProfile.create({
+          data: { userId, personName: name, embedding: row.embedding, durationS: row.durationS, source: 'auto' },
+        });
+      }
+      // Keep the stored voiceprint label in sync with the resolved name
+      await prisma.speakerEmbedding.update({ where: { id: row.id }, data: { speakerLabel: name } });
+    }
+  } catch (err) {
+    console.warn('[finalize] auto voice-profile learn failed:', err);
+  }
+}
+
 async function analyzeAndCompleteRecording(recordingId: string): Promise<FinalizeResult> {
   await ensureSchema(); // self-heal: make sure new Summary columns exist before writing
   const [transcript, recording, existingSummary] = await Promise.all([
     prisma.transcript.findUnique({ where: { recordingId } }),
-    prisma.recording.findUnique({ where: { id: recordingId }, select: { meetingType: true, createdAt: true, status: true } }),
+    prisma.recording.findUnique({ where: { id: recordingId }, select: { meetingType: true, createdAt: true, status: true, userId: true } }),
     prisma.summary.findUnique({ where: { recordingId }, select: { id: true } }),
   ]);
 
@@ -117,6 +166,9 @@ async function analyzeAndCompleteRecording(recordingId: string): Promise<Finaliz
         speaker: isGeneric(seg.speaker) ? (speakerNames[seg.speaker] ?? seg.speaker) : seg.speaker,
       }))
     : diarizedRaw;
+
+  // Turn confident self-introductions into reusable voice profiles
+  await autoLearnVoiceProfiles(recordingId, speakerNames, recording?.userId ?? null);
 
   const dateStr = new Date().toLocaleDateString('en-GB', {
     day: 'numeric', month: 'short', year: 'numeric',

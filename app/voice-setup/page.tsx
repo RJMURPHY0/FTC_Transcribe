@@ -14,7 +14,7 @@ const PHRASES = [
 const MIN_SECONDS = 4;
 const MAX_SECONDS = 20;
 
-interface Person { name: string; samples: number; totalDurationS: number }
+interface Person { name: string; samples: number; totalDurationS: number; learned?: boolean }
 
 type PhraseState = { blob: Blob | null; seconds: number };
 
@@ -307,18 +307,36 @@ export default function VoiceSetupPage() {
               <p className="py-4 text-sm text-ftc-mid">No voices enrolled yet.</p>
             ) : people.map(p => (
               <div key={p.name} className="flex items-center justify-between py-3 border-b border-surface-border last:border-0">
-                <div>
-                  <p className="text-sm text-ftc-gray font-medium">{p.name}</p>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm text-ftc-gray font-medium truncate">{p.name}</p>
+                    {p.learned && (
+                      <span className="flex-shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-brand/15 text-brand">
+                        Auto-detected
+                      </span>
+                    )}
+                  </div>
                   <p className="text-xs text-surface-muted">
                     {p.samples} sample{p.samples === 1 ? '' : 's'} · {Math.round(p.totalDurationS)}s of speech
+                    {p.learned && ' · read the phrases above to strengthen it'}
                   </p>
                 </div>
-                <button
-                  onClick={() => void removePerson(p.name)}
-                  className="text-xs px-3 py-1.5 rounded-xl border border-surface-border text-red-400 hover:border-red-400/40 transition-colors touch-manipulation"
-                >
-                  Remove
-                </button>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  {p.learned && (
+                    <button
+                      onClick={() => { setName(p.name); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                      className="text-xs px-3 py-1.5 rounded-xl border border-brand/30 text-brand hover:bg-brand/10 transition-colors touch-manipulation"
+                    >
+                      Improve
+                    </button>
+                  )}
+                  <button
+                    onClick={() => void removePerson(p.name)}
+                    className="text-xs px-3 py-1.5 rounded-xl border border-surface-border text-red-400 hover:border-red-400/40 transition-colors touch-manipulation"
+                  >
+                    Remove
+                  </button>
+                </div>
               </div>
             ))}
           </div>

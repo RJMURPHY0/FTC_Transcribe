@@ -22,14 +22,22 @@ export async function GET() {
     orderBy: { createdAt: 'desc' },
   });
 
-  const people = new Map<string, { name: string; samples: number; totalDurationS: number; lastAdded: string }>();
+  const people = new Map<string, {
+    name: string; samples: number; totalDurationS: number; lastAdded: string; enrolledSamples: number;
+  }>();
   for (const r of rows) {
-    const p = people.get(r.personName) ?? { name: r.personName, samples: 0, totalDurationS: 0, lastAdded: r.createdAt.toISOString() };
+    const p = people.get(r.personName) ?? {
+      name: r.personName, samples: 0, totalDurationS: 0, lastAdded: r.createdAt.toISOString(), enrolledSamples: 0,
+    };
     p.samples += 1;
     p.totalDurationS += r.durationS;
+    if (r.source === 'enrollment') p.enrolledSamples += 1;
     people.set(r.personName, p);
   }
-  return NextResponse.json({ people: [...people.values()] });
+  // "learned" = never explicitly enrolled — built only from self-introductions
+  // or manual renames. Surface it so the user can strengthen it if they want.
+  const result = [...people.values()].map(p => ({ ...p, learned: p.enrolledSamples === 0 }));
+  return NextResponse.json({ people: result });
 }
 
 // Enroll: multipart form with `name` + one or more `samples` audio files

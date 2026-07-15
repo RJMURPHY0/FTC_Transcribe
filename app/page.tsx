@@ -6,6 +6,7 @@ import FolderActions from '@/components/FolderActions';
 import RecordingsList from '@/components/RecordingsList';
 import LogoutButton from '@/components/LogoutButton';
 import AdminFilters from '@/components/AdminFilters';
+import SearchBar from '@/components/SearchBar';
 import { estimateSeconds } from '@/lib/finalize-recording';
 import { getAuthUser } from '@/lib/auth';
 import { ensureSchema } from '@/lib/ensure-schema';
@@ -201,6 +202,13 @@ export default async function Home({
       </header>
 
       <main className="max-w-5xl mx-auto w-full px-4 py-8 flex-1">
+
+        {/* Search */}
+        {allCount > 0 && (
+          <div className="mb-6">
+            <SearchBar />
+          </div>
+        )}
 
         {/* Stats */}
         {allCount > 0 && (

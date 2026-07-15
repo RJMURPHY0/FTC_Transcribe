@@ -11,8 +11,10 @@ import EditableAINotes from './EditableAINotes';
 import { ActionItemsProvider } from './ActionItemsContext';
 import SpeakerPanel from './SpeakerPanel';
 import TranscriptPlayer from './TranscriptPlayer';
+import ResizableColumns from './ResizableColumns';
 import type { TranscriptSegment, TopicSection } from '@/lib/ai';
 import { ensureSchema } from '@/lib/ensure-schema';
+import { getAuthUser } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -32,9 +34,12 @@ function formatDate(date: Date) {
 
 export default async function RecordingPage({ params }: { params: { id: string } }) {
   await ensureSchema();
-  const recording = await prisma.recording
-    .findUnique({ where: { id: params.id }, include: { transcript: true, summary: true, _count: { select: { chunks: true } } } })
-    .catch(() => null);
+  const [recording, authUser] = await Promise.all([
+    prisma.recording
+      .findUnique({ where: { id: params.id }, include: { transcript: true, summary: true, _count: { select: { chunks: true } } } })
+      .catch(() => null),
+    getAuthUser().catch(() => null),
+  ]);
 
   if (!recording || recording.deletedAt) notFound();
 
@@ -166,76 +171,79 @@ export default async function RecordingPage({ params }: { params: { id: string }
           initialDue={actionDue}
           initialChecked={checkedIndices}
         >
-        <div className="detail-grid">
+        <ResizableColumns
+          userId={authUser?.id ?? null}
+          chat={
+            /* ── LEFT: Chat ── */
+            <div className="chat-panel-col space-y-3">
+              <p className="text-xs font-semibold uppercase tracking-widest text-ftc-mid flex items-center gap-2">
+                <svg className="w-3.5 h-3.5 text-brand" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                </svg>
+                Ask About This Meeting
+              </p>
+              <ChatPanel recordingId={recording.id} />
+            </div>
+          }
+          notes={
+            /* ── MIDDLE: AI Notes ── */
+            <div>
+              {recording.summary ? (
+                <EditableAINotes
+                  recordingId={recording.id}
+                  recordingTitle={recording.title}
+                  initialSummary={{
+                    overview:    recording.summary.overview,
+                    keyPoints:   points,
+                    decisions,
+                    topics,
+                  }}
+                />
+              ) : isComplete ? (
+                <div className="rounded-2xl border border-surface-border bg-surface-card p-8 text-center text-ftc-mid text-sm">
+                  No AI notes generated for this recording.
+                </div>
+              ) : null}
+            </div>
+          }
+          transcript={
+            /* ── RIGHT: Transcript ── */
+            <div className="transcript-panel">
+              <p className="text-xs font-semibold uppercase tracking-widest text-ftc-mid flex items-center gap-2 mb-4">
+                <svg className="w-3.5 h-3.5 text-brand" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                Transcript
+              </p>
 
-          {/* ── LEFT: Chat ── */}
-          <div className="chat-panel-col space-y-3">
-            <p className="text-xs font-semibold uppercase tracking-widest text-ftc-mid flex items-center gap-2">
-              <svg className="w-3.5 h-3.5 text-brand" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-              </svg>
-              Ask About This Meeting
-            </p>
-            <ChatPanel recordingId={recording.id} />
-          </div>
-
-          {/* ── MIDDLE: AI Notes ── */}
-          <div>
-            {recording.summary ? (
-              <EditableAINotes
-                recordingId={recording.id}
-                recordingTitle={recording.title}
-                initialSummary={{
-                  overview:    recording.summary.overview,
-                  keyPoints:   points,
-                  decisions,
-                  topics,
-                }}
-              />
-            ) : isComplete ? (
-              <div className="rounded-2xl border border-surface-border bg-surface-card p-8 text-center text-ftc-mid text-sm">
-                No AI notes generated for this recording.
-              </div>
-            ) : null}
-          </div>
-
-          {/* ── RIGHT: Transcript ── */}
-          <div className="transcript-panel">
-            <p className="text-xs font-semibold uppercase tracking-widest text-ftc-mid flex items-center gap-2 mb-4">
-              <svg className="w-3.5 h-3.5 text-brand" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-              </svg>
-              Transcript
-            </p>
-
-            {recording.transcript ? (
-              <>
-                {hasSpeakers && (
-                  <SpeakerPanel recordingId={recording.id} speakers={speakerOrder} />
-                )}
-                {hasSpeakers ? (
-                  <TranscriptPlayer
-                    recordingId={recording.id}
-                    rawSegments={rawSegments}
-                    speakerOrder={speakerOrder}
-                    hasAudio={recording._count.chunks > 0}
-                  />
-                ) : (
-                  <div className="rounded-2xl border border-surface-border bg-surface-card p-5">
-                    <p className="text-sm text-ftc-gray leading-8 whitespace-pre-wrap">
-                      {recording.transcript.fullText}
-                    </p>
-                  </div>
-                )}
-              </>
-            ) : (
-              <div className="rounded-2xl border border-surface-border bg-surface-card p-8 text-center text-ftc-mid text-sm">
-                {isComplete ? 'No transcript available.' : 'Transcript will appear here once processing is complete.'}
-              </div>
-            )}
-          </div>
-
-        </div>
+              {recording.transcript ? (
+                <>
+                  {hasSpeakers && (
+                    <SpeakerPanel recordingId={recording.id} speakers={speakerOrder} />
+                  )}
+                  {hasSpeakers ? (
+                    <TranscriptPlayer
+                      recordingId={recording.id}
+                      rawSegments={rawSegments}
+                      speakerOrder={speakerOrder}
+                      hasAudio={recording._count.chunks > 0}
+                    />
+                  ) : (
+                    <div className="rounded-2xl border border-surface-border bg-surface-card p-5">
+                      <p className="text-sm text-ftc-gray leading-8 whitespace-pre-wrap">
+                        {recording.transcript.fullText}
+                      </p>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="rounded-2xl border border-surface-border bg-surface-card p-8 text-center text-ftc-mid text-sm">
+                  {isComplete ? 'No transcript available.' : 'Transcript will appear here once processing is complete.'}
+                </div>
+              )}
+            </div>
+          }
+        />
         </ActionItemsProvider>
       </main>
     </div>

@@ -115,10 +115,42 @@
   grid-template-columns: 1fr;
   gap: 1rem;
 }
+/* Resize handles are hidden until the desktop grid activates */
+.detail-resize-handle { display: none; }
 @media (min-width: 1024px) {
   .detail-grid {
-    grid-template-columns: 1.43fr 2fr 1.2fr;
+    /* var lets the client component override the ratios without breaking the
+       mobile single-column stack (inline styles would beat the media query) */
+    grid-template-columns: var(--detail-cols, 1.43fr 0.5rem 2fr 0.5rem 1.2fr);
     align-items: start;
+    gap: 0;
+  }
+  .detail-grid > *:not(.detail-resize-handle) {
+    min-width: 0; /* let columns shrink below content width when dragged */
+  }
+  .detail-grid > .chat-panel-col { padding-right: 0.5rem; }
+  .detail-grid > div:nth-child(3) { padding: 0 0.5rem; } /* notes gutter */
+  .detail-grid > .transcript-panel { padding-left: 0.5rem; }
+  .detail-resize-handle {
+    display: block;
+    align-self: stretch;
+    width: 0.5rem;
+    cursor: col-resize;
+    position: relative;
+    z-index: 10;
+  }
+  .detail-resize-handle::before {
+    content: '';
+    position: absolute;
+    inset: 0 40%;
+    border-radius: 9999px;
+    background: var(--surface-border, #262626);
+    transition: background 0.15s;
+  }
+  .detail-resize-handle:hover::before,
+  .detail-resize-handle.dragging::before {
+    background: var(--brand, #f97316);
+    inset: 0 35%;
   }
   .transcript-panel {
     position: sticky;
