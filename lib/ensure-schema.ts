@@ -49,6 +49,8 @@ export async function ensureSchema() {
       )`;
     await prisma.$executeRaw`CREATE INDEX IF NOT EXISTS "VoiceProfile_userId_idx" ON "VoiceProfile"("userId")`;
     await prisma.$executeRaw`CREATE INDEX IF NOT EXISTS "VoiceProfile_personName_idx" ON "VoiceProfile"("personName")`;
+    await prisma.$executeRaw`ALTER TABLE "VoiceProfile" ADD COLUMN IF NOT EXISTS "recordingId" TEXT`;
+    await prisma.$executeRaw`ALTER TABLE "VoiceProfile" ADD COLUMN IF NOT EXISTS "excerpt" TEXT NOT NULL DEFAULT ''`;
     await prisma.$executeRaw`
       CREATE TABLE IF NOT EXISTS "SpeakerEmbedding" (
         "id"           TEXT NOT NULL PRIMARY KEY,

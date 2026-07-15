@@ -152,6 +152,10 @@ model VoiceProfile {
   durationS   Float    @default(0)
   source      String   @default("enrollment") // enrollment | relabel | auto | match
   deviceLabel String   @default("")
+  // Provenance: which recording the sample was learned from (null = enrollment)
+  // and what that voice said there — lets the user audit + prune training data.
+  recordingId String?
+  excerpt     String   @default("")
   createdAt   DateTime @default(now())
 
   @@index([userId])

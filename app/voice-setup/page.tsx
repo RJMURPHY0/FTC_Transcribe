@@ -27,6 +27,25 @@ interface Person { name: string; samples: number; totalDurationS: number; learne
 
 type PhraseState = { blob: Blob | null; seconds: number };
 
+type VoiceSample = {
+  id: string;
+  source: string;
+  durationS: number;
+  deviceLabel: string;
+  createdAt: string;
+  recordingId: string | null;
+  recordingTitle: string | null;
+  excerpt: string;
+  consistency: number | null;
+};
+
+const SOURCE_LABEL: Record<string, string> = {
+  enrollment: 'Enrolled',
+  match: 'Auto-learned',
+  relabel: 'From rename',
+  auto: 'Self-intro',
+};
+
 export default function VoiceSetupPage() {
   const [people, setPeople] = useState<Person[]>([]);
   const [name, setName] = useState('');
@@ -55,6 +74,42 @@ export default function VoiceSetupPage() {
       .catch(() => {});
   };
   useEffect(loadPeople, []);
+
+  // Per-person training-sample inspector
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [samples, setSamples] = useState<VoiceSample[]>([]);
+  const [samplesLoading, setSamplesLoading] = useState(false);
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  async function toggleSamples(personName: string) {
+    if (expanded === personName) { setExpanded(null); return; }
+    setExpanded(personName);
+    setSamples([]);
+    setConfirmId(null);
+    setSamplesLoading(true);
+    try {
+      const r = await fetch(`/api/voice-profiles/samples?name=${encodeURIComponent(personName)}`);
+      const d = r.ok ? await r.json() : { samples: [] };
+      setSamples(d.samples ?? []);
+    } catch {
+      setSamples([]);
+    }
+    setSamplesLoading(false);
+  }
+
+  async function deleteSample(id: string) {
+    setDeletingId(id);
+    try {
+      const r = await fetch(`/api/voice-profiles/samples?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+      if (r.ok) {
+        setSamples(prev => prev.filter(s => s.id !== id));
+        loadPeople(); // sample counts changed; person disappears if none left
+      }
+    } catch { /* leave the row; user can retry */ }
+    setDeletingId(null);
+    setConfirmId(null);
+  }
 
   useEffect(() => () => { stopStream(); }, []);
 
@@ -372,37 +427,128 @@ export default function VoiceSetupPage() {
             {people.length === 0 ? (
               <p className="py-4 text-sm text-ftc-mid">No voices enrolled yet.</p>
             ) : people.map(p => (
-              <div key={p.name} className="flex items-center justify-between py-3 border-b border-surface-border last:border-0">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <p className="text-sm text-ftc-gray font-medium truncate">{p.name}</p>
+              <div key={p.name} className="border-b border-surface-border last:border-0">
+                <div className="flex items-center justify-between py-3">
+                  <button
+                    onClick={() => void toggleSamples(p.name)}
+                    className="min-w-0 text-left flex-1 touch-manipulation"
+                  >
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm text-ftc-gray font-medium truncate">{p.name}</p>
+                      {p.learned && (
+                        <span className="flex-shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-brand/15 text-brand">
+                          Auto-detected
+                        </span>
+                      )}
+                      <svg
+                        className={`w-3 h-3 flex-shrink-0 text-surface-muted transition-transform ${expanded === p.name ? 'rotate-180' : ''}`}
+                        viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5"
+                      >
+                        <path d="M2 4.5 6 8.5 10 4.5" />
+                      </svg>
+                    </div>
+                    <p className="text-xs text-surface-muted">
+                      {p.samples} sample{p.samples === 1 ? '' : 's'} · {Math.round(p.totalDurationS)}s of speech
+                      {p.learned && ' · read the phrases above to strengthen it'}
+                    </p>
+                  </button>
+                  <div className="flex items-center gap-2 flex-shrink-0 ml-2">
                     {p.learned && (
-                      <span className="flex-shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-brand/15 text-brand">
-                        Auto-detected
-                      </span>
+                      <button
+                        onClick={() => { setName(p.name); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                        className="text-xs px-3 py-1.5 rounded-xl border border-brand/30 text-brand hover:bg-brand/10 transition-colors touch-manipulation"
+                      >
+                        Improve
+                      </button>
+                    )}
+                    <button
+                      onClick={() => void removePerson(p.name)}
+                      className="text-xs px-3 py-1.5 rounded-xl border border-surface-border text-red-400 hover:border-red-400/40 transition-colors touch-manipulation"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                </div>
+
+                {/* Training samples for this person */}
+                {expanded === p.name && (
+                  <div className="pb-3 space-y-2">
+                    {samplesLoading ? (
+                      <p className="text-xs text-surface-muted py-1">Loading samples…</p>
+                    ) : samples.length === 0 ? (
+                      <p className="text-xs text-surface-muted py-1">No samples found.</p>
+                    ) : samples.map(s => (
+                      <div key={s.id} className="rounded-xl bg-surface-raised border border-surface-border p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 flex-wrap min-w-0 text-[11px] text-surface-muted">
+                            <span className="font-semibold px-1.5 py-0.5 rounded bg-brand/15 text-brand">
+                              {SOURCE_LABEL[s.source] ?? s.source}
+                            </span>
+                            <span>{new Date(s.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
+                            <span>· {Math.round(s.durationS)}s</span>
+                            {s.deviceLabel && <span>· {s.deviceLabel}</span>}
+                            {s.consistency !== null && (
+                              <span className={s.consistency < 0.5 ? 'text-red-400 font-semibold' : ''}>
+                                · {Math.round(s.consistency * 100)}% voice match
+                                {s.consistency < 0.5 && ' — may be someone else'}
+                              </span>
+                            )}
+                          </div>
+                          {confirmId === s.id ? (
+                            <div className="flex items-center gap-2 flex-shrink-0 text-xs">
+                              <span className="text-ftc-mid">Delete?</span>
+                              <button
+                                onClick={() => void deleteSample(s.id)}
+                                disabled={deletingId === s.id}
+                                className="px-2.5 py-1 rounded-lg bg-red-500/15 text-red-400 border border-red-400/40 font-semibold touch-manipulation disabled:opacity-50"
+                              >
+                                {deletingId === s.id ? '…' : 'Yes'}
+                              </button>
+                              <button
+                                onClick={() => setConfirmId(null)}
+                                className="px-2.5 py-1 rounded-lg border border-surface-border text-ftc-mid touch-manipulation"
+                              >
+                                No
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={() => setConfirmId(s.id)}
+                              aria-label="Delete sample"
+                              className="flex-shrink-0 w-8 h-8 flex items-center justify-center rounded-lg border border-surface-border text-surface-muted hover:text-red-400 hover:border-red-400/40 transition-colors touch-manipulation"
+                            >
+                              <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3">
+                                <path d="M2.5 4h11M6.5 4V2.8a.8.8 0 0 1 .8-.8h1.4a.8.8 0 0 1 .8.8V4m2.7 0-.5 9.2a1 1 0 0 1-1 .95H5.3a1 1 0 0 1-1-.95L3.8 4M6.5 7v4M9.5 7v4" />
+                              </svg>
+                            </button>
+                          )}
+                        </div>
+                        {s.excerpt && (
+                          <p className="mt-2 text-xs text-ftc-mid italic leading-relaxed line-clamp-2">
+                            “{s.excerpt}”
+                          </p>
+                        )}
+                        {s.recordingId && (
+                          <Link
+                            href={`/recordings/${s.recordingId}`}
+                            className="inline-block mt-1.5 text-[11px] text-brand hover:underline"
+                          >
+                            From: {s.recordingTitle ?? 'meeting recording'} →
+                          </Link>
+                        )}
+                        {!s.recordingId && s.source === 'enrollment' && !s.excerpt && (
+                          <p className="mt-1.5 text-[11px] text-surface-muted">Recorded at enrollment.</p>
+                        )}
+                      </div>
+                    ))}
+                    {!samplesLoading && samples.length > 0 && (
+                      <p className="text-[11px] text-surface-muted leading-relaxed">
+                        Deleting a bad sample (wrong person, noisy room) improves matching. A low
+                        “voice match” score usually means the sample caught someone else&apos;s voice.
+                      </p>
                     )}
                   </div>
-                  <p className="text-xs text-surface-muted">
-                    {p.samples} sample{p.samples === 1 ? '' : 's'} · {Math.round(p.totalDurationS)}s of speech
-                    {p.learned && ' · read the phrases above to strengthen it'}
-                  </p>
-                </div>
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  {p.learned && (
-                    <button
-                      onClick={() => { setName(p.name); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
-                      className="text-xs px-3 py-1.5 rounded-xl border border-brand/30 text-brand hover:bg-brand/10 transition-colors touch-manipulation"
-                    >
-                      Improve
-                    </button>
-                  )}
-                  <button
-                    onClick={() => void removePerson(p.name)}
-                    className="text-xs px-3 py-1.5 rounded-xl border border-surface-border text-red-400 hover:border-red-400/40 transition-colors touch-manipulation"
-                  >
-                    Remove
-                  </button>
-                </div>
+                )}
               </div>
             ))}
           </div>

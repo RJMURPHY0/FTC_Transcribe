@@ -76,6 +76,7 @@ async function autoLearnVoiceProfiles(
   recordingId: string,
   speakerNames: Record<string, string>,
   userId: string | null,
+  segments: Array<{ speaker: string; text: string }> = [],
 ): Promise<void> {
   const namedGenerics = Object.entries(speakerNames).filter(
     ([label, name]) => /^Speaker \d+$/.test(label) && name && !/^Speaker \d+$/i.test(name),
@@ -104,8 +105,13 @@ async function autoLearnVoiceProfiles(
       });
 
       if (!duplicate) {
+        const excerpt = segments
+          .filter(s => s.speaker === name || s.speaker === label)
+          .map(s => s.text)
+          .join(' ')
+          .slice(0, 300);
         await prisma.voiceProfile.create({
-          data: { userId, personName: name, embedding: row.embedding, durationS: row.durationS, source: 'auto' },
+          data: { userId, personName: name, embedding: row.embedding, durationS: row.durationS, source: 'auto', recordingId, excerpt },
         });
       }
       // Keep the stored voiceprint label in sync with the resolved name
@@ -166,7 +172,7 @@ async function analyzeAndCompleteRecording(recordingId: string): Promise<Finaliz
     : diarizedRaw;
 
   // Turn confident self-introductions into reusable voice profiles
-  await autoLearnVoiceProfiles(recordingId, speakerNames, recording?.userId ?? null);
+  await autoLearnVoiceProfiles(recordingId, speakerNames, recording?.userId ?? null, diarized);
 
   const dateStr = new Date().toLocaleDateString('en-GB', {
     day: 'numeric', month: 'short', year: 'numeric',
@@ -562,6 +568,13 @@ async function finalizeWithJobs(recordingId: string): Promise<FinalizeResult> {
               const personSamples = profiles.filter(p => p.personName === m.name);
               if (personSamples.length >= MAX_SAMPLES_PER_PERSON) continue;
               if (personSamples.some(p => cosineSim(se.embedding, p.embedding) > DUP_SIM)) continue;
+              // Provenance: what this voice said in this meeting, so the user
+              // can audit the sample later and delete it if it's contaminated.
+              const excerpt = allSegments
+                .filter(s => s.speaker === m.name)
+                .map(s => s.text)
+                .join(' ')
+                .slice(0, 300);
               await prisma.voiceProfile.create({
                 data: {
                   userId: owner?.userId ?? null,
@@ -569,6 +582,8 @@ async function finalizeWithJobs(recordingId: string): Promise<FinalizeResult> {
                   embedding: JSON.stringify(se.embedding),
                   durationS: se.durationS,
                   source: 'match',
+                  recordingId,
+                  excerpt,
                 },
               });
               console.log(`[finalize] learned new voice sample for ${m.name} (sim ${m.sim.toFixed(2)}, ${se.durationS.toFixed(1)}s)`);

@@ -88,6 +88,11 @@ export async function PATCH(
       });
 
       if (!isDuplicate) {
+        const excerpt = updated
+          .filter(seg => seg.speaker === to)
+          .map(seg => seg.text)
+          .join(' ')
+          .slice(0, 300);
         await prisma.voiceProfile.create({
           data: {
             userId: user?.id ?? null,
@@ -95,6 +100,8 @@ export async function PATCH(
             embedding: row.embedding,
             durationS: row.durationS,
             source: 'relabel',
+            recordingId: params.id,
+            excerpt,
           },
         });
       }
