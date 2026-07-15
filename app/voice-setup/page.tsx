@@ -13,6 +13,11 @@ const PHRASES = [
 
 const MIN_SECONDS = 4;
 const MAX_SECONDS = 20;
+// Minimum phrases needed to save. The server stores every usable sample, so one
+// clear 4s+ phrase is enough to create a working voiceprint — more just improves
+// accuracy. Keeping this at 1 avoids the "Save stays greyed out" trap.
+const MIN_PHRASES = 1;
+const RECOMMENDED_PHRASES = 3;
 
 interface Person { name: string; samples: number; totalDurationS: number; learned?: boolean }
 
@@ -35,6 +40,9 @@ export default function VoiceSetupPage() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const rafRef = useRef<number>(0);
+  // Wall-clock start time — reliable on mobile where setInterval throttles/drifts.
+  const startTsRef = useRef(0);
+  const elapsedRef = useRef(0);
 
   const loadPeople = () => {
     fetch('/api/voice-profiles')
@@ -89,9 +97,12 @@ export default function VoiceSetupPage() {
       mr.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
       mr.onstop = () => {
         const blob = new Blob(chunksRef.current, { type: mr.mimeType || 'audio/webm' });
+        // Measure from wall-clock, not the drifting timer — accurate even if the
+        // interval was throttled while recording on a phone.
+        const seconds = startTsRef.current ? (Date.now() - startTsRef.current) / 1000 : elapsedRef.current;
         setPhrases(prev => {
           const next = [...prev];
-          next[current] = { blob, seconds: elapsedRef.current };
+          next[current] = { blob, seconds: Math.round(seconds * 10) / 10 };
           return next;
         });
         stopStream();
@@ -108,8 +119,9 @@ export default function VoiceSetupPage() {
       setRecording(true);
       setElapsed(0);
       elapsedRef.current = 0;
+      startTsRef.current = Date.now();
       timerRef.current = setInterval(() => {
-        elapsedRef.current += 0.1;
+        elapsedRef.current = (Date.now() - startTsRef.current) / 1000;
         setElapsed(elapsedRef.current);
         if (elapsedRef.current >= MAX_SECONDS) stopRecording();
       }, 100);
@@ -118,15 +130,18 @@ export default function VoiceSetupPage() {
     }
   }
 
-  const elapsedRef = useRef(0);
-
   function stopRecording() {
     if (timerRef.current) clearInterval(timerRef.current);
     if (mediaRef.current && mediaRef.current.state !== 'inactive') mediaRef.current.stop();
   }
 
   const recordedCount = phrases.filter(p => p.blob && p.seconds >= MIN_SECONDS).length;
-  const canSubmit = name.trim().length > 1 && recordedCount >= 3 && !submitting;
+  const canSubmit = name.trim().length > 1 && recordedCount >= MIN_PHRASES && !submitting;
+  const disabledReason = name.trim().length <= 1
+    ? 'Enter whose voice this is first.'
+    : recordedCount < MIN_PHRASES
+    ? `Record at least one phrase of ${MIN_SECONDS}+ seconds.`
+    : '';
 
   async function submit() {
     if (!canSubmit) return;
@@ -191,8 +206,9 @@ export default function VoiceSetupPage() {
           </h2>
           <div className="rounded-2xl border border-surface-border bg-surface-card p-5 space-y-5">
             <p className="text-xs text-ftc-mid leading-relaxed">
-              Read {PHRASES.length} short phrases aloud ({MIN_SECONDS}+ seconds each). The app learns the voice
-              from the audio itself and will automatically name this person in future recordings.
+              Record at least one short phrase aloud ({MIN_SECONDS}+ seconds) — {RECOMMENDED_PHRASES}+ gives the
+              best accuracy. The app learns the voice from the audio itself and will automatically name this
+              person in future recordings.
             </p>
 
             <div>
@@ -277,7 +293,10 @@ export default function VoiceSetupPage() {
             </div>
 
             <div className="flex items-center justify-between pt-1">
-              <span className="text-xs text-surface-muted">{recordedCount}/{PHRASES.length} phrases recorded (min 3)</span>
+              <span className="text-xs text-surface-muted">
+                {recordedCount}/{PHRASES.length} phrases recorded
+                {recordedCount < RECOMMENDED_PHRASES && ` (${RECOMMENDED_PHRASES}+ recommended)`}
+              </span>
               <button
                 onClick={() => void submit()}
                 disabled={!canSubmit}
@@ -288,6 +307,10 @@ export default function VoiceSetupPage() {
                 {submitting ? 'Saving voice…' : 'Save voice profile'}
               </button>
             </div>
+
+            {!canSubmit && !submitting && disabledReason && (
+              <p className="text-xs text-surface-muted text-right -mt-3">{disabledReason}</p>
+            )}
 
             {message && (
               <p className={`text-xs leading-relaxed ${message.kind === 'ok' ? 'text-emerald-400' : 'text-red-400'}`}>
