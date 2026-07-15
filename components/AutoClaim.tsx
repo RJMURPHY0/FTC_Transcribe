@@ -8,6 +8,15 @@ import { createClient } from '@/lib/supabase/client';
 export default function AutoClaim() {
   const router = useRouter();
   useEffect(() => {
+    // Only attempt the claim once per browser session. The server already
+    // claims legacy rows on render (page.tsx claimPromise); running this on
+    // every dashboard mount fired a redundant getSession + POST and, worse,
+    // busted the client router cache so every "Back" refetched the whole list.
+    try {
+      if (sessionStorage.getItem('autoclaim-done') === '1') return;
+      sessionStorage.setItem('autoclaim-done', '1');
+    } catch { /* sessionStorage unavailable — fall through, claim once */ }
+
     (async () => {
       const supabase = createClient();
       const { data: { session } } = await supabase.auth.getSession();

@@ -75,13 +75,18 @@ function MicIcon({ className }: { className?: string }) {
 export default async function Home({
   searchParams,
 }: {
-  searchParams: { folder?: string; source?: string; org?: string; team?: string; assignee?: string };
+  searchParams: { folder?: string; source?: string; org?: string; team?: string; assignee?: string; limit?: string };
 }) {
   const activeFolderId   = searchParams.folder ?? null;
   const activeSource     = searchParams.source === 'teams' ? 'teams' : searchParams.source === 'web' ? 'web' : null;
   const activeOrgId      = searchParams.org ?? null;
   const activeTeamId     = searchParams.team ?? null;
   const activeAssigneeId = searchParams.assignee ?? null;
+
+  // Paginate the recordings list — previously every row + summary was loaded on
+  // every render. take one extra to know whether a "Show more" link is needed.
+  const PAGE_SIZE = 30;
+  const limit = Math.max(PAGE_SIZE, parseInt(searchParams.limit ?? '', 10) || PAGE_SIZE);
 
   await ensureSchema();
 
@@ -155,6 +160,7 @@ export default async function Home({
       },
       include: { summary: true, _count: { select: { chunks: true } } },
       orderBy: { createdAt: 'desc' },
+      take: limit + 1,
     })).catch(() => { recordingsFailed = true; return []; }),
     withDbRetry(() => prisma.recording.count({ where: countScope })).catch(() => 0),
     withDbRetry(() => prisma.recording.count({ where: { ...countScope, status: 'completed' } })).catch(() => 0),
@@ -166,6 +172,19 @@ export default async function Home({
   ]);
   folders = folderResult;
   recordings = recordingResult;
+
+  // Trim the sentinel extra row and decide whether to offer "Show more".
+  const hasMore = recordings.length > limit;
+  if (hasMore) recordings = recordings.slice(0, limit);
+
+  const showMoreParams = new URLSearchParams();
+  if (activeFolderId)   showMoreParams.set('folder', activeFolderId);
+  if (activeSource)     showMoreParams.set('source', activeSource);
+  if (activeOrgId)      showMoreParams.set('org', activeOrgId);
+  if (activeTeamId)     showMoreParams.set('team', activeTeamId);
+  if (activeAssigneeId) showMoreParams.set('assignee', activeAssigneeId);
+  showMoreParams.set('limit', String(limit + PAGE_SIZE));
+  const showMoreHref = `/?${showMoreParams.toString()}`;
 
   const folderList   = folders.map(f => ({ id: f.id, name: f.name }));
   const activeFolder = activeFolderId ? folders.find(f => f.id === activeFolderId) : null;
@@ -209,13 +228,6 @@ export default async function Home({
 
       <main className="max-w-5xl mx-auto w-full px-4 py-8 flex-1">
 
-        {/* Search */}
-        {allCount > 0 && (
-          <div className="mb-6">
-            <SearchBar />
-          </div>
-        )}
-
         {/* Stats */}
         {allCount > 0 && (
           <div className="grid grid-cols-3 gap-3 mb-8">
@@ -243,6 +255,15 @@ export default async function Home({
                 activeAssigneeId={activeAssigneeId}
               />
             </Suspense>
+          </div>
+        )}
+
+        {/* Search — sits below the stats and (for super admins) the company /
+            assignee dropdowns. Normal search is a plain text search; the filter
+            button opens Ask-AI + source/type/date filters. */}
+        {allCount > 0 && (
+          <div className="mb-6">
+            <SearchBar canSeeAll={canSeeAll} />
           </div>
         )}
 
@@ -475,6 +496,7 @@ export default async function Home({
             )}
           </div>
         ) : (
+          <>
           <RecordingsList
             recordings={recordings.map(rec => {
               const isQueued = rec.status === 'uploading' || rec.status === 'queued' || rec.status === 'processing';
@@ -495,6 +517,17 @@ export default async function Home({
             })}
             folders={folderList}
           />
+          {hasMore && (
+            <div className="flex justify-center mt-6">
+              <Link
+                href={showMoreHref}
+                className="px-5 py-2.5 rounded-xl text-sm font-medium text-ftc-gray bg-surface-raised border border-surface-border hover:border-surface-muted transition-colors touch-manipulation"
+              >
+                Show more
+              </Link>
+            </div>
+          )}
+          </>
         )}
       </main>
       <div className="pb-safe" />

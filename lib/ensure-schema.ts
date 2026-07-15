@@ -5,6 +5,11 @@ import { prisma } from './db';
 let applied = false;
 
 export async function ensureSchema() {
+  // Schema is already migrated in every deployed environment, so these ~24
+  // sequential DDL round-trips to the EU database were pure latency on every
+  // page render / sign-in. Skip entirely unless explicitly opted in (set
+  // RUN_SCHEMA_CHECK=1 when bootstrapping a fresh database).
+  if (process.env.RUN_SCHEMA_CHECK !== '1') return;
   if (applied) return;
   try {
     await prisma.$executeRaw`ALTER TABLE "Recording" ADD COLUMN IF NOT EXISTS "userId" TEXT`;
