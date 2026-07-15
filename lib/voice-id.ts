@@ -33,17 +33,16 @@ const DIARIZE_THRESHOLD = 0.7;
 const MAX_EMBED_SECONDS = 25;
 const SAMPLE_RATE = 16000;
 
-const MODEL_BASE = 'https://github.com/k2-fsa/sherpa-onnx/releases/download';
+// Both are direct .onnx downloads — serverless runtimes have no `tar` binary,
+// so the GitHub .tar.bz2 release of the segmentation model is unusable there.
 const MODELS = {
   segmentation: {
     file: 'pyannote-seg-3.onnx',
-    url: `${MODEL_BASE}/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2`,
-    tarEntry: 'sherpa-onnx-pyannote-segmentation-3-0/model.onnx',
+    url: 'https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/resolve/main/model.onnx',
   },
   embedding: {
     file: 'campplus_zh_en.onnx',
-    url: `${MODEL_BASE}/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx`,
-    tarEntry: null,
+    url: 'https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx',
   },
 };
 
@@ -116,20 +115,6 @@ async function downloadFile(url: string, dest: string): Promise<void> {
   await rename(tmp, dest);
 }
 
-async function extractTarBz2Entry(url: string, entry: string, dest: string): Promise<void> {
-  const tarPath = `${dest}.tar.bz2`;
-  await downloadFile(url, tarPath);
-  const dir = path.dirname(dest);
-  // bsdtar ships on Vercel's runtime image and on Windows 10+
-  await new Promise<void>((resolve, reject) => {
-    const p = spawn('tar', ['xjf', tarPath, '-C', dir, entry]);
-    p.on('error', reject);
-    p.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`tar exited ${code}`))));
-  });
-  await rename(path.join(dir, entry), dest);
-  await unlink(tarPath).catch(() => {});
-}
-
 function ensureModels(): Promise<string | null> {
   if (!modelsReady) {
     modelsReady = (async () => {
@@ -142,9 +127,7 @@ function ensureModels(): Promise<string | null> {
         console.log('[voice-id] downloading models to', dir);
         await Promise.all([
           existsSync(embPath) ? Promise.resolve() : downloadFile(MODELS.embedding.url, embPath),
-          existsSync(segPath)
-            ? Promise.resolve()
-            : extractTarBz2Entry(MODELS.segmentation.url, MODELS.segmentation.tarEntry!, segPath),
+          existsSync(segPath) ? Promise.resolve() : downloadFile(MODELS.segmentation.url, segPath),
         ]);
         return dir;
       } catch (err) {

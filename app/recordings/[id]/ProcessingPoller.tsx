@@ -19,11 +19,13 @@ export default function ProcessingPoller({ id }: { id: string }) {
       router.refresh();
     }, 3_000);
 
-    // Re-trigger finalize every 8s — picks up the final chunk as soon as background
-    // transcription finishes (typically 5–15s after recording stops)
+    // Re-trigger finalize every 30s. Finalize is lock-protected and idempotent,
+    // but the old 8s barrage piled requests onto an expiring lock and caused
+    // concurrent double analyses. 30s still picks up the final chunk promptly;
+    // the 5-min cron is the backstop.
     const finalizeInterval = setInterval(() => {
       fetch(`/api/recordings/${id}/finalize`, { method: 'POST', keepalive: true }).catch(() => {});
-    }, 8_000);
+    }, 30_000);
 
     return () => {
       clearInterval(refreshInterval);

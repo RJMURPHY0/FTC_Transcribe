@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { waitUntil } from '@vercel/functions';
 import { prisma } from '@/lib/db';
@@ -49,24 +50,39 @@ export async function POST(
     }
 
     const bytes = await file.arrayBuffer();
+    const audioBuffer = Buffer.from(bytes);
+    // Retry-safe: clients retry failed uploads up to 4x, and a lost response
+    // means the chunk was stored but the client retries anyway. The content
+    // hash + partial unique index makes the duplicate insert a no-op instead
+    // of duplicated audio (which showed up as duplicated notes).
+    const contentHash = createHash('sha256').update(audioBuffer).digest('hex');
 
-    // Store chunk and update status in one transaction; capture the new chunk ID
-    const chunkRecord = await prisma.$transaction(async (tx) => {
-      const chunk = await tx.chunkBlob.create({
-        data: {
-          recordingId: params.id,
-          audioData:   Buffer.from(bytes),
-          offset:      timeOffset,
-          mimeType:    baseMime,
-        },
-        select: { id: true },
+    let chunkRecord: { id: string };
+    try {
+      chunkRecord = await prisma.$transaction(async (tx) => {
+        const chunk = await tx.chunkBlob.create({
+          data: {
+            recordingId: params.id,
+            audioData:   audioBuffer,
+            offset:      timeOffset,
+            mimeType:    baseMime,
+            contentHash,
+          },
+          select: { id: true },
+        });
+        await tx.recording.update({
+          where: { id: params.id },
+          data:  { status: 'uploading' },
+        });
+        return chunk;
       });
-      await tx.recording.update({
-        where: { id: params.id },
-        data:  { status: 'uploading' },
-      });
-      return chunk;
-    });
+    } catch (err) {
+      if ((err as { code?: string }).code === 'P2002') {
+        // Same audio already stored — the retry succeeded the first time
+        return NextResponse.json({ ok: true, deduped: true });
+      }
+      throw err;
+    }
 
     const jobId = await enqueueFinalizeJob(params.id);
 

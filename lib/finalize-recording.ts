@@ -24,7 +24,10 @@ import {
   MAX_CHUNK_ATTEMPTS,
 } from '@/lib/transcribe-chunk';
 
-const LOCK_MS = 5 * 60 * 1000; // 5 min — expires quickly if a function is killed, letting the next retry take over
+// Must exceed the longest analysis phase (maxDuration is 800s) — a lock that
+// lapses mid-analysis lets the poller/cron start a SECOND concurrent analysis,
+// which double-posted notes to Teams/Airtable.
+const LOCK_MS = 15 * 60 * 1000;
 const PARALLEL_CHUNKS = 5;
 // Safety cap: chunks are pre-transcribed in background so finalize normally skips them.
 // This limit only matters if background transcription failed for many chunks.
@@ -68,10 +71,18 @@ function isMissingFinalizeTablesError(err: unknown): boolean {
 
 async function analyzeAndCompleteRecording(recordingId: string): Promise<FinalizeResult> {
   await ensureSchema(); // self-heal: make sure new Summary columns exist before writing
-  const [transcript, recording] = await Promise.all([
+  const [transcript, recording, existingSummary] = await Promise.all([
     prisma.transcript.findUnique({ where: { recordingId } }),
-    prisma.recording.findUnique({ where: { id: recordingId }, select: { meetingType: true, createdAt: true } }),
+    prisma.recording.findUnique({ where: { id: recordingId }, select: { meetingType: true, createdAt: true, status: true } }),
+    prisma.summary.findUnique({ where: { recordingId }, select: { id: true } }),
   ]);
+
+  // Idempotency: a completed recording with a summary never re-analyses.
+  // Late chunk retries, poller re-triggers, and cron re-claims all land here.
+  if (recording?.status === 'completed' && existingSummary) {
+    return { ok: true, completed: true, failedChunks: 0, pendingChunks: 0 };
+  }
+
   if (!transcript || !transcript.fullText.trim()) {
     await prisma.recording.update({ where: { id: recordingId }, data: { status: 'failed' } }).catch(() => {});
     return { ok: false, reason: 'No transcript to analyse.' };
@@ -156,34 +167,46 @@ async function analyzeAndCompleteRecording(recordingId: string): Promise<Finaliz
     });
   });
 
-  // Fire-and-forget Airtable backup — never blocks the main flow
-  backupToAirtable({
-    recordingId,
-    title:       completedRecording.title,
-    createdAt:   completedRecording.createdAt,
-    status:      'completed',
-    overview:    analysis.overview,
-    keyPoints:   analysis.keyPoints,
-    actionItems: analysis.actionItems,
-    decisions:   analysis.decisions,
-    fullText:    transcript.fullText,
-  }).catch((err) => console.error('[finalize] airtable backup failed:', err));
+  // Fire-and-forget side effects, each claimed atomically so concurrent runs
+  // (or later re-analyses) can never post the same notes twice.
+  const airtableClaim = await prisma.recording.updateMany({
+    where: { id: recordingId, airtableBackedUpAt: null },
+    data: { airtableBackedUpAt: new Date() },
+  }).catch(() => ({ count: 0 }));
+  if (airtableClaim.count === 1) {
+    backupToAirtable({
+      recordingId,
+      title:       completedRecording.title,
+      createdAt:   completedRecording.createdAt,
+      status:      'completed',
+      overview:    analysis.overview,
+      keyPoints:   analysis.keyPoints,
+      actionItems: analysis.actionItems,
+      decisions:   analysis.decisions,
+      fullText:    transcript.fullText,
+    }).catch((err) => console.error('[finalize] airtable backup failed:', err));
+  }
 
-  // Fire-and-forget semantic indexing for search
+  // Fire-and-forget semantic indexing for search (upsert-safe, no claim needed)
   indexTranscript(recordingId, completedRecording.userId ?? null, transcript.fullText)
     .catch(err => console.error('[finalize] embedding index failed:', err));
 
-  // Fire-and-forget Teams channel notification
-  notifyTeamsChannel({
-    recordingId,
-    title:       completedRecording.title,
-    createdAt:   completedRecording.createdAt,
-    overview:    analysis.overview,
-    keyPoints:   analysis.keyPoints,
-    actionItems: analysis.actionItems,
-    decisions:   analysis.decisions,
-    durationSec: completedRecording.duration,
-  }).catch((err) => console.error('[finalize] teams notify failed:', err));
+  const teamsClaim = await prisma.recording.updateMany({
+    where: { id: recordingId, teamsNotifiedAt: null },
+    data: { teamsNotifiedAt: new Date() },
+  }).catch(() => ({ count: 0 }));
+  if (teamsClaim.count === 1) {
+    notifyTeamsChannel({
+      recordingId,
+      title:       completedRecording.title,
+      createdAt:   completedRecording.createdAt,
+      overview:    analysis.overview,
+      keyPoints:   analysis.keyPoints,
+      actionItems: analysis.actionItems,
+      decisions:   analysis.decisions,
+      durationSec: completedRecording.duration,
+    }).catch((err) => console.error('[finalize] teams notify failed:', err));
+  }
 
   return { ok: true, completed: true, failedChunks: 0, pendingChunks: 0 };
 }
@@ -516,11 +539,18 @@ async function finalizeWithJobs(recordingId: string): Promise<FinalizeResult> {
 
 export async function enqueueFinalizeJob(recordingId: string): Promise<string | null> {
   try {
+    // Never resurrect a completed job — a late retried chunk used to reset it
+    // to 'pending', triggering a full re-analysis and duplicate notes.
     const job = await prisma.finalizeJob.upsert({
       where: { recordingId },
       create: { recordingId, status: 'pending' },
-      update: { status: 'pending', lastError: '' },
-      select: { id: true },
+      update: {},
+      select: { id: true, status: true },
+    });
+    if (job.status === 'completed') return job.id;
+    await prisma.finalizeJob.updateMany({
+      where: { id: job.id, status: { not: 'completed' } },
+      data: { status: 'pending', lastError: '' },
     });
     return job.id;
   } catch (err) {
@@ -535,9 +565,14 @@ export async function finalizeRecording(recordingId: string): Promise<FinalizeRe
   try {
     return await finalizeWithJobs(recordingId);
   } catch (err) {
-    if (!isMissingFinalizeTablesError(err)) {
-      console.error('[finalize] job mode failed, falling back to legacy mode:', err);
+    // Legacy mode exists ONLY for databases without the FinalizeJob tables.
+    // It has no locking, so falling into it on arbitrary errors let concurrent
+    // requests run duplicate full re-analyses.
+    if (isMissingFinalizeTablesError(err)) {
+      return finalizeLegacy(recordingId);
     }
-    return finalizeLegacy(recordingId);
+    const reason = err instanceof Error ? err.message : 'Finalize failed';
+    console.error('[finalize] job mode failed:', err);
+    return { ok: false, reason };
   }
 }

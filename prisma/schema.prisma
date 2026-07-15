@@ -32,6 +32,9 @@ model Recording {
   userId      String?
   // Soft delete: hidden from all lists immediately, hard-purged by cron after 30 days
   deletedAt   DateTime?
+  // Idempotency stamps — each side effect fires at most once per recording
+  teamsNotifiedAt    DateTime?
+  airtableBackedUpAt DateTime?
 
   folder      Folder?      @relation(fields: [folderId], references: [id])
   chunks      ChunkBlob[]
@@ -64,6 +67,9 @@ model ChunkBlob {
   audioData   Bytes
   offset      Float     @default(0)
   mimeType    String    @default("audio/webm")
+  // SHA-256 of the audio bytes — a partial unique index (raw DDL in
+  // ensure-schema) rejects retry-duplicated chunks at the database level
+  contentHash String    @default("")
   createdAt   DateTime  @default(now())
 
   @@index([recordingId, offset])
