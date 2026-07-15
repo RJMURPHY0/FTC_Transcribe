@@ -507,18 +507,20 @@ async function finalizeWithJobs(recordingId: string): Promise<FinalizeResult> {
     // the LLM text diarization.
     let voiceResolved = false;
     try {
-      const resolved = resolveGlobalSpeakers(voiceChunks);
-      if (resolved && resolved.segments.length > 0) {
-        const profileRows = await prisma.voiceProfile.findMany({
-          select: { personName: true, embedding: true },
-        }).catch(() => [] as Array<{ personName: string; embedding: string }>);
-        const profiles = profileRows
-          .map((p) => {
-            try { return { personName: p.personName, embedding: JSON.parse(p.embedding) as number[] }; }
-            catch { return null; }
-          })
-          .filter((p): p is { personName: string; embedding: number[] } => !!p);
+      // Profiles load first so the resolver can supervise per-turn assignment
+      // with enrolled voiceprints (not just name clusters after the fact).
+      const profileRows = await prisma.voiceProfile.findMany({
+        select: { personName: true, embedding: true },
+      }).catch(() => [] as Array<{ personName: string; embedding: string }>);
+      const profiles = profileRows
+        .map((p) => {
+          try { return { personName: p.personName, embedding: JSON.parse(p.embedding) as number[] }; }
+          catch { return null; }
+        })
+        .filter((p): p is { personName: string; embedding: number[] } => !!p);
 
+      const resolved = resolveGlobalSpeakers(voiceChunks, profiles);
+      if (resolved && resolved.segments.length > 0) {
         const detailedMatches = matchProfilesDetailed(resolved.speakerEmbeddings, profiles);
         const matches: Record<string, string> = {};
         for (const [label, m] of Object.entries(detailedMatches)) matches[label] = m.name;

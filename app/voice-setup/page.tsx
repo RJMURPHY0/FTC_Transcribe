@@ -3,12 +3,16 @@
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 
+// Longer, phonetically varied passages produce far stronger voiceprints than
+// short sentences — total enrollment speech should exceed ~60 seconds. The
+// final prompt captures SPONTANEOUS speech, which matches how people actually
+// talk in meetings much better than read sentences do.
 const PHRASES = [
-  'Hello everyone, thanks for joining the meeting today, let\'s get started with the agenda.',
-  'The main action item from last week has been completed and the documents are ready for review.',
-  'I\'ll follow up with the team on Thursday and send the updated schedule to everyone by email.',
-  'Before we wrap up, does anyone have any questions or anything else they\'d like to raise?',
-  'Safety inductions for the new starters need to be booked in before the end of the month.',
+  'Hello everyone, thanks for joining the meeting today. Let\'s get started with the agenda. The main action item from last week has been completed, the documents are ready for review, and I\'ll walk everyone through the changes once we\'ve covered the safety items.',
+  'When the sunlight strikes raindrops in the air, they act as a prism and form a rainbow. The rainbow is a division of white light into many beautiful colours. These take the shape of a long round arch, with its path high above, and its two ends apparently beyond the horizon.',
+  'I\'ll follow up with the team on Thursday and send the updated schedule to everyone by email. Safety inductions for the new starters need to be booked in before the end of the month, and the scaffolding inspection is due first thing on Monday morning.',
+  'Before we wrap up, does anyone have any questions or anything else they\'d like to raise? Quick reminders: keep your certificates up to date, check the notice board for the July rota, and flag any near misses straight away — even the small stuff matters.',
+  'For this last one, don\'t read anything — just talk naturally for about twenty seconds in your own words. Describe what you did at work yesterday, or what your plans are for the rest of the week. Speak the way you would in a normal meeting.',
 ];
 
 const MIN_SECONDS = 4;
@@ -244,9 +248,10 @@ export default function VoiceSetupPage() {
           </h2>
           <div className="rounded-2xl border border-surface-border bg-surface-card p-5 space-y-5">
             <p className="text-xs text-ftc-mid leading-relaxed">
-              Record at least one short phrase aloud ({MIN_SECONDS}+ seconds) — {RECOMMENDED_PHRASES}+ gives the
+              Record at least one passage aloud ({MIN_SECONDS}+ seconds) — recording all {PHRASES.length} gives the
               best accuracy. The app learns the voice from the audio itself and will automatically name this
-              person in future recordings.
+              person in future recordings. For best results: use the same device you record meetings with,
+              sit at a normal speaking distance, and talk at your natural pace.
             </p>
 
             <div>

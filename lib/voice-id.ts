@@ -17,7 +17,7 @@ import { readFile, writeFile, unlink, rename } from 'fs/promises';
 import os from 'os';
 import path from 'path';
 
-export interface VoiceTurn { start: number; end: number; speaker: number }
+export interface VoiceTurn { start: number; end: number; speaker: number; embedding?: number[] }
 export interface VoiceSpeaker { speaker: number; embedding: number[]; durationS: number }
 export interface ChunkVoiceData { turns: VoiceTurn[]; speakers: VoiceSpeaker[] }
 
@@ -27,10 +27,31 @@ export const isVoiceIdEnabled = process.env.VOICE_ID_ENABLED !== 'false';
 const CLUSTER_THRESHOLD = parseFloat(process.env.VOICE_CLUSTER_THRESHOLD ?? '0.55');
 // Similarity above which a global speaker matches an enrolled voice profile
 export const MATCH_THRESHOLD = parseFloat(process.env.VOICE_MATCH_THRESHOLD ?? '0.5');
-// Diarization clustering threshold (within a single chunk)
-const DIARIZE_THRESHOLD = 0.7;
+// sherpa fast-clustering threshold within a single chunk. It is DISTANCE-based
+// (merge when 1 - cosine < threshold), so smaller = more clusters. We bias
+// toward over-splitting: a wrong split heals in the global turn clustering,
+// but a wrong merge contaminates voiceprints and is unrecoverable.
+const DIARIZE_THRESHOLD = parseFloat(process.env.VOICE_DIARIZE_THRESHOLD ?? '0.5');
+// Global turn-level clustering: merge clusters while best linkage sim ≥ this.
+// Validated on the TTS harness: 0.55 keeps same-voice turns together while
+// separating distinct voices; similar-voice pairs are separated by enrollment
+// supervision, not this threshold.
+const TURN_CLUSTER_THRESHOLD = parseFloat(process.env.VOICE_TURN_CLUSTER_THRESHOLD ?? '0.55');
+// Re-segmentation: move a turn to another cluster when its centroid beats the
+// assigned one by at least this margin
+const REASSIGN_MARGIN = parseFloat(process.env.VOICE_REASSIGN_MARGIN ?? '0.05');
+// Profile supervision: relabel a turn to an enrolled person when that person's
+// profile beats the turn's current person by this margin
+const PROFILE_MARGIN = parseFloat(process.env.VOICE_PROFILE_MARGIN ?? '0.07');
+// Smoothing: a speaker island shorter than this, sandwiched between one other
+// speaker, flips to its neighbours unless its own acoustic evidence is strong
+const MIN_ISLAND_S = parseFloat(process.env.VOICE_MIN_ISLAND_S ?? '1.2');
+const ISLAND_KEEP_MARGIN = parseFloat(process.env.VOICE_ISLAND_KEEP_MARGIN ?? '0.1');
+// Turns shorter than this don't get their own embedding (too noisy to trust)
+const MIN_TURN_EMBED_S = parseFloat(process.env.VOICE_MIN_TURN_EMBED_S ?? '1.0');
 // Cap the audio used per speaker embedding — CPU cost control
 const MAX_EMBED_SECONDS = 25;
+const MAX_TURN_EMBED_SECONDS = 15;
 const SAMPLE_RATE = 16000;
 
 // Both are direct .onnx downloads — serverless runtimes have no `tar` binary,
@@ -287,6 +308,20 @@ export async function analyzeChunkVoices(audio: Buffer, mimeType: string): Promi
       speaker: s.speaker,
     }));
 
+    // Per-turn voiceprints: the global resolver clusters and profile-checks
+    // individual turns, so one bad within-chunk cluster can't poison the whole
+    // chunk. Short turns stay embedding-less and inherit labels from context.
+    for (const t of turns) {
+      const dur = t.end - t.start;
+      if (dur < MIN_TURN_EMBED_S) continue;
+      const s = Math.max(0, Math.floor(t.start * SAMPLE_RATE));
+      const e = Math.min(samples.length, Math.floor(Math.min(t.end, t.start + MAX_TURN_EMBED_SECONDS) * SAMPLE_RATE));
+      if (e - s < SAMPLE_RATE * MIN_TURN_EMBED_S) continue;
+      const emb = await computeEmbedding(samples.subarray(s, e));
+      // 4 decimals is plenty for cosine math and halves the stored JSON size
+      if (emb) t.embedding = emb.map((v) => Math.round(v * 1e4) / 1e4);
+    }
+
     // Concatenate each speaker's speech (longest turns first, capped) and embed it
     const bySpeaker = new Map<number, Array<{ start: number; end: number }>>();
     for (const t of turns) {
@@ -415,7 +450,343 @@ function speakerForSegment(seg: { start: number; end: number }, turns: VoiceTurn
   return bestOverlap > 0 ? best : null;
 }
 
-export function resolveGlobalSpeakers(chunks: ChunkForAlignment[]): ResolvedSpeakers | null {
+// ── Turn-level resolver ───────────────────────────────────────────────────────
+//
+// A "turn" is one diarized span inside one chunk. The resolver:
+//   1. clusters ALL turn embeddings across the recording (average linkage),
+//   2. re-assigns turns whose embedding clearly prefers another cluster,
+//   3. when enrolled profiles identify ≥2 clusters as different people,
+//      re-checks every turn directly against those people's voiceprints,
+//   4. smooths away sub-second speaker islands with weak acoustic evidence,
+//   5. labels transcript segments from the smoothed global timeline.
+// Legacy voiceData (no per-turn embeddings) falls back to the original
+// per-chunk-speaker clustering below.
+
+interface GlobalTurn {
+  start: number;          // recording-global seconds
+  end: number;
+  chunkIdx: number;       // index into withVoice
+  localSpeaker: number;
+  embedding: number[] | null;
+  cluster: number;        // mutable: current global cluster id
+}
+
+function normalizeVec(v: number[]): number[] {
+  let n = 0;
+  for (const x of v) n += x * x;
+  n = Math.sqrt(n) || 1;
+  return v.map((x) => x / n);
+}
+
+// Duration-weighted average-linkage clustering over a precomputed sim matrix
+// (Lance-Williams update). O(n²) total — fine for a few thousand turns.
+function clusterTurns(turns: GlobalTurn[], threshold: number): void {
+  const embedded = turns.filter((t) => t.embedding);
+  const n = embedded.length;
+  if (!n) return;
+  const norm = embedded.map((t) => normalizeVec(t.embedding!));
+  const weight = embedded.map((t) => Math.max(t.end - t.start, 0.1));
+
+  const sim = new Float64Array(n * n);
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      let d = 0;
+      for (let k = 0; k < norm[i].length; k++) d += norm[i][k] * norm[j][k];
+      sim[i * n + j] = d; sim[j * n + i] = d;
+    }
+  }
+
+  const alive = new Array(n).fill(true);
+  const w = [...weight];
+  const members: number[][] = embedded.map((_, i) => [i]);
+
+  for (;;) {
+    let bestSim = -1, a = -1, b = -1;
+    for (let i = 0; i < n; i++) {
+      if (!alive[i]) continue;
+      for (let j = i + 1; j < n; j++) {
+        if (!alive[j]) continue;
+        const s = sim[i * n + j];
+        if (s > bestSim) { bestSim = s; a = i; b = j; }
+      }
+    }
+    if (bestSim < threshold || a < 0) break;
+    // merge b into a; weighted average linkage to every other cluster
+    for (let k = 0; k < n; k++) {
+      if (!alive[k] || k === a || k === b) continue;
+      const s = (w[a] * sim[a * n + k] + w[b] * sim[b * n + k]) / (w[a] + w[b]);
+      sim[a * n + k] = s; sim[k * n + a] = s;
+    }
+    w[a] += w[b];
+    members[a].push(...members[b]);
+    alive[b] = false;
+  }
+
+  let label = 0;
+  for (let i = 0; i < n; i++) {
+    if (!alive[i]) continue;
+    for (const m of members[i]) embedded[m].cluster = label;
+    label++;
+  }
+}
+
+// Duration-weighted, normalized centroid of a cluster's embedded turns.
+function clusterCentroids(turns: GlobalTurn[]): Map<number, number[]> {
+  const acc = new Map<number, { v: number[]; w: number }>();
+  for (const t of turns) {
+    if (!t.embedding || t.cluster < 0) continue;
+    const wt = Math.max(t.end - t.start, 0.1);
+    const norm = normalizeVec(t.embedding);
+    const cur = acc.get(t.cluster);
+    if (!cur) {
+      acc.set(t.cluster, { v: norm.map((x) => x * wt), w: wt });
+    } else {
+      for (let d = 0; d < norm.length; d++) cur.v[d] += norm[d] * wt;
+      cur.w += wt;
+    }
+  }
+  const out = new Map<number, number[]>();
+  for (const [c, { v, w }] of acc) out.set(c, v.map((x) => x / w));
+  return out;
+}
+
+export function resolveGlobalSpeakers(
+  chunks: ChunkForAlignment[],
+  profiles: ProfileRow[] = [],
+): ResolvedSpeakers | null {
+  const withVoice = chunks.filter((c) => c.voiceData && c.voiceData.speakers.length > 0);
+  if (!withVoice.length) return null;
+
+  // Flatten every diarized turn into a global timeline
+  const globalTurns: GlobalTurn[] = [];
+  withVoice.forEach((chunk, ci) => {
+    for (const t of chunk.voiceData!.turns) {
+      globalTurns.push({
+        start: chunk.offset + t.start,
+        end: chunk.offset + t.end,
+        chunkIdx: ci,
+        localSpeaker: t.speaker,
+        embedding: t.embedding ?? null,
+        cluster: -1,
+      });
+    }
+  });
+  globalTurns.sort((x, y) => x.start - y.start);
+
+  const embeddedCount = globalTurns.filter((t) => t.embedding).length;
+  // Legacy recordings (no per-turn embeddings) use the original resolver
+  if (embeddedCount < 2) return resolveGlobalSpeakersLegacy(chunks);
+
+  // 1. Global clustering over turn voiceprints
+  clusterTurns(globalTurns, TURN_CLUSTER_THRESHOLD);
+
+  // 2. Re-segmentation: a turn that clearly prefers another cluster moves there
+  let centroids = clusterCentroids(globalTurns);
+  if (centroids.size > 1) {
+    for (const t of globalTurns) {
+      if (!t.embedding) continue;
+      const norm = normalizeVec(t.embedding);
+      let bestC = t.cluster, bestS = -1, ownS = -1;
+      for (const [c, cent] of centroids) {
+        const s = cosineSim(norm, cent);
+        if (c === t.cluster) ownS = s;
+        if (s > bestS) { bestS = s; bestC = c; }
+      }
+      if (bestC !== t.cluster && bestS - ownS > REASSIGN_MARGIN) t.cluster = bestC;
+    }
+    centroids = clusterCentroids(globalTurns);
+  }
+
+  // 3. Profile supervision: every embedded turn is checked directly against
+  // enrolled voiceprints. Confident matches are HARD-assigned to that person's
+  // own cluster — this beats blind clustering whenever the meeting's voices are
+  // enrolled, and it's what stops "labeled as the other person mid-sentence".
+  // Turns that don't clear the bar keep their unsupervised cluster; if a whole
+  // cluster belongs to one person anyway, centroid matching names it later.
+  if (profiles.length) {
+    const byPerson = new Map<string, number[][]>();
+    for (const p of profiles) {
+      if (!byPerson.has(p.personName)) byPerson.set(p.personName, []);
+      byPerson.get(p.personName)!.push(normalizeVec(p.embedding));
+    }
+    const personSim = (v: number[]): Array<{ name: string; sim: number }> =>
+      [...byPerson.entries()]
+        .map(([name, embs]) => ({ name, sim: Math.max(...embs.map((e) => cosineSim(v, e))) }))
+        .sort((x, y) => y.sim - x.sim);
+
+    let nextCluster = Math.max(0, ...centroids.keys()) + 1;
+    const personCluster = new Map<string, number>();
+    for (const name of byPerson.keys()) personCluster.set(name, nextCluster++);
+
+    let assigned = 0;
+    for (const t of globalTurns) {
+      if (!t.embedding) continue;
+      const ranked = personSim(normalizeVec(t.embedding));
+      if (!ranked.length) continue;
+      const top = ranked[0];
+      const margin = ranked.length > 1 ? top.sim - ranked[1].sim : Infinity;
+      // With a single enrolled person there is no margin signal, so raise the bar
+      const bar = ranked.length > 1 ? MATCH_THRESHOLD : MATCH_THRESHOLD + PROFILE_MARGIN;
+      if (top.sim >= bar && margin >= PROFILE_MARGIN) {
+        t.cluster = personCluster.get(top.name)!;
+        assigned++;
+      }
+    }
+    if (assigned) centroids = clusterCentroids(globalTurns);
+  }
+
+  // 4a. Non-embedded turns inherit the dominant cluster of their chunk-local
+  // speaker; failing that, temporal continuity fills them in.
+  const localDominant = new Map<string, number>(); // `${chunkIdx}:${localSpeaker}` → cluster
+  {
+    const tally = new Map<string, Map<number, number>>();
+    for (const t of globalTurns) {
+      if (!t.embedding || t.cluster < 0) continue;
+      const key = `${t.chunkIdx}:${t.localSpeaker}`;
+      if (!tally.has(key)) tally.set(key, new Map());
+      const m = tally.get(key)!;
+      m.set(t.cluster, (m.get(t.cluster) ?? 0) + (t.end - t.start));
+    }
+    for (const [key, m] of tally) {
+      let best = -1, bestW = -1;
+      for (const [c, wt] of m) if (wt > bestW) { bestW = wt; best = c; }
+      localDominant.set(key, best);
+    }
+  }
+  let prevCluster = -1;
+  for (const t of globalTurns) {
+    if (t.cluster < 0) {
+      const dom = localDominant.get(`${t.chunkIdx}:${t.localSpeaker}`);
+      t.cluster = dom !== undefined ? dom : prevCluster;
+    }
+    if (t.cluster >= 0) prevCluster = t.cluster;
+  }
+  // Anything still unassigned (e.g. leading turns before any evidence)
+  for (const t of globalTurns) if (t.cluster < 0) t.cluster = prevCluster >= 0 ? prevCluster : 0;
+
+  // 4b. Island smoothing: a short turn sandwiched inside CONTINUOUS speech of
+  // one other speaker is a diarizer flicker → flip it, unless its voiceprint
+  // strongly backs the odd label. Standalone short turns with silence around
+  // them ("yeah", "hold on") are legitimate interjections and stay untouched.
+  for (let i = 1; i < globalTurns.length - 1; i++) {
+    const t = globalTurns[i];
+    const prev = globalTurns[i - 1], next = globalTurns[i + 1];
+    if (t.end - t.start >= MIN_ISLAND_S) continue;
+    if (prev.cluster !== next.cluster || prev.cluster === t.cluster) continue;
+    const contiguous = (t.start - prev.end) < 0.25 && (next.start - t.end) < 0.25;
+    if (!contiguous) continue;
+    if (t.embedding && centroids.size > 1) {
+      const norm = normalizeVec(t.embedding);
+      const own = centroids.get(t.cluster);
+      const neighbour = centroids.get(prev.cluster);
+      if (own && neighbour && cosineSim(norm, own) - cosineSim(norm, neighbour) > ISLAND_KEEP_MARGIN) continue;
+    }
+    t.cluster = prev.cluster;
+  }
+
+  // 5. Order labels by first appearance, then label transcript segments from
+  // the smoothed global timeline.
+  const firstAppearance = new Map<number, number>();
+  for (const t of globalTurns) {
+    if (!firstAppearance.has(t.cluster)) firstAppearance.set(t.cluster, t.start);
+  }
+  const ordered = [...firstAppearance.entries()].sort((a, b) => a[1] - b[1]).map(([c]) => c);
+  const labelOf = new Map<number, string>();
+  ordered.forEach((c, i) => labelOf.set(c, `Speaker ${i + 1}`));
+
+  // A transcript segment that genuinely spans a speaker change (ASR bridged
+  // the turn boundary) is SPLIT at the boundary, with its words apportioned by
+  // time — one label per segment was a major source of wrong mid-sentence
+  // attribution. Segments inside a single turn keep the fast path.
+  const MIN_SPLIT_SIDE_S = parseFloat(process.env.VOICE_MIN_SPLIT_SIDE_S ?? '0.5');
+  const outSegments: ResolvedSpeakers['segments'] = [];
+  let lastLabel = '';
+  for (const chunk of chunks) {
+    const sorted = [...chunk.segments].sort((a, b) => a.start - b.start);
+    for (const seg of sorted) {
+      const gStart = seg.start + chunk.offset;
+      const gEnd = seg.end + chunk.offset;
+
+      // Clip overlapping turns to the segment, merge adjacent same-cluster runs
+      const runs: Array<{ start: number; end: number; cluster: number }> = [];
+      for (const t of globalTurns) {
+        if (t.end <= gStart) continue;
+        if (t.start >= gEnd) break;
+        const s = Math.max(gStart, t.start);
+        const e = Math.min(gEnd, t.end);
+        if (e - s <= 0) continue;
+        const last = runs[runs.length - 1];
+        if (last && last.cluster === t.cluster) last.end = e;
+        else runs.push({ start: s, end: e, cluster: t.cluster });
+      }
+
+      const emit = (start: number, end: number, text: string, cluster: number | null) => {
+        const label = cluster !== null ? labelOf.get(cluster) ?? null : null;
+        const speaker = label ?? (lastLabel || 'Speaker 1');
+        outSegments.push({
+          start: Math.round(start * 100) / 100,
+          end: Math.round(end * 100) / 100,
+          text,
+          speaker,
+        });
+        lastLabel = speaker;
+      };
+
+      const substantial = runs.filter((r) => r.end - r.start >= MIN_SPLIT_SIDE_S);
+      const words = seg.text.trim().split(/\s+/).filter(Boolean);
+      if (substantial.length >= 2 && words.length >= 2) {
+        // Split words across the substantial runs proportionally by duration
+        const total = substantial.reduce((n, r) => n + (r.end - r.start), 0);
+        let used = 0;
+        for (let ri = 0; ri < substantial.length; ri++) {
+          const r = substantial[ri];
+          const isLast = ri === substantial.length - 1;
+          let take = isLast
+            ? words.length - used
+            : Math.round((words.length * (r.end - r.start)) / total);
+          take = Math.max(1, Math.min(take, words.length - used - (isLast ? 0 : substantial.length - 1 - ri)));
+          if (take <= 0) continue;
+          const text = words.slice(used, used + take).join(' ');
+          used += take;
+          // First/last pieces stretch to the segment edges so no time is lost
+          const start = ri === 0 ? gStart : r.start;
+          const end = isLast ? gEnd : r.end;
+          emit(start, end, text, r.cluster);
+        }
+      } else {
+        // Dominant-overlap single label
+        let best: number | null = null;
+        let bestOverlap = 0;
+        for (const r of runs) {
+          const d = r.end - r.start;
+          if (d > bestOverlap) { bestOverlap = d; best = r.cluster; }
+        }
+        emit(gStart, gEnd, seg.text, best);
+      }
+    }
+  }
+
+  // Per-label centroid + total duration for persistence and profile matching
+  const speakerEmbeddings: ResolvedSpeakers['speakerEmbeddings'] = [];
+  for (const [c, cent] of centroids) {
+    const label = labelOf.get(c);
+    if (!label) continue;
+    let dur = 0;
+    for (const t of globalTurns) if (t.cluster === c) dur += t.end - t.start;
+    speakerEmbeddings.push({
+      label,
+      embedding: cent.map((v) => Math.round(v * 1e5) / 1e5),
+      durationS: Math.round(dur * 10) / 10,
+    });
+  }
+  // Clusters that ended up with no embedded turns (pure inheritance) still need
+  // a label entry for downstream persistence — reuse the nearest centroid? No:
+  // they have no voiceprint, so they are legitimately absent from matching.
+
+  return { segments: outSegments, speakerEmbeddings };
+}
+
+function resolveGlobalSpeakersLegacy(chunks: ChunkForAlignment[]): ResolvedSpeakers | null {
   const withVoice = chunks.filter((c) => c.voiceData && c.voiceData.speakers.length > 0);
   if (!withVoice.length) return null;
 
