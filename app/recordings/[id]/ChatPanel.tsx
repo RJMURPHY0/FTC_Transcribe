@@ -104,15 +104,18 @@ export default function ChatPanel({ recordingId, userId }: { recordingId: string
   const [mounted, setMounted] = useState(false);
   const [height, setHeight] = useState(DEFAULT_HEIGHT);
   const [width, setWidth] = useState<number | null>(null); // null → fill the column
+  const [offset, setOffset] = useState(0); // left-edge indent (px) from left-edge resize
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  // axis: 'x' = right edge, 'xl' = left edge, 'y' = bottom edge, 'both' = left + bottom (corner)
   const drag = useRef<
-    { startX: number; startY: number; startW: number; startH: number; axis: 'x' | 'y' | 'both' } | null
+    { startX: number; startY: number; startW: number; startH: number; startO: number; axis: 'x' | 'xl' | 'y' | 'both' } | null
   >(null);
 
   const heightKey = `ftc.chatPanelHeight.${userId ?? 'anon'}`;
   const widthKey = `ftc.chatPanelWidth.${userId ?? 'anon'}`;
+  const offsetKey = `ftc.chatPanelOffset.${userId ?? 'anon'}`;
 
   useEffect(() => { setMounted(true); }, []);
 
@@ -129,19 +132,35 @@ export default function ChatPanel({ recordingId, userId }: { recordingId: string
         const w = Number(rawW);
         if (isFinite(w) && w >= MIN_WIDTH) setWidth(w);
       }
+      const rawO = localStorage.getItem(offsetKey);
+      if (rawO) {
+        const o = Number(rawO);
+        if (isFinite(o) && o >= 0) setOffset(o);
+      }
     } catch { /* ignore */ }
-  }, [heightKey, widthKey]);
+  }, [heightKey, widthKey, offsetKey]);
 
   const onResizeMove = useCallback((e: PointerEvent) => {
     const d = drag.current;
     if (!d) return;
-    if (d.axis !== 'x') {
+    // Height — bottom edge or corner
+    if (d.axis === 'y' || d.axis === 'both') {
       setHeight(Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, d.startH + (e.clientY - d.startY))));
     }
-    if (d.axis !== 'y') {
+    // Width — right edge: left edge (offset) stays put, right edge follows cursor
+    if (d.axis === 'x') {
       const colW = panelRef.current?.parentElement?.clientWidth ?? MAX_WIDTH;
-      const cap = Math.min(MAX_WIDTH, colW);
+      const cap = Math.min(MAX_WIDTH, colW - d.startO);
       setWidth(Math.max(MIN_WIDTH, Math.min(cap, d.startW + (e.clientX - d.startX))));
+    }
+    // Width — left edge (or corner): right edge stays put, left edge follows cursor
+    if (d.axis === 'xl' || d.axis === 'both') {
+      const rightEdge = d.startO + d.startW;
+      const minO = Math.max(0, rightEdge - MAX_WIDTH);
+      const maxO = rightEdge - MIN_WIDTH;
+      const newO = Math.max(minO, Math.min(maxO, d.startO + (e.clientX - d.startX)));
+      setOffset(newO);
+      setWidth(rightEdge - newO);
     }
   }, []);
 
@@ -153,11 +172,15 @@ export default function ChatPanel({ recordingId, userId }: { recordingId: string
     window.removeEventListener('pointermove', onResizeMove);
     window.removeEventListener('pointerup', onResizeUp);
     if (!d) return;
-    if (d.axis !== 'x') setHeight((h) => { try { localStorage.setItem(heightKey, String(Math.round(h))); } catch { /* quota */ } return h; });
-    if (d.axis !== 'y') setWidth((w) => { try { if (w != null) localStorage.setItem(widthKey, String(Math.round(w))); } catch { /* quota */ } return w; });
-  }, [onResizeMove, heightKey, widthKey]);
+    const changedHeight = d.axis === 'y' || d.axis === 'both';
+    const changedWidth = d.axis !== 'y';
+    const changedOffset = d.axis === 'xl' || d.axis === 'both';
+    if (changedHeight) setHeight((h) => { try { localStorage.setItem(heightKey, String(Math.round(h))); } catch { /* quota */ } return h; });
+    if (changedWidth) setWidth((w) => { try { if (w != null) localStorage.setItem(widthKey, String(Math.round(w))); } catch { /* quota */ } return w; });
+    if (changedOffset) setOffset((o) => { try { localStorage.setItem(offsetKey, String(Math.round(o))); } catch { /* quota */ } return o; });
+  }, [onResizeMove, heightKey, widthKey, offsetKey]);
 
-  const startResize = (axis: 'x' | 'y' | 'both') => (e: React.PointerEvent<HTMLDivElement>) => {
+  const startResize = (axis: 'x' | 'xl' | 'y' | 'both') => (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
     drag.current = {
@@ -165,10 +188,12 @@ export default function ChatPanel({ recordingId, userId }: { recordingId: string
       startY: e.clientY,
       startW: panelRef.current?.offsetWidth ?? MIN_WIDTH,
       startH: height,
+      startO: offset,
       axis,
     };
     document.body.style.userSelect = 'none';
-    document.body.style.cursor = axis === 'x' ? 'ew-resize' : axis === 'y' ? 'ns-resize' : 'nesw-resize';
+    document.body.style.cursor =
+      axis === 'x' || axis === 'xl' ? 'ew-resize' : axis === 'y' ? 'ns-resize' : 'nesw-resize';
     window.addEventListener('pointermove', onResizeMove);
     window.addEventListener('pointerup', onResizeUp);
   };
@@ -176,7 +201,8 @@ export default function ChatPanel({ recordingId, userId }: { recordingId: string
   const resetSize = () => {
     setHeight(DEFAULT_HEIGHT);
     setWidth(null);
-    try { localStorage.removeItem(heightKey); localStorage.removeItem(widthKey); } catch { /* ignore */ }
+    setOffset(0);
+    try { localStorage.removeItem(heightKey); localStorage.removeItem(widthKey); localStorage.removeItem(offsetKey); } catch { /* ignore */ }
   };
 
   useEffect(() => () => {
@@ -400,14 +426,30 @@ export default function ChatPanel({ recordingId, userId }: { recordingId: string
   }
 
   // Normal inline panel — user-resizable width + height, saved per user.
-  // Right edge = width, bottom edge = height, bottom-left corner = both.
+  // Left & right edges = width, bottom edge = height, bottom-left corner = both.
   return (
     <div
       ref={panelRef}
       className="relative rounded-2xl border border-surface-border bg-surface-card flex flex-col"
-      style={{ height, width: width ?? undefined, maxWidth: '100%' }}
+      style={{
+        height,
+        width: width ?? undefined,
+        marginLeft: offset || undefined,
+        maxWidth: offset ? `calc(100% - ${offset}px)` : '100%',
+      }}
     >
       {inner}
+      {/* Left edge: width (drag the left side in / out) */}
+      <div
+        onPointerDown={startResize('xl')}
+        onDoubleClick={resetSize}
+        title="Drag to resize width · double-click to reset"
+        role="separator"
+        aria-orientation="vertical"
+        className="chat-width-handle-left"
+      >
+        <span className="chat-width-grip" />
+      </div>
       {/* Right edge: width (make it skinnier / wider) */}
       <div
         onPointerDown={startResize('x')}
