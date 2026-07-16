@@ -8,6 +8,8 @@ import { useActionItems } from './ActionItemsContext';
 const DEFAULT_HEIGHT = 520;
 const MIN_HEIGHT = 300;
 const MAX_HEIGHT = 1100;
+const MIN_WIDTH = 300;
+const MAX_WIDTH = 1000;
 
 interface Message {
   role: 'user' | 'assistant';
@@ -101,55 +103,80 @@ export default function ChatPanel({ recordingId, userId }: { recordingId: string
   const [fullscreen, setFullscreen] = useState(false);
   const [mounted, setMounted] = useState(false);
   const [height, setHeight] = useState(DEFAULT_HEIGHT);
+  const [width, setWidth] = useState<number | null>(null); // null → fill the column
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const drag = useRef<{ startY: number; startH: number } | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const drag = useRef<
+    { startX: number; startY: number; startW: number; startH: number; axis: 'x' | 'y' | 'both' } | null
+  >(null);
 
   const heightKey = `ftc.chatPanelHeight.${userId ?? 'anon'}`;
+  const widthKey = `ftc.chatPanelWidth.${userId ?? 'anon'}`;
 
   useEffect(() => { setMounted(true); }, []);
 
-  // Restore saved panel height after mount (keeps SSR === first client render)
+  // Restore saved panel size after mount (keeps SSR === first client render)
   useEffect(() => {
     try {
-      const raw = localStorage.getItem(heightKey);
-      if (!raw) return;
-      const h = Number(raw);
-      if (isFinite(h) && h >= MIN_HEIGHT && h <= MAX_HEIGHT) setHeight(h);
+      const rawH = localStorage.getItem(heightKey);
+      if (rawH) {
+        const h = Number(rawH);
+        if (isFinite(h) && h >= MIN_HEIGHT && h <= MAX_HEIGHT) setHeight(h);
+      }
+      const rawW = localStorage.getItem(widthKey);
+      if (rawW) {
+        const w = Number(rawW);
+        if (isFinite(w) && w >= MIN_WIDTH) setWidth(w);
+      }
     } catch { /* ignore */ }
-  }, [heightKey]);
+  }, [heightKey, widthKey]);
 
   const onResizeMove = useCallback((e: PointerEvent) => {
     const d = drag.current;
     if (!d) return;
-    const next = Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, d.startH + (e.clientY - d.startY)));
-    setHeight(next);
+    if (d.axis !== 'x') {
+      setHeight(Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, d.startH + (e.clientY - d.startY))));
+    }
+    if (d.axis !== 'y') {
+      const colW = panelRef.current?.parentElement?.clientWidth ?? MAX_WIDTH;
+      const cap = Math.min(MAX_WIDTH, colW);
+      setWidth(Math.max(MIN_WIDTH, Math.min(cap, d.startW + (e.clientX - d.startX))));
+    }
   }, []);
 
   const onResizeUp = useCallback(() => {
+    const d = drag.current;
     drag.current = null;
     document.body.style.removeProperty('user-select');
     document.body.style.removeProperty('cursor');
     window.removeEventListener('pointermove', onResizeMove);
     window.removeEventListener('pointerup', onResizeUp);
-    setHeight((h) => {
-      try { localStorage.setItem(heightKey, String(Math.round(h))); } catch { /* quota */ }
-      return h;
-    });
-  }, [onResizeMove, heightKey]);
+    if (!d) return;
+    if (d.axis !== 'x') setHeight((h) => { try { localStorage.setItem(heightKey, String(Math.round(h))); } catch { /* quota */ } return h; });
+    if (d.axis !== 'y') setWidth((w) => { try { if (w != null) localStorage.setItem(widthKey, String(Math.round(w))); } catch { /* quota */ } return w; });
+  }, [onResizeMove, heightKey, widthKey]);
 
-  const startResize = (e: React.PointerEvent<HTMLDivElement>) => {
+  const startResize = (axis: 'x' | 'y' | 'both') => (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
-    drag.current = { startY: e.clientY, startH: height };
+    e.stopPropagation();
+    drag.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      startW: panelRef.current?.offsetWidth ?? MIN_WIDTH,
+      startH: height,
+      axis,
+    };
     document.body.style.userSelect = 'none';
-    document.body.style.cursor = 'ns-resize';
+    document.body.style.cursor = axis === 'x' ? 'ew-resize' : axis === 'y' ? 'ns-resize' : 'nwse-resize';
     window.addEventListener('pointermove', onResizeMove);
     window.addEventListener('pointerup', onResizeUp);
   };
 
-  const resetHeight = () => {
+  const resetSize = () => {
     setHeight(DEFAULT_HEIGHT);
-    try { localStorage.removeItem(heightKey); } catch { /* ignore */ }
+    setWidth(null);
+    try { localStorage.removeItem(heightKey); localStorage.removeItem(widthKey); } catch { /* ignore */ }
   };
 
   useEffect(() => () => {
@@ -372,23 +399,48 @@ export default function ChatPanel({ recordingId, userId }: { recordingId: string
     );
   }
 
-  // Normal inline panel — user-resizable height via the bottom drag handle
+  // Normal inline panel — user-resizable width + height, saved per user.
+  // Right edge = width, bottom edge = height, bottom-right corner = both.
   return (
     <div
+      ref={panelRef}
       className="relative rounded-2xl border border-surface-border bg-surface-card flex flex-col"
-      style={{ height }}
+      style={{ height, width: width ?? undefined, maxWidth: '100%' }}
     >
       {inner}
-      {/* Bottom drag handle: resize the panel taller / shorter, saved per user */}
+      {/* Right edge: width (make it skinnier / wider) */}
       <div
-        onPointerDown={startResize}
-        onDoubleClick={resetHeight}
-        title="Drag to resize · double-click to reset"
+        onPointerDown={startResize('x')}
+        onDoubleClick={resetSize}
+        title="Drag to resize width · double-click to reset"
+        role="separator"
+        aria-orientation="vertical"
+        className="chat-width-handle"
+      >
+        <span className="chat-width-grip" />
+      </div>
+      {/* Bottom edge: height (make it longer / shorter) */}
+      <div
+        onPointerDown={startResize('y')}
+        onDoubleClick={resetSize}
+        title="Drag to resize height · double-click to reset"
         role="separator"
         aria-orientation="horizontal"
         className="chat-height-handle"
       >
         <span className="chat-height-grip" />
+      </div>
+      {/* Bottom-right corner: both at once */}
+      <div
+        onPointerDown={startResize('both')}
+        onDoubleClick={resetSize}
+        title="Drag to resize · double-click to reset"
+        role="separator"
+        className="chat-corner-handle"
+      >
+        <svg viewBox="0 0 10 10" className="chat-corner-grip" aria-hidden="true">
+          <path d="M9 1 1 9M9 5 5 9" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" fill="none" />
+        </svg>
       </div>
     </div>
   );

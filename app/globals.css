@@ -189,6 +189,56 @@
   background: rgb(var(--c-brand));
   width: 56px;
 }
+/* Right edge grab-strip: drag the chat panel skinnier / wider */
+.chat-width-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -5px;
+  width: 14px;
+  cursor: ew-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+  z-index: 5;
+}
+.chat-width-grip {
+  width: 4px;
+  height: 40px;
+  border-radius: 9999px;
+  background: rgb(var(--c-surface-border));
+  transition: background 0.15s, height 0.15s;
+}
+.chat-width-handle:hover .chat-width-grip,
+.chat-width-handle:active .chat-width-grip {
+  background: rgb(var(--c-brand));
+  height: 56px;
+}
+/* Bottom-right corner: drag both dimensions at once */
+.chat-corner-handle {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  width: 20px;
+  height: 20px;
+  cursor: nwse-resize;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  padding: 3px;
+  touch-action: none;
+  z-index: 6;
+  color: rgb(var(--c-ftc-mid));
+  transition: color 0.15s;
+}
+.chat-corner-handle:hover,
+.chat-corner-handle:active { color: rgb(var(--c-brand)); }
+.chat-corner-grip { width: 11px; height: 11px; }
+/* Width + corner resize only make sense in the desktop multi-column layout */
+@media (max-width: 1023px) {
+  .chat-width-handle, .chat-corner-handle { display: none; }
+}
 .bounce-delay-0   { animation-delay: 0ms; }
 .bounce-delay-120 { animation-delay: 120ms; }
 .bounce-delay-240 { animation-delay: 240ms; }
@@ -203,6 +253,10 @@
 }
 /* Resize handles are hidden until the desktop grid activates */
 .detail-resize-handle { display: none; }
+/* Width wrapper: positioning context for its edge handle; handle hidden until
+   the desktop grid activates (mobile stacks columns full-width) */
+.panel-width-wrap { position: relative; }
+.panel-width-handle { display: none; }
 @media (min-width: 1024px) {
   .detail-grid {
     /* var lets the client component override the ratios without breaking the
@@ -216,7 +270,7 @@
   }
   .detail-grid > .chat-panel-col { padding-right: 0.5rem; }
   .detail-grid > div:nth-child(3) { padding: 0 0.5rem; } /* notes gutter */
-  .detail-grid > .transcript-panel { padding-left: 0.5rem; }
+  .detail-grid > .transcript-col { padding-left: 0.5rem; }
   .detail-resize-handle {
     display: block;
     align-self: stretch;
@@ -264,9 +318,14 @@
   .detail-resize-handle.dragging::after {
     opacity: 0;
   }
-  .transcript-panel {
+  /* Wrapper (grid child) is sticky so the resize handle stays pinned and
+     unclipped; the inner panel does the scrolling. */
+  .transcript-col {
     position: sticky;
     top: 5rem;
+    align-self: start;
+  }
+  .transcript-panel {
     max-height: calc(100vh - 6rem);
     overflow-y: auto;
   }
@@ -275,5 +334,31 @@
     top: 5rem;
     max-height: calc(100vh - 6rem);
     overflow-y: auto;
+  }
+  /* Right-edge width handle sits in the gutter, clear of the panel scrollbar */
+  .panel-width-handle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    right: -14px;
+    width: 16px;
+    cursor: ew-resize;
+    touch-action: none;
+    z-index: 8;
+  }
+  .panel-width-grip {
+    width: 4px;
+    height: 48px;
+    border-radius: 9999px;
+    background: rgb(var(--c-surface-border));
+    transition: background 0.15s, height 0.15s;
+  }
+  .panel-width-handle:hover .panel-width-grip,
+  .panel-width-handle:active .panel-width-grip {
+    background: rgb(var(--c-brand));
+    height: 72px;
   }
 }

@@ -12,6 +12,7 @@ import { ActionItemsProvider } from './ActionItemsContext';
 import SpeakerPanel from './SpeakerPanel';
 import TranscriptPlayer from './TranscriptPlayer';
 import ResizableColumns from './ResizableColumns';
+import ResizableWidth from './ResizableWidth';
 import type { TranscriptSegment, TopicSection } from '@/lib/ai';
 import { ensureSchema } from '@/lib/ensure-schema';
 import { getAuthUser } from '@/lib/auth';
@@ -205,7 +206,8 @@ export default async function RecordingPage({ params }: { params: { id: string }
             </div>
           }
           transcript={
-            /* ── RIGHT: Transcript ── */
+            /* ── RIGHT: Transcript (width draggable inward from the right) ── */
+            <ResizableWidth userId={authUser?.id ?? null} storageId="transcript" className="transcript-col">
             <div className="transcript-panel">
               <p className="text-xs font-semibold uppercase tracking-widest text-ftc-mid flex items-center gap-2 mb-4">
                 <svg className="w-3.5 h-3.5 text-brand" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
@@ -240,6 +242,7 @@ export default async function RecordingPage({ params }: { params: { id: string }
                 </div>
               )}
             </div>
+            </ResizableWidth>
           }
         />
         </ActionItemsProvider>
