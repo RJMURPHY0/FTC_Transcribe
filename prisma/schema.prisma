@@ -56,9 +56,11 @@ model Recording {
 // Mirrors auth.users — stores per-user Transcribe permission flags.
 // Written by FTC Contacts super admin; read here to scope recording visibility.
 model TranscribePermission {
-  userId    String   @id @map("user_id")
-  canSeeAll Boolean  @default(false) @map("can_see_all")
-  grantedAt DateTime @default(now()) @map("granted_at")
+  userId       String   @id @map("user_id")
+  canSeeAll    Boolean  @default(false) @map("can_see_all")
+  // Meeting audio playback — default on; super admin can switch it off per user
+  canPlayAudio Boolean  @default(true) @map("can_play_audio")
+  grantedAt    DateTime @default(now()) @map("granted_at")
 
   @@map("transcribe_permissions")
 }
@@ -156,6 +158,12 @@ model VoiceProfile {
   // and what that voice said there — lets the user audit + prune training data.
   recordingId String?
   excerpt     String   @default("")
+  // Enrollment clip audio kept for playback (tiny — a few hundred KB per sample).
+  // Meeting-derived samples play from the recording's archived audio instead.
+  audioData   Bytes?
+  audioMime   String   @default("")
+  // Reserved for storage-bucket clip paths once SUPABASE_SERVICE_ROLE_KEY is set
+  audioPath   String   @default("")
   createdAt   DateTime @default(now())
 
   @@index([userId])

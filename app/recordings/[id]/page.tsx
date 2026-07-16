@@ -11,6 +11,7 @@ import EditableAINotes from './EditableAINotes';
 import { ActionItemsProvider } from './ActionItemsContext';
 import SpeakerPanel from './SpeakerPanel';
 import TranscriptPlayer from './TranscriptPlayer';
+import PlaybackBar from './PlaybackBar';
 import ResizableColumns from './ResizableColumns';
 import ResizableWidth from './ResizableWidth';
 import type { TranscriptSegment, TopicSection } from '@/lib/ai';
@@ -81,6 +82,11 @@ export default async function RecordingPage({ params }: { params: { id: string }
   const isUploading  = recording.status === 'uploading' || recording.status === 'queued';
   const isProcessing = recording.status === 'processing';
 
+  // Audio survives as chunks (pre-archive) or in storage (audioPath). The
+  // playback bar renders only when the super admin hasn't disabled it.
+  const audioAvailable = recording._count.chunks > 0 || !!recording.audioPath;
+  const showAudio = audioAvailable && (authUser?.canPlayAudio ?? true) && !isUploading && !isProcessing;
+
   const etaSecs = (isUploading || isProcessing) ? estimateSeconds(recording._count.chunks) : 0;
   const etaLabel = etaSecs > 0
     ? (etaSecs < 60 ? 'less than a minute' : `about ${Math.ceil(etaSecs / 60)} min`)
@@ -125,7 +131,7 @@ export default async function RecordingPage({ params }: { params: { id: string }
         </div>
       </header>
 
-      <main className="max-w-[1800px] mx-auto w-full px-4 py-6 flex-1">
+      <main className={`max-w-[1800px] mx-auto w-full px-4 py-6 flex-1${showAudio ? ' pb-28' : ''}`}>
         {/* Auto-retry + auto-refresh when queued or processing */}
         {(isUploading || isProcessing) && <ProcessingPoller id={recording.id} />}
 
@@ -226,14 +232,17 @@ export default async function RecordingPage({ params }: { params: { id: string }
                       recordingId={recording.id}
                       rawSegments={rawSegments}
                       speakerOrder={speakerOrder}
-                      hasAudio={recording._count.chunks > 0}
+                      hasAudio={showAudio}
                     />
                   ) : (
-                    <div className="rounded-2xl border border-surface-border bg-surface-card p-5">
-                      <p className="text-sm text-ftc-gray leading-8 whitespace-pre-wrap">
-                        {recording.transcript.fullText}
-                      </p>
-                    </div>
+                    <>
+                      <div className="rounded-2xl border border-surface-border bg-surface-card p-5">
+                        <p className="text-sm text-ftc-gray leading-8 whitespace-pre-wrap">
+                          {recording.transcript.fullText}
+                        </p>
+                      </div>
+                      {showAudio && <PlaybackBar recordingId={recording.id} />}
+                    </>
                   )}
                 </>
               ) : (

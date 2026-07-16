@@ -9,6 +9,12 @@ export interface AudioPlayerHandle {
 interface Props {
   recordingId: string;
   onTimeUpdate?: (seconds: number) => void;
+  /** Drop the card chrome — used inside the bottom playback bar. */
+  bare?: boolean;
+  /** Start playing as soon as the waveform is ready. */
+  autoPlay?: boolean;
+  /** Seek here once ready (seconds) — for "open player at this segment". */
+  initialSeek?: number | null;
 }
 
 function formatTime(s: number): string {
@@ -18,11 +24,12 @@ function formatTime(s: number): string {
 }
 
 const AudioPlayer = forwardRef<AudioPlayerHandle, Props>(function AudioPlayer(
-  { recordingId, onTimeUpdate },
+  { recordingId, onTimeUpdate, bare = false, autoPlay = false, initialSeek = null },
   ref,
 ) {
   const containerRef  = useRef<HTMLDivElement>(null);
   const wsRef         = useRef<import('wavesurfer.js').default | null>(null);
+  const pendingSeekRef = useRef<number | null>(initialSeek);
   const [ready,       setReady]       = useState(false);
   const [playing,     setPlaying]     = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -33,6 +40,8 @@ const AudioPlayer = forwardRef<AudioPlayerHandle, Props>(function AudioPlayer(
     seekTo(seconds: number) {
       if (wsRef.current && duration > 0) {
         wsRef.current.seekTo(Math.min(seconds / duration, 1));
+      } else {
+        pendingSeekRef.current = seconds; // applied once the waveform is ready
       }
     },
   }));
@@ -57,7 +66,15 @@ const AudioPlayer = forwardRef<AudioPlayerHandle, Props>(function AudioPlayer(
         url:           `/api/recordings/${recordingId}/audio`,
       });
 
-      ws.on('ready', dur => { setDuration(dur); setReady(true); });
+      ws.on('ready', dur => {
+        setDuration(dur);
+        setReady(true);
+        if (pendingSeekRef.current !== null && dur > 0) {
+          ws.seekTo(Math.min(pendingSeekRef.current / dur, 1));
+          pendingSeekRef.current = null;
+        }
+        if (autoPlay) void ws.play();
+      });
       ws.on('audioprocess', t => {
         setCurrentTime(t);
         onTimeUpdate?.(t);
@@ -83,7 +100,7 @@ const AudioPlayer = forwardRef<AudioPlayerHandle, Props>(function AudioPlayer(
   const stop = () => { wsRef.current?.stop(); setCurrentTime(0); };
 
   return (
-    <div className="rounded-2xl border border-surface-border bg-surface-card p-4 space-y-3">
+    <div className={bare ? 'space-y-2' : 'rounded-2xl border border-surface-border bg-surface-card p-4 space-y-3'}>
       {loadError ? (
         <p className="text-sm text-ftc-mid text-center py-2">Audio unavailable.</p>
       ) : (

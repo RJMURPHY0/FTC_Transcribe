@@ -5,11 +5,12 @@ export interface AuthUser {
   id: string;
   email: string;
   canSeeAll: boolean;
+  canPlayAudio: boolean;
 }
 
 // In-process permission cache — avoids a DB round-trip on every server render.
 // TTL is 5 min; permissions change rarely (super-admin only writes them).
-const permCache = new Map<string, { canSeeAll: boolean; expires: number }>();
+const permCache = new Map<string, { canSeeAll: boolean; canPlayAudio: boolean; expires: number }>();
 const PERM_TTL_MS = 5 * 60 * 1000;
 
 const SUPER_ADMIN_EMAIL = 'ryan.murphy@ftc-ss.com';
@@ -23,24 +24,26 @@ export async function getAuthUser(): Promise<AuthUser | null> {
   if (!user) return null;
 
   if (user.email === SUPER_ADMIN_EMAIL) {
-    return { id: user.id, email: user.email, canSeeAll: true };
+    return { id: user.id, email: user.email, canSeeAll: true, canPlayAudio: true };
   }
 
   const cached = permCache.get(user.id);
   if (cached && cached.expires > Date.now()) {
-    return { id: user.id, email: user.email ?? '', canSeeAll: cached.canSeeAll };
+    return { id: user.id, email: user.email ?? '', canSeeAll: cached.canSeeAll, canPlayAudio: cached.canPlayAudio };
   }
 
   let canSeeAll = false;
+  let canPlayAudio = true; // no permission row = default allowances
   try {
     const perm = await prisma.transcribePermission.findUnique({
       where: { userId: user.id },
-      select: { canSeeAll: true },
+      select: { canSeeAll: true, canPlayAudio: true },
     });
     canSeeAll = perm?.canSeeAll ?? false;
+    canPlayAudio = perm?.canPlayAudio ?? true;
   } catch { /* table may not exist in dev */ }
 
-  permCache.set(user.id, { canSeeAll, expires: Date.now() + PERM_TTL_MS });
+  permCache.set(user.id, { canSeeAll, canPlayAudio, expires: Date.now() + PERM_TTL_MS });
 
-  return { id: user.id, email: user.email ?? '', canSeeAll };
+  return { id: user.id, email: user.email ?? '', canSeeAll, canPlayAudio };
 }

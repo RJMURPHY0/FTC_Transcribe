@@ -15,6 +15,7 @@ import { indexTranscript } from '@/lib/embeddings';
 import { alignSpeakersAcrossChunks } from '@/lib/deepgram';
 import type { DeepgramRawSegment } from '@/lib/deepgram';
 import { resolveGlobalSpeakers, matchProfilesDetailed, cosineSim } from '@/lib/voice-id';
+import { archiveRecordingAudio } from '@/lib/audio-archive';
 import type { ChunkForAlignment, ChunkVoiceData } from '@/lib/voice-id';
 import {
   transcribeChunk,
@@ -327,7 +328,12 @@ async function finalizeLegacy(recordingId: string): Promise<FinalizeResult> {
     }
 
     if (failedChunks === 0) {
-      await prisma.chunkBlob.deleteMany({ where: { recordingId } });
+      // Purge chunks only after the merged audio is safely archived to storage.
+      // Without SUPABASE_SERVICE_ROLE_KEY the chunks stay in the DB, which the
+      // audio route still serves — playback survives either way.
+      if (await archiveRecordingAudio(recordingId)) {
+        await prisma.chunkBlob.deleteMany({ where: { recordingId } });
+      }
     } else {
       await prisma.recording.update({ where: { id: recordingId }, data: { status: 'failed' } }).catch(() => {});
       return {
@@ -635,7 +641,9 @@ async function finalizeWithJobs(recordingId: string): Promise<FinalizeResult> {
     }
 
     await prisma.finalizeJob.update({ where: { id: lock.id }, data: { status: 'completed', lastError: '' } });
-    await prisma.chunkBlob.deleteMany({ where: { recordingId } });
+    if (await archiveRecordingAudio(recordingId)) {
+      await prisma.chunkBlob.deleteMany({ where: { recordingId } });
+    }
     return completed;
   } finally {
     await releaseJobLock(lock.id, lock.token);

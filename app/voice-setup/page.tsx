@@ -37,7 +37,14 @@ type VoiceSample = {
   recordingTitle: string | null;
   excerpt: string;
   consistency: number | null;
+  clipUrl: string | null;
+  clipStart: number | null;
+  clipEnd: number | null;
 };
+
+function fmtClock(s: number): string {
+  return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+}
 
 const SOURCE_LABEL: Record<string, string> = {
   enrollment: 'Enrolled',
@@ -97,6 +104,37 @@ export default function VoiceSetupPage() {
     }
     setSamplesLoading(false);
   }
+
+  // Per-sample clip playback — one shared <audio>, seeks into meeting audio
+  // for learned samples, streams the stored clip for enrolled ones.
+  const [playingId, setPlayingId] = useState<string | null>(null);
+  const clipAudioRef = useRef<HTMLAudioElement | null>(null);
+  const clipEndAtRef = useRef<number | null>(null);
+
+  function stopClip() {
+    const a = clipAudioRef.current;
+    if (a) { a.pause(); a.removeAttribute('src'); }
+    setPlayingId(null);
+  }
+
+  function playClip(s: VoiceSample) {
+    if (!s.clipUrl) return;
+    if (playingId === s.id) { stopClip(); return; }
+    stopClip();
+    const a = clipAudioRef.current ?? new Audio();
+    clipAudioRef.current = a;
+    clipEndAtRef.current = s.clipEnd;
+    a.src = s.clipUrl;
+    a.onloadedmetadata = () => { if (s.clipStart) a.currentTime = s.clipStart; };
+    a.ontimeupdate = () => {
+      if (clipEndAtRef.current !== null && a.currentTime >= clipEndAtRef.current) stopClip();
+    };
+    a.onended = () => setPlayingId(null);
+    a.onerror = () => setPlayingId(null);
+    void a.play().then(() => setPlayingId(s.id)).catch(() => setPlayingId(null));
+  }
+
+  useEffect(() => () => { clipAudioRef.current?.pause(); }, []);
 
   async function deleteSample(id: string) {
     setDeletingId(id);
@@ -447,7 +485,7 @@ export default function VoiceSetupPage() {
                         <path d="M2 4.5 6 8.5 10 4.5" />
                       </svg>
                     </div>
-                    <p className="text-xs text-surface-muted">
+                    <p className="text-xs text-ftc-mid">
                       {p.samples} sample{p.samples === 1 ? '' : 's'} · {Math.round(p.totalDurationS)}s of speech
                       {p.learned && ' · read the phrases above to strengthen it'}
                     </p>
@@ -474,58 +512,92 @@ export default function VoiceSetupPage() {
                 {expanded === p.name && (
                   <div className="pb-3 space-y-2">
                     {samplesLoading ? (
-                      <p className="text-xs text-surface-muted py-1">Loading samples…</p>
+                      <p className="text-xs text-ftc-mid py-1">Loading samples…</p>
                     ) : samples.length === 0 ? (
-                      <p className="text-xs text-surface-muted py-1">No samples found.</p>
+                      <p className="text-xs text-ftc-mid py-1">No samples found.</p>
                     ) : samples.map(s => (
                       <div key={s.id} className="rounded-xl bg-surface-raised border border-surface-border p-3">
                         <div className="flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-2 flex-wrap min-w-0 text-[11px] text-surface-muted">
-                            <span className="font-semibold px-1.5 py-0.5 rounded bg-brand/15 text-brand">
+                          <div className="flex items-center gap-x-2 gap-y-1 flex-wrap min-w-0 text-xs text-ftc-gray">
+                            <span className="font-semibold px-1.5 py-0.5 rounded bg-brand/15 text-brand text-[11px]">
                               {SOURCE_LABEL[s.source] ?? s.source}
                             </span>
                             <span>{new Date(s.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
-                            <span>· {Math.round(s.durationS)}s</span>
-                            {s.deviceLabel && <span>· {s.deviceLabel}</span>}
+                            <span className="text-ftc-mid">·</span>
+                            <span>{Math.round(s.durationS)}s</span>
+                            {s.deviceLabel && (
+                              <>
+                                <span className="text-ftc-mid">·</span>
+                                <span>{s.deviceLabel}</span>
+                              </>
+                            )}
                             {s.consistency !== null && (
-                              <span className={s.consistency < 0.5 ? 'text-red-400 font-semibold' : ''}>
-                                · {Math.round(s.consistency * 100)}% voice match
-                                {s.consistency < 0.5 && ' — may be someone else'}
-                              </span>
+                              <>
+                                <span className="text-ftc-mid">·</span>
+                                <span className={s.consistency < 0.5 ? 'text-red-500 font-semibold' : ''}>
+                                  {Math.round(s.consistency * 100)}% voice match
+                                  {s.consistency < 0.5 && ' — may be someone else'}
+                                </span>
+                              </>
                             )}
                           </div>
-                          {confirmId === s.id ? (
-                            <div className="flex items-center gap-2 flex-shrink-0 text-xs">
-                              <span className="text-ftc-mid">Delete?</span>
+                          <div className="flex items-center gap-1.5 flex-shrink-0">
+                            {s.clipUrl && (
                               <button
-                                onClick={() => void deleteSample(s.id)}
-                                disabled={deletingId === s.id}
-                                className="px-2.5 py-1 rounded-lg bg-red-500/15 text-red-400 border border-red-400/40 font-semibold touch-manipulation disabled:opacity-50"
+                                onClick={() => playClip(s)}
+                                aria-label={playingId === s.id ? 'Stop clip' : 'Play voice clip'}
+                                title={playingId === s.id ? 'Stop' : 'Listen to this sample'}
+                                className={`w-8 h-8 flex items-center justify-center rounded-lg border transition-colors touch-manipulation ${
+                                  playingId === s.id
+                                    ? 'bg-brand text-white border-brand'
+                                    : 'bg-brand/15 text-brand border-brand/30 hover:bg-brand/25'
+                                }`}
                               >
-                                {deletingId === s.id ? '…' : 'Yes'}
+                                {playingId === s.id ? (
+                                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 16 16">
+                                    <rect x="3" y="3" width="10" height="10" rx="1.5" />
+                                  </svg>
+                                ) : (
+                                  <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 16 16">
+                                    <path d="M5 3.5v9l8-4.5-8-4.5z" />
+                                  </svg>
+                                )}
                               </button>
+                            )}
+                            {confirmId === s.id ? (
+                              <div className="flex items-center gap-2 text-xs">
+                                <span className="text-ftc-gray">Delete?</span>
+                                <button
+                                  onClick={() => void deleteSample(s.id)}
+                                  disabled={deletingId === s.id}
+                                  className="px-2.5 py-1 rounded-lg bg-red-500 text-white font-semibold touch-manipulation disabled:opacity-50"
+                                >
+                                  {deletingId === s.id ? '…' : 'Yes'}
+                                </button>
+                                <button
+                                  onClick={() => setConfirmId(null)}
+                                  className="px-2.5 py-1 rounded-lg border border-surface-border text-ftc-gray touch-manipulation"
+                                >
+                                  No
+                                </button>
+                              </div>
+                            ) : (
                               <button
-                                onClick={() => setConfirmId(null)}
-                                className="px-2.5 py-1 rounded-lg border border-surface-border text-ftc-mid touch-manipulation"
+                                onClick={() => setConfirmId(s.id)}
+                                aria-label="Delete sample"
+                                title="Delete this sample"
+                                className="w-8 h-8 flex items-center justify-center rounded-lg border border-red-500/30 text-red-500 hover:bg-red-500/10 hover:border-red-500/60 transition-colors touch-manipulation"
                               >
-                                No
+                                <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                                  <path d="M2.5 4h11M6.5 4V2.8a.8.8 0 0 1 .8-.8h1.4a.8.8 0 0 1 .8.8V4m2.7 0-.5 9.2a1 1 0 0 1-1 .95H5.3a1 1 0 0 1-1-.95L3.8 4M6.5 7v4M9.5 7v4" />
+                                </svg>
                               </button>
-                            </div>
-                          ) : (
-                            <button
-                              onClick={() => setConfirmId(s.id)}
-                              aria-label="Delete sample"
-                              className="flex-shrink-0 w-8 h-8 flex items-center justify-center rounded-lg border border-surface-border text-surface-muted hover:text-red-400 hover:border-red-400/40 transition-colors touch-manipulation"
-                            >
-                              <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3">
-                                <path d="M2.5 4h11M6.5 4V2.8a.8.8 0 0 1 .8-.8h1.4a.8.8 0 0 1 .8.8V4m2.7 0-.5 9.2a1 1 0 0 1-1 .95H5.3a1 1 0 0 1-1-.95L3.8 4M6.5 7v4M9.5 7v4" />
-                              </svg>
-                            </button>
-                          )}
+                            )}
+                          </div>
                         </div>
                         {s.excerpt && (
-                          <p className="mt-2 text-xs text-ftc-mid italic leading-relaxed line-clamp-2">
-                            “{s.excerpt}”
+                          <p className="mt-2 text-xs text-ftc-gray leading-relaxed">
+                            <span className="text-ftc-mid">Trained on:</span> “{s.excerpt}”
                           </p>
                         )}
                         {s.recordingId && (
@@ -533,16 +605,19 @@ export default function VoiceSetupPage() {
                             href={`/recordings/${s.recordingId}`}
                             className="inline-block mt-1.5 text-[11px] text-brand hover:underline"
                           >
-                            From: {s.recordingTitle ?? 'meeting recording'} →
+                            From: {s.recordingTitle ?? 'meeting recording'}
+                            {s.clipStart !== null && s.clipEnd !== null && ` · at ${fmtClock(s.clipStart)}`} →
                           </Link>
                         )}
-                        {!s.recordingId && s.source === 'enrollment' && !s.excerpt && (
-                          <p className="mt-1.5 text-[11px] text-surface-muted">Recorded at enrollment.</p>
+                        {!s.recordingId && s.source === 'enrollment' && (
+                          <p className="mt-1.5 text-[11px] text-ftc-mid">
+                            Recorded at enrollment{s.clipUrl ? ' — tap play to hear it.' : '.'}
+                          </p>
                         )}
                       </div>
                     ))}
                     {!samplesLoading && samples.length > 0 && (
-                      <p className="text-[11px] text-surface-muted leading-relaxed">
+                      <p className="text-[11px] text-ftc-mid leading-relaxed">
                         Deleting a bad sample (wrong person, noisy room) improves matching. A low
                         “voice match” score usually means the sample caught someone else&apos;s voice.
                       </p>

@@ -83,6 +83,10 @@ export async function POST(request: NextRequest) {
         durationS: result.durationS,
         source: 'enrollment',
         deviceLabel,
+        // Keep the clip itself so the sample inspector can play it back —
+        // enrollment clips are tiny (seconds of opus audio).
+        audioData: buffer,
+        audioMime: baseMime,
       },
     });
     saved += 1;

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { finalizeRecording, enqueueFinalizeJob } from '@/lib/finalize-recording';
+import { deleteArchivedAudio } from '@/lib/audio-archive';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 800;
@@ -116,8 +117,16 @@ export async function GET(request: NextRequest) {
   }).catch(() => {});
 
   // Purge soft-deleted recordings after 30 days (hard delete cascades
-  // transcripts, summaries, chunks, and speaker embeddings)
+  // transcripts, summaries, chunks, and speaker embeddings). Archived audio
+  // lives outside the DB, so remove those storage objects first.
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  try {
+    const purgeable = await prisma.recording.findMany({
+      where: { deletedAt: { lt: thirtyDaysAgo }, audioPath: { not: '' } },
+      select: { audioPath: true },
+    });
+    for (const r of purgeable) await deleteArchivedAudio(r.audioPath);
+  } catch { /* best-effort */ }
   await prisma.recording.deleteMany({
     where: { deletedAt: { lt: thirtyDaysAgo } },
   }).catch(() => {});

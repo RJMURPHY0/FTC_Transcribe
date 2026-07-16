@@ -2,7 +2,7 @@
 
 import { useRef, useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import AudioPlayer, { type AudioPlayerHandle } from './AudioPlayer';
+import PlaybackBar, { type PlaybackBarHandle } from './PlaybackBar';
 
 interface RawSegment {
   speaker: string;
@@ -57,9 +57,8 @@ function mergeSegments(segs: RawSegment[]): MergedGroup[] {
 
 export default function TranscriptPlayer({ recordingId, rawSegments, speakerOrder, hasAudio }: Props) {
   const router       = useRouter();
-  const playerRef    = useRef<AudioPlayerHandle>(null);
+  const playerRef    = useRef<PlaybackBarHandle>(null);
   const [activeIdx,  setActiveIdx]  = useState<number>(-1);
-  const [playerOpen, setPlayerOpen] = useState(false);
   const [menuOpen,   setMenuOpen]   = useState<number | null>(null); // group index
   const [reassigning, setReassigning] = useState(false);
 
@@ -71,8 +70,7 @@ export default function TranscriptPlayer({ recordingId, rawSegments, speakerOrde
   };
 
   const handleGroupClick = (start: number) => {
-    if (!playerOpen) setPlayerOpen(true);
-    playerRef.current?.seekTo(start);
+    playerRef.current?.openAndSeek(start);
   };
 
   const handleReassign = async (groupIdx: number, newSpeaker: string) => {
@@ -91,39 +89,13 @@ export default function TranscriptPlayer({ recordingId, rawSegments, speakerOrde
 
   return (
     <div className="space-y-3">
-      {/* Audio player toggle */}
+      {/* Full-recording playback — fixed bar along the bottom of the page */}
       {hasAudio && (
-        <div>
-          {playerOpen ? (
-            <div className="space-y-2">
-              <AudioPlayer
-                ref={playerRef}
-                recordingId={recordingId}
-                onTimeUpdate={handleTimeUpdate}
-              />
-              <button
-                type="button"
-                onClick={() => setPlayerOpen(false)}
-                className="text-xs text-ftc-mid hover:text-ftc-gray transition-colors w-full text-center py-1"
-              >
-                Hide player ↑
-              </button>
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setPlayerOpen(true)}
-              className="w-full flex items-center justify-center gap-2 text-xs text-ftc-mid
-                         border border-surface-border hover:border-brand/40 hover:text-brand
-                         rounded-xl py-2.5 transition-colors"
-            >
-              <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M8 5v14l11-7z" />
-              </svg>
-              Play recording
-            </button>
-          )}
-        </div>
+        <PlaybackBar
+          ref={playerRef}
+          recordingId={recordingId}
+          onTimeUpdate={handleTimeUpdate}
+        />
       )}
 
       {/* Transcript blocks */}
