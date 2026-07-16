@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 const DEFAULT: [number, number, number] = [1.5, 2, 1.6];
-const MIN_FR = 0.45;
+const MIN_FR = 0.25;
 
 interface Props {
   userId: string | null;
@@ -100,7 +100,7 @@ export default function ResizableColumns({ userId, chat, notes, transcript }: Pr
     window.removeEventListener('pointerup', onUp);
   }, [onMove, onUp]);
 
-  const template = `${cols[0]}fr 0.5rem ${cols[1]}fr 0.5rem ${cols[2]}fr`;
+  const template = `${cols[0]}fr 0.75rem ${cols[1]}fr 0.75rem ${cols[2]}fr`;
 
   return (
     <div

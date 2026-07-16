@@ -181,7 +181,7 @@
   .detail-grid {
     /* var lets the client component override the ratios without breaking the
        mobile single-column stack (inline styles would beat the media query) */
-    grid-template-columns: var(--detail-cols, 1.5fr 0.5rem 2fr 0.5rem 1.6fr);
+    grid-template-columns: var(--detail-cols, 1.5fr 0.75rem 2fr 0.75rem 1.6fr);
     align-items: start;
     gap: 0;
   }
@@ -194,23 +194,49 @@
   .detail-resize-handle {
     display: block;
     align-self: stretch;
-    width: 0.5rem;
+    width: 0.75rem;
     cursor: col-resize;
     position: relative;
     z-index: 10;
+    touch-action: none;
   }
+  /* The always-visible vertical rail so the handle is discoverable at a glance */
   .detail-resize-handle::before {
     content: '';
     position: absolute;
-    inset: 0 40%;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: 2px;
+    transform: translateX(-50%);
     border-radius: 9999px;
     background: rgb(var(--c-surface-border));
-    transition: background 0.15s;
+    transition: background 0.15s, width 0.15s;
+  }
+  /* Centered grip dots that hint the handle is draggable */
+  .detail-resize-handle::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 4px;
+    height: 28px;
+    transform: translate(-50%, -50%);
+    border-radius: 9999px;
+    background:
+      radial-gradient(circle, rgb(var(--c-ftc-mid)) 1.4px, transparent 1.6px) center / 4px 7px repeat-y;
+    opacity: 0.55;
+    transition: opacity 0.15s;
+    pointer-events: none;
   }
   .detail-resize-handle:hover::before,
   .detail-resize-handle.dragging::before {
     background: rgb(var(--c-brand));
-    inset: 0 35%;
+    width: 3px;
+  }
+  .detail-resize-handle:hover::after,
+  .detail-resize-handle.dragging::after {
+    opacity: 0;
   }
   .transcript-panel {
     position: sticky;
