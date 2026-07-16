@@ -180,7 +180,7 @@ export default async function RecordingPage({ params }: { params: { id: string }
                 </svg>
                 Ask About This Meeting
               </p>
-              <ChatPanel recordingId={recording.id} />
+              <ChatPanel recordingId={recording.id} userId={authUser?.id ?? null} />
             </div>
           }
           notes={

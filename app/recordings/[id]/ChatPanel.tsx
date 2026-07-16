@@ -1,9 +1,13 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { formatDue, dueStatus } from '@/lib/action-items';
 import { useActionItems } from './ActionItemsContext';
+
+const DEFAULT_HEIGHT = 520;
+const MIN_HEIGHT = 300;
+const MAX_HEIGHT = 1100;
 
 interface Message {
   role: 'user' | 'assistant';
@@ -90,16 +94,68 @@ function ChatChecklist({ filter }: { filter: 'open' | 'done' | 'all' }) {
   );
 }
 
-export default function ChatPanel({ recordingId }: { recordingId: string }) {
+export default function ChatPanel({ recordingId, userId }: { recordingId: string; userId?: string | null }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [mounted, setMounted] = useState(false);
+  const [height, setHeight] = useState(DEFAULT_HEIGHT);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const drag = useRef<{ startY: number; startH: number } | null>(null);
+
+  const heightKey = `ftc.chatPanelHeight.${userId ?? 'anon'}`;
 
   useEffect(() => { setMounted(true); }, []);
+
+  // Restore saved panel height after mount (keeps SSR === first client render)
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(heightKey);
+      if (!raw) return;
+      const h = Number(raw);
+      if (isFinite(h) && h >= MIN_HEIGHT && h <= MAX_HEIGHT) setHeight(h);
+    } catch { /* ignore */ }
+  }, [heightKey]);
+
+  const onResizeMove = useCallback((e: PointerEvent) => {
+    const d = drag.current;
+    if (!d) return;
+    const next = Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, d.startH + (e.clientY - d.startY)));
+    setHeight(next);
+  }, []);
+
+  const onResizeUp = useCallback(() => {
+    drag.current = null;
+    document.body.style.removeProperty('user-select');
+    document.body.style.removeProperty('cursor');
+    window.removeEventListener('pointermove', onResizeMove);
+    window.removeEventListener('pointerup', onResizeUp);
+    setHeight((h) => {
+      try { localStorage.setItem(heightKey, String(Math.round(h))); } catch { /* quota */ }
+      return h;
+    });
+  }, [onResizeMove, heightKey]);
+
+  const startResize = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    drag.current = { startY: e.clientY, startH: height };
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'ns-resize';
+    window.addEventListener('pointermove', onResizeMove);
+    window.addEventListener('pointerup', onResizeUp);
+  };
+
+  const resetHeight = () => {
+    setHeight(DEFAULT_HEIGHT);
+    try { localStorage.removeItem(heightKey); } catch { /* ignore */ }
+  };
+
+  useEffect(() => () => {
+    window.removeEventListener('pointermove', onResizeMove);
+    window.removeEventListener('pointerup', onResizeUp);
+  }, [onResizeMove, onResizeUp]);
 
   useEffect(() => {
     if (messages.length > 0) {
@@ -316,10 +372,24 @@ export default function ChatPanel({ recordingId }: { recordingId: string }) {
     );
   }
 
-  // Normal inline panel
+  // Normal inline panel — user-resizable height via the bottom drag handle
   return (
-    <div className="rounded-2xl border border-surface-border bg-surface-card flex flex-col chat-panel-default-height">
+    <div
+      className="relative rounded-2xl border border-surface-border bg-surface-card flex flex-col"
+      style={{ height }}
+    >
       {inner}
+      {/* Bottom drag handle: resize the panel taller / shorter, saved per user */}
+      <div
+        onPointerDown={startResize}
+        onDoubleClick={resetHeight}
+        title="Drag to resize · double-click to reset"
+        role="separator"
+        aria-orientation="horizontal"
+        className="chat-height-handle"
+      >
+        <span className="chat-height-grip" />
+      </div>
     </div>
   );
 }

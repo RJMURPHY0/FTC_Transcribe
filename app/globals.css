@@ -163,6 +163,32 @@
 
 /* ── Chat panel fixed height (non-fullscreen) ── */
 .chat-panel-default-height { height: 520px; }
+/* Bottom edge grab-strip that lets the user drag the chat panel taller/shorter */
+.chat-height-handle {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -5px;
+  height: 14px;
+  cursor: ns-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+  z-index: 5;
+}
+.chat-height-grip {
+  width: 40px;
+  height: 4px;
+  border-radius: 9999px;
+  background: rgb(var(--c-surface-border));
+  transition: background 0.15s, width 0.15s;
+}
+.chat-height-handle:hover .chat-height-grip,
+.chat-height-handle:active .chat-height-grip {
+  background: rgb(var(--c-brand));
+  width: 56px;
+}
 .bounce-delay-0   { animation-delay: 0ms; }
 .bounce-delay-120 { animation-delay: 120ms; }
 .bounce-delay-240 { animation-delay: 240ms; }
