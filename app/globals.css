@@ -215,17 +215,17 @@
   background: rgb(var(--c-brand));
   height: 56px;
 }
-/* Bottom-right corner: drag both dimensions at once */
+/* Bottom-left corner: drag both dimensions at once */
 .chat-corner-handle {
   position: absolute;
-  right: -4px;
+  left: -4px;
   bottom: -4px;
   width: 20px;
   height: 20px;
-  cursor: nwse-resize;
+  cursor: nesw-resize;
   display: flex;
   align-items: flex-end;
-  justify-content: flex-end;
+  justify-content: flex-start;
   padding: 3px;
   touch-action: none;
   z-index: 6;

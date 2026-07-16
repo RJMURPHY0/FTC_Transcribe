@@ -168,7 +168,7 @@ export default function ChatPanel({ recordingId, userId }: { recordingId: string
       axis,
     };
     document.body.style.userSelect = 'none';
-    document.body.style.cursor = axis === 'x' ? 'ew-resize' : axis === 'y' ? 'ns-resize' : 'nwse-resize';
+    document.body.style.cursor = axis === 'x' ? 'ew-resize' : axis === 'y' ? 'ns-resize' : 'nesw-resize';
     window.addEventListener('pointermove', onResizeMove);
     window.addEventListener('pointerup', onResizeUp);
   };
@@ -400,7 +400,7 @@ export default function ChatPanel({ recordingId, userId }: { recordingId: string
   }
 
   // Normal inline panel — user-resizable width + height, saved per user.
-  // Right edge = width, bottom edge = height, bottom-right corner = both.
+  // Right edge = width, bottom edge = height, bottom-left corner = both.
   return (
     <div
       ref={panelRef}
@@ -430,7 +430,7 @@ export default function ChatPanel({ recordingId, userId }: { recordingId: string
       >
         <span className="chat-height-grip" />
       </div>
-      {/* Bottom-right corner: both at once */}
+      {/* Bottom-left corner: both at once */}
       <div
         onPointerDown={startResize('both')}
         onDoubleClick={resetSize}
@@ -439,7 +439,7 @@ export default function ChatPanel({ recordingId, userId }: { recordingId: string
         className="chat-corner-handle"
       >
         <svg viewBox="0 0 10 10" className="chat-corner-grip" aria-hidden="true">
-          <path d="M9 1 1 9M9 5 5 9" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" fill="none" />
+          <path d="M1 1 9 9M1 5 5 9" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" fill="none" />
         </svg>
       </div>
     </div>
