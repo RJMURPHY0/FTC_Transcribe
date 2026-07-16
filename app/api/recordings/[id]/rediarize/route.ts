@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { diarizeSegments, identifySpeakerNames } from '@/lib/ai';
 import type { TranscriptSegment, RawSegment } from '@/lib/ai';
+import { reanalyzeSpeakers } from '@/lib/finalize-recording';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 800;
@@ -16,6 +17,24 @@ export async function POST(
     return NextResponse.json({ error: 'Invalid ID' }, { status: 400 });
   }
 
+  // Preferred path: acoustic voice separation. Re-clusters this recording's
+  // stored per-turn voiceprints and re-matches them against the CURRENT set of
+  // enrolled voice profiles, so voices learned since the meeting was processed
+  // are applied and the transcript is split by who actually spoke — not by an
+  // LLM guessing from the text. Falls through for legacy meetings that captured
+  // no voiceprints.
+  try {
+    const voice = await reanalyzeSpeakers(params.id);
+    if (voice.resolved) {
+      return NextResponse.json({ ok: true, method: 'voice' });
+    }
+  } catch (err) {
+    console.warn('[rediarize] voice re-analysis failed, falling back to text:', err);
+  }
+
+  // Fallback: LLM text diarization on the transcript. Used only when there is no
+  // acoustic data to work from (older meetings recorded before voiceprints were
+  // captured, mobile imports, or voice ID disabled).
   const transcript = await prisma.transcript.findUnique({
     where: { recordingId: params.id },
   });
@@ -54,7 +73,7 @@ export async function POST(
       data: { segments: JSON.stringify(finalSegments) },
     });
 
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true, method: 'text' });
   } catch (err) {
     console.error('[rediarize]', err);
     return NextResponse.json({ error: 'Diarization failed.' }, { status: 500 });

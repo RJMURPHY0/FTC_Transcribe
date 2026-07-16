@@ -124,6 +124,7 @@ export default function SpeakerPanel({ recordingId, speakers }: Props) {
             type="button"
             onClick={handleReanalyse}
             disabled={reanalysing}
+            title="Re-separate the transcript by voice, using the latest saved voice profiles for each person"
             className="text-xs px-2.5 py-1 rounded-lg border border-surface-border text-ftc-mid hover:text-ftc-gray hover:border-ftc-mid transition-colors disabled:opacity-50"
           >
             {reanalysing ? 'Re-analysing…' : reanalStatus === 'ok' ? 'Done ✓' : reanalStatus === 'err' ? 'Failed — retry' : 'Re-analyse'}

@@ -123,6 +123,164 @@ async function autoLearnVoiceProfiles(
   }
 }
 
+// Cluster this recording's per-chunk voiceprints into global speakers, match
+// them against the LATEST enrolled voice profiles, persist the per-speaker
+// voiceprints, and opportunistically learn new samples from confident matches.
+// Shared by finalize and by the transcript "Re-analyse" button — the button
+// re-runs it so any voice profiles enrolled since the meeting was first
+// processed are applied. Returns the voice-separated segments, or resolved:false
+// when there is no acoustic data to work from (legacy / mobile / voice-id-off).
+export async function resolveAndPersistVoiceSpeakers(
+  recordingId: string,
+  voiceChunks: ChunkForAlignment[],
+): Promise<{ resolved: boolean; segments: Array<{ start: number; end: number; text: string; speaker: string }> | null }> {
+  try {
+    // Profiles load first so the resolver can supervise per-turn assignment
+    // with enrolled voiceprints (not just name clusters after the fact).
+    const profileRows = await prisma.voiceProfile.findMany({
+      select: { personName: true, embedding: true },
+    }).catch(() => [] as Array<{ personName: string; embedding: string }>);
+    const profiles = profileRows
+      .map((p) => {
+        try { return { personName: p.personName, embedding: JSON.parse(p.embedding) as number[] }; }
+        catch { return null; }
+      })
+      .filter((p): p is { personName: string; embedding: number[] } => !!p);
+
+    const resolved = resolveGlobalSpeakers(voiceChunks, profiles);
+    if (!resolved || resolved.segments.length === 0) return { resolved: false, segments: null };
+
+    const detailedMatches = matchProfilesDetailed(resolved.speakerEmbeddings, profiles);
+    const matches: Record<string, string> = {};
+    for (const [label, m] of Object.entries(detailedMatches)) matches[label] = m.name;
+    const outSegments = resolved.segments.map(s => ({
+      ...s,
+      speaker: matches[s.speaker] ?? s.speaker,
+    }));
+
+    // Persist per-speaker voiceprints for this recording (idempotent on re-run) —
+    // used by the relearn loop when the user renames a speaker.
+    await prisma.speakerEmbedding.deleteMany({ where: { recordingId } }).catch(() => {});
+    await prisma.speakerEmbedding.createMany({
+      data: resolved.speakerEmbeddings.map(se => ({
+        recordingId,
+        speakerLabel: matches[se.label] ?? se.label,
+        embedding: JSON.stringify(se.embedding),
+        durationS: se.durationS,
+      })),
+    }).catch(() => {});
+
+    // Continuous learning: a confidently matched voice contributes this
+    // meeting's voiceprint as a fresh sample, so a person's profile keeps
+    // tracking their voice across devices and time without re-enrollment.
+    try {
+      const LEARN_SIM = parseFloat(process.env.VOICE_LEARN_THRESHOLD ?? '0.6');
+      const DUP_SIM = parseFloat(process.env.VOICE_LEARN_DUP_SIM ?? '0.95');
+      const MAX_SAMPLES_PER_PERSON = 12;
+      const candidates = resolved.speakerEmbeddings.filter(se => {
+        const m = detailedMatches[se.label];
+        return m && m.sim >= LEARN_SIM && se.durationS >= 3;
+      });
+      if (candidates.length) {
+        const owner = await prisma.recording.findUnique({
+          where: { id: recordingId }, select: { userId: true },
+        }).catch(() => null);
+        for (const se of candidates) {
+          const m = detailedMatches[se.label];
+          const personSamples = profiles.filter(p => p.personName === m.name);
+          if (personSamples.length >= MAX_SAMPLES_PER_PERSON) continue;
+          if (personSamples.some(p => cosineSim(se.embedding, p.embedding) > DUP_SIM)) continue;
+          // Provenance: what this voice said in this meeting, so the user
+          // can audit the sample later and delete it if it's contaminated.
+          const excerpt = outSegments
+            .filter(s => s.speaker === m.name)
+            .map(s => s.text)
+            .join(' ')
+            .slice(0, 300);
+          await prisma.voiceProfile.create({
+            data: {
+              userId: owner?.userId ?? null,
+              personName: m.name,
+              embedding: JSON.stringify(se.embedding),
+              durationS: se.durationS,
+              source: 'match',
+              recordingId,
+              excerpt,
+            },
+          });
+          console.log(`[finalize] learned new voice sample for ${m.name} (sim ${m.sim.toFixed(2)}, ${se.durationS.toFixed(1)}s)`);
+        }
+      }
+    } catch (err) {
+      console.warn('[finalize] match-learn failed:', err);
+    }
+
+    const matched = Object.entries(matches).map(([l, n]) => `${l}→${n}`).join(', ');
+    console.log(`[finalize] voice ID resolved ${resolved.speakerEmbeddings.length} speakers${matched ? ` (${matched})` : ''}`);
+    return { resolved: true, segments: outSegments };
+  } catch (err) {
+    console.warn('[finalize] voice speaker resolution failed, using fallback:', err);
+    return { resolved: false, segments: null };
+  }
+}
+
+// Re-run acoustic voice separation for an already-processed recording using its
+// stored per-turn voiceprints and the CURRENT set of enrolled voice profiles.
+// The raw audio is not needed — the per-turn embeddings were extracted when each
+// chunk was first transcribed and are kept in ChunkTranscript.voiceData, so this
+// just re-clusters + re-matches them. Powers the transcript "Re-analyse" button.
+// Returns resolved:false for legacy meetings that captured no voiceprints (the
+// caller then falls back to text diarization).
+export async function reanalyzeSpeakers(
+  recordingId: string,
+): Promise<{ ok: boolean; resolved: boolean; reason?: string }> {
+  const rows = await prisma.chunkTranscript.findMany({
+    where: { recordingId, status: 'succeeded' },
+    orderBy: [{ offset: 'asc' }, { createdAt: 'asc' }],
+    select: { offset: true, segments: true, voiceData: true },
+  }).catch(() => [] as Array<{ offset: number; segments: string; voiceData: string }>);
+  if (!rows.length) return { ok: true, resolved: false, reason: 'no-chunk-data' };
+
+  const voiceChunks: ChunkForAlignment[] = [];
+  for (const row of rows) {
+    let parsed: Array<{ start: number; end: number; text: string; speaker?: number | string }> = [];
+    try { parsed = JSON.parse(row.segments); } catch { continue; }
+    let voiceData: ChunkVoiceData | null = null;
+    try { if (row.voiceData) voiceData = JSON.parse(row.voiceData) as ChunkVoiceData; } catch { /* no voice data */ }
+    voiceChunks.push({ offset: row.offset, segments: parsed, voiceData });
+  }
+
+  const vr = await resolveAndPersistVoiceSpeakers(recordingId, voiceChunks);
+  if (!vr.resolved || !vr.segments) return { ok: true, resolved: false, reason: 'no-voice-data' };
+
+  // Fill still-generic "Speaker N" labels with real names inferred from what they
+  // say (self-introductions), preserving names already matched from voiceprints.
+  let named: Array<{ start: number; end: number; text: string; speaker: string }> = vr.segments;
+  try {
+    const speakerNames = await identifySpeakerNames(vr.segments);
+    if (Object.keys(speakerNames).length) {
+      const isGeneric = (l: string) => /^Speaker \d+$/.test(l);
+      named = vr.segments.map(s => ({
+        ...s,
+        speaker: isGeneric(s.speaker) ? (speakerNames[s.speaker] ?? s.speaker) : s.speaker,
+      }));
+      const owner = await prisma.recording.findUnique({
+        where: { id: recordingId }, select: { userId: true },
+      }).catch(() => null);
+      await autoLearnVoiceProfiles(recordingId, speakerNames, owner?.userId ?? null, named);
+    }
+  } catch (err) {
+    console.warn('[reanalyze] name identification failed:', err);
+  }
+
+  await prisma.transcript.update({
+    where: { recordingId },
+    data: { segments: JSON.stringify(named) },
+  });
+
+  return { ok: true, resolved: true };
+}
+
 async function analyzeAndCompleteRecording(recordingId: string): Promise<FinalizeResult> {
   await ensureSchema(); // self-heal: make sure new Summary columns exist before writing
   const [transcript, recording, existingSummary] = await Promise.all([
@@ -516,95 +674,12 @@ async function finalizeWithJobs(recordingId: string): Promise<FinalizeResult> {
     // Acoustic speaker resolution: cluster per-chunk voiceprints into global
     // speakers, then match against enrolled voice profiles. When it succeeds it
     // replaces both the naive Deepgram cross-chunk alignment and (downstream)
-    // the LLM text diarization.
-    let voiceResolved = false;
-    try {
-      // Profiles load first so the resolver can supervise per-turn assignment
-      // with enrolled voiceprints (not just name clusters after the fact).
-      const profileRows = await prisma.voiceProfile.findMany({
-        select: { personName: true, embedding: true },
-      }).catch(() => [] as Array<{ personName: string; embedding: string }>);
-      const profiles = profileRows
-        .map((p) => {
-          try { return { personName: p.personName, embedding: JSON.parse(p.embedding) as number[] }; }
-          catch { return null; }
-        })
-        .filter((p): p is { personName: string; embedding: number[] } => !!p);
-
-      const resolved = resolveGlobalSpeakers(voiceChunks, profiles);
-      if (resolved && resolved.segments.length > 0) {
-        const detailedMatches = matchProfilesDetailed(resolved.speakerEmbeddings, profiles);
-        const matches: Record<string, string> = {};
-        for (const [label, m] of Object.entries(detailedMatches)) matches[label] = m.name;
-        allSegments.length = 0;
-        allSegments.push(...resolved.segments.map(s => ({
-          ...s,
-          speaker: matches[s.speaker] ?? s.speaker,
-        })));
-
-        // Persist per-speaker voiceprints for this recording (idempotent on re-run) —
-        // used by the relearn loop when the user renames a speaker.
-        await prisma.speakerEmbedding.deleteMany({ where: { recordingId } }).catch(() => {});
-        await prisma.speakerEmbedding.createMany({
-          data: resolved.speakerEmbeddings.map(se => ({
-            recordingId,
-            speakerLabel: matches[se.label] ?? se.label,
-            embedding: JSON.stringify(se.embedding),
-            durationS: se.durationS,
-          })),
-        }).catch(() => {});
-
-        // Continuous learning: a confidently matched voice contributes this
-        // meeting's voiceprint as a fresh sample, so a person's profile keeps
-        // tracking their voice across devices and time without re-enrollment.
-        try {
-          const LEARN_SIM = parseFloat(process.env.VOICE_LEARN_THRESHOLD ?? '0.6');
-          const DUP_SIM = parseFloat(process.env.VOICE_LEARN_DUP_SIM ?? '0.95');
-          const MAX_SAMPLES_PER_PERSON = 12;
-          const candidates = resolved.speakerEmbeddings.filter(se => {
-            const m = detailedMatches[se.label];
-            return m && m.sim >= LEARN_SIM && se.durationS >= 3;
-          });
-          if (candidates.length) {
-            const owner = await prisma.recording.findUnique({
-              where: { id: recordingId }, select: { userId: true },
-            }).catch(() => null);
-            for (const se of candidates) {
-              const m = detailedMatches[se.label];
-              const personSamples = profiles.filter(p => p.personName === m.name);
-              if (personSamples.length >= MAX_SAMPLES_PER_PERSON) continue;
-              if (personSamples.some(p => cosineSim(se.embedding, p.embedding) > DUP_SIM)) continue;
-              // Provenance: what this voice said in this meeting, so the user
-              // can audit the sample later and delete it if it's contaminated.
-              const excerpt = allSegments
-                .filter(s => s.speaker === m.name)
-                .map(s => s.text)
-                .join(' ')
-                .slice(0, 300);
-              await prisma.voiceProfile.create({
-                data: {
-                  userId: owner?.userId ?? null,
-                  personName: m.name,
-                  embedding: JSON.stringify(se.embedding),
-                  durationS: se.durationS,
-                  source: 'match',
-                  recordingId,
-                  excerpt,
-                },
-              });
-              console.log(`[finalize] learned new voice sample for ${m.name} (sim ${m.sim.toFixed(2)}, ${se.durationS.toFixed(1)}s)`);
-            }
-          }
-        } catch (err) {
-          console.warn('[finalize] match-learn failed:', err);
-        }
-
-        voiceResolved = true;
-        const matched = Object.entries(matches).map(([l, n]) => `${l}→${n}`).join(', ');
-        console.log(`[finalize] voice ID resolved ${resolved.speakerEmbeddings.length} speakers${matched ? ` (${matched})` : ''}`);
-      }
-    } catch (err) {
-      console.warn('[finalize] voice speaker resolution failed, using fallback:', err);
+    // the LLM text diarization. Shared with the "Re-analyse" button.
+    const vr = await resolveAndPersistVoiceSpeakers(recordingId, voiceChunks);
+    const voiceResolved = vr.resolved;
+    if (voiceResolved && vr.segments) {
+      allSegments.length = 0;
+      allSegments.push(...vr.segments);
     }
 
     if (!voiceResolved && hasDeepgramChunks) {
