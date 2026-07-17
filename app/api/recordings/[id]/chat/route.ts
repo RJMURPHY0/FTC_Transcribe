@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
 import { prisma } from '@/lib/db';
+import { getAuthUser, canAccessRecording } from '@/lib/auth';
 import { parseDueArray, formatDue } from '@/lib/action-items';
 
 export const dynamic = 'force-dynamic';
@@ -52,13 +53,17 @@ export async function POST(
       .slice(-MAX_HISTORY)
       .map((h) => ({ role: h.role, content: sanitise(h.content, MAX_MESSAGE_LEN) }));
 
+    const user = await getAuthUser();
     const recording = await prisma.recording.findUnique({
       where: { id: params.id },
       include: { transcript: true, summary: true },
     });
 
-    if (!recording) {
+    if (!recording || recording.deletedAt) {
       return NextResponse.json({ error: 'Recording not found.' }, { status: 404 });
+    }
+    if (!canAccessRecording(recording.userId, user)) {
+      return NextResponse.json({ error: 'Not allowed.' }, { status: 403 });
     }
 
     if (!recording.transcript) {

@@ -189,10 +189,32 @@ function scenarios(): Scenario[] {
         { v: 'zira', clip: 10, gap: 0.5 }, { v: 'davidhi', clip: 11, gap: 0.7 },
         { v: 'zira', clip: 13, gap: 0.5 }, { v: 'david', clip: 5, gap: 0.5 },
       ] },
+    // Long meeting that crosses several 120s chunk boundaries — exercises the
+    // GLOBAL cross-chunk resolver (merging one speaker across chunks), which the
+    // short single-chunk scenarios above barely touch.
+    { name: 'S6-multichunk', speakers: ['david', 'zira'], enrolled: ['david', 'zira'],
+      script: alt('david', 'zira',
+        Array.from({ length: 52 }, (_, i) => [2, 4, 6, 8, 10, 11, 13, 3, 5, 7][i % 10]),
+        [0.5, 0.7, 0.4]) },
   ];
 }
 
 const PERSON: Record<string, string> = { david: 'David Miller', zira: 'Zira Adams', davidhi: 'Dave Higgins' };
+
+// Per-scenario regression floors so the harness can gate CI. Calibrated from the
+// verified 2026-07-17 baseline with headroom: distinct/enrolled voices must stay
+// near-perfect; the two "similar unenrolled voices merge" cases (S4/S5) have
+// lower floors because that merge is a known CAM++ limit, not a regression —
+// the floor still catches the ENROLLED speakers losing their attribution/name.
+const EXPECT: Record<string, { minAcc: number; names: boolean; maxFlips: number }> = {
+  'S1-alternating':   { minAcc: 97, names: true, maxFlips: 0 },
+  'S2-monologue':     { minAcc: 97, names: true, maxFlips: 0 },
+  'S3-rapid':         { minAcc: 95, names: true, maxFlips: 0 },
+  'S4-similar':       { minAcc: 50, names: true, maxFlips: 2 },
+  'S4b-sim-enrolled': { minAcc: 97, names: true, maxFlips: 0 },
+  'S5-three':         { minAcc: 60, names: true, maxFlips: 2 },
+  'S6-multichunk':    { minAcc: 95, names: true, maxFlips: 1 },
+};
 
 async function main() {
   ensurePitchVariants();
@@ -213,6 +235,7 @@ async function main() {
   console.log(`enrollment pool ready (${[...profilePool.keys()].join(', ')})`);
 
   const results: Array<Record<string, string | number>> = [];
+  let anyFail = false;
 
   for (const sc of scenarios()) {
     if (only && !only.some((o) => sc.name.startsWith(o))) continue;
@@ -302,6 +325,12 @@ async function main() {
 
     const detected = new Set(outSegs.map((s) => s.finalName)).size;
     const acc = totalT ? (100 * correctT) / totalT : 0;
+
+    // Gate against the per-scenario regression floor.
+    const exp = EXPECT[sc.name];
+    const passed = !exp || (acc >= exp.minAcc && flips <= exp.maxFlips && (!exp.names || namesOk));
+    if (!passed) anyFail = true;
+
     results.push({
       scenario: sc.name,
       acc: `${acc.toFixed(1)}%`,
@@ -309,6 +338,7 @@ async function main() {
       speakers: `${detected}/${sc.speakers.length}`,
       names: namesOk ? 'OK' : 'WRONG',
       analyze: `${(analyzeMs / 1000).toFixed(0)}s`,
+      result: passed ? 'PASS' : 'FAIL',
     });
     // dump per-segment detail for failed scenarios to a side file, not stdout
     if (acc < 97 || flips > 0 || !namesOk) {
@@ -320,7 +350,7 @@ async function main() {
     }
   }
 
-  console.log('\nscenario          acc     flips  speakers  names  analyze');
+  console.log('\nscenario          acc     flips  speakers  names  analyze  result');
   for (const r of results) {
     console.log(
       String(r.scenario).padEnd(17),
@@ -329,9 +359,16 @@ async function main() {
       String(r.speakers).padStart(9),
       String(r.names).padStart(6),
       String(r.analyze).padStart(8),
+      String(r.result ?? '').padStart(6),
       r.detail ? ` detail: ${r.detail}` : '',
     );
   }
+
+  if (anyFail) {
+    console.error('\n❌ REGRESSION: one or more scenarios fell below their accuracy floor.');
+    process.exit(1);
+  }
+  console.log('\n✅ All scenarios within accuracy floors.');
 }
 
 main().catch((err) => { console.error(err); process.exit(1); });

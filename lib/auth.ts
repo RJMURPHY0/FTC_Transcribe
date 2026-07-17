@@ -47,3 +47,18 @@ export async function getAuthUser(): Promise<AuthUser | null> {
 
   return { id: user.id, email: user.email ?? '', canSeeAll, canPlayAudio };
 }
+
+/**
+ * Row-level visibility rule for a recording, mirroring the recording page and
+ * the audio route: access is granted to the owner, to anyone for an unclaimed
+ * (null-owner / legacy) recording, or to an admin with canSeeAll.
+ *
+ * Middleware only proves a user is logged in — it never checks WHICH user owns
+ * WHICH row — so every per-recording route must call this itself. Pass the
+ * recording's `userId` (most routes already fetch it, so no extra query).
+ */
+export function canAccessRecording(recordingUserId: string | null, user: AuthUser | null): boolean {
+  if (!user) return false;
+  if (recordingUserId && recordingUserId !== user.id && !user.canSeeAll) return false;
+  return true;
+}

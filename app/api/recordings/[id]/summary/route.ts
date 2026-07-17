@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
+import { getAuthUser, canAccessRecording } from '@/lib/auth';
 import { normaliseDue } from '@/lib/action-items';
 
 export const dynamic = 'force-dynamic';
@@ -29,6 +30,18 @@ export async function PATCH(
 
     if (Object.keys(data).length === 0) {
       return NextResponse.json({ error: 'Nothing to update.' }, { status: 400 });
+    }
+
+    const user = await getAuthUser();
+    const rec = await prisma.recording.findUnique({
+      where: { id: params.id },
+      select: { userId: true, deletedAt: true },
+    });
+    if (!rec || rec.deletedAt) {
+      return NextResponse.json({ error: 'Recording not found.' }, { status: 404 });
+    }
+    if (!canAccessRecording(rec.userId, user)) {
+      return NextResponse.json({ error: 'Not allowed.' }, { status: 403 });
     }
 
     await prisma.summary.update({ where: { recordingId: params.id }, data });

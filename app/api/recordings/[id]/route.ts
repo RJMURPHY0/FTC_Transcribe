@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
+import { getAuthUser, canAccessRecording } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -14,12 +15,16 @@ export async function GET(
     return NextResponse.json({ error: 'Invalid recording ID.' }, { status: 400 });
   }
   try {
+    const user = await getAuthUser();
     const recording = await prisma.recording.findUnique({
       where: { id: params.id },
       include: { transcript: true, summary: true },
     });
     if (!recording || recording.deletedAt) {
       return NextResponse.json({ error: 'Recording not found.' }, { status: 404 });
+    }
+    if (!canAccessRecording(recording.userId, user)) {
+      return NextResponse.json({ error: 'Not allowed.' }, { status: 403 });
     }
     return NextResponse.json(recording);
   } catch {
@@ -52,6 +57,18 @@ export async function PATCH(
       return NextResponse.json({ error: 'Nothing to update.' }, { status: 400 });
     }
 
+    const user = await getAuthUser();
+    const existing = await prisma.recording.findUnique({
+      where: { id: params.id },
+      select: { userId: true, deletedAt: true },
+    });
+    if (!existing || existing.deletedAt) {
+      return NextResponse.json({ error: 'Recording not found.' }, { status: 404 });
+    }
+    if (!canAccessRecording(existing.userId, user)) {
+      return NextResponse.json({ error: 'Not allowed.' }, { status: 403 });
+    }
+
     const recording = await prisma.recording.update({
       where: { id: params.id },
       data: updateData,
@@ -70,6 +87,18 @@ export async function DELETE(
     return NextResponse.json({ error: 'Invalid recording ID.' }, { status: 400 });
   }
   try {
+    const user = await getAuthUser();
+    const existing = await prisma.recording.findUnique({
+      where: { id: params.id },
+      select: { userId: true },
+    });
+    if (!existing) {
+      return NextResponse.json({ error: 'Recording not found.' }, { status: 404 });
+    }
+    if (!canAccessRecording(existing.userId, user)) {
+      return NextResponse.json({ error: 'Not allowed.' }, { status: 403 });
+    }
+
     // Soft delete by default: instant (no cascade over audio blobs), hidden from
     // all lists immediately, hard-purged by the cron after 30 days.
     // ?hard=1 deletes immediately (used by merge-undo to remove the merged copy).

@@ -84,6 +84,13 @@ async function autoLearnVoiceProfiles(
   );
   if (!namedGenerics.length) return;
 
+  // Acoustic corroboration floor. The AI proposes a name from the transcript
+  // ("Hi, I'm Dave"), but we only trust it enough to PERSIST a voiceprint as
+  // future training data if the audio actually resembles the person's known
+  // voice. Same-speaker CAM++ cosine runs ~0.5-0.7, cross-speaker ~0.0-0.25,
+  // so 0.4 cleanly rejects a misattribution without rejecting a genuine sample.
+  const AUTOLEARN_MIN_SIM = parseFloat(process.env.VOICE_AUTOLEARN_MIN_SIM ?? '0.4');
+
   try {
     const embeddings = await prisma.speakerEmbedding.findMany({ where: { recordingId } });
     if (!embeddings.length) return; // no acoustic data (legacy / mobile / voice-id-off path)
@@ -95,17 +102,25 @@ async function autoLearnVoiceProfiles(
       let emb: number[];
       try { emb = JSON.parse(row.embedding) as number[]; } catch { continue; }
 
-      // Skip if we already have a near-identical sample for this person
+      // Similarity of this candidate voiceprint to the person's existing samples.
       const existing = await prisma.voiceProfile.findMany({
         where: { personName: name },
         select: { embedding: true },
       });
-      const duplicate = existing.some(p => {
-        try { return cosineSim(emb, JSON.parse(p.embedding) as number[]) > 0.95; }
-        catch { return false; }
-      });
+      const sims = existing
+        .map(p => { try { return cosineSim(emb, JSON.parse(p.embedding) as number[]); } catch { return NaN; } })
+        .filter(n => !Number.isNaN(n));
+      const maxSim = sims.length ? Math.max(...sims) : null;
 
-      if (!duplicate) {
+      if (maxSim !== null && maxSim < AUTOLEARN_MIN_SIM) {
+        // The audio doesn't match the claimed person — the AI name is almost
+        // certainly a misattribution. Refuse to contaminate the profile.
+        console.warn(`[finalize] auto-learn REJECTED "${name}": voiceprint sim ${maxSim.toFixed(2)} < ${AUTOLEARN_MIN_SIM} — likely misattribution, not persisting`);
+      } else if (maxSim !== null && maxSim > 0.95) {
+        // Near-identical to an existing sample — nothing new to learn.
+      } else {
+        // Either corroborated (maxSim >= floor) or this is the person's first
+        // sample (maxSim === null, nothing yet to contaminate).
         const excerpt = segments
           .filter(s => s.speaker === name || s.speaker === label)
           .map(s => s.text)

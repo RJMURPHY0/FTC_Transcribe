@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
-import { getAuthUser } from '@/lib/auth';
+import { getAuthUser, canAccessRecording } from '@/lib/auth';
 import { cosineSim } from '@/lib/voice-id';
 import type { TranscriptSegment } from '@/lib/ai';
 
@@ -53,6 +53,18 @@ export async function PATCH(
     return NextResponse.json({ error: 'Could not parse segments.' }, { status: 500 });
   }
 
+  const user = await getAuthUser();
+  const rec = await prisma.recording.findUnique({
+    where: { id: params.id },
+    select: { userId: true, deletedAt: true },
+  });
+  if (!rec || rec.deletedAt) {
+    return NextResponse.json({ error: 'Recording not found.' }, { status: 404 });
+  }
+  if (!canAccessRecording(rec.userId, user)) {
+    return NextResponse.json({ error: 'Not allowed.' }, { status: 403 });
+  }
+
   const updated = segments.map(seg => ({
     ...seg,
     speaker: renames[seg.speaker] ?? seg.speaker,
@@ -67,7 +79,6 @@ export async function PATCH(
   // The recording's stored voiceprint for that speaker becomes a VoiceProfile,
   // so future recordings auto-label Dave without any enrollment.
   try {
-    const user = await getAuthUser().catch(() => null);
     const embeddings = await prisma.speakerEmbedding.findMany({ where: { recordingId: params.id } });
     for (const [from, to] of Object.entries(renames)) {
       if (/^Speaker \d+$/i.test(to)) continue; // renaming to a generic label teaches nothing

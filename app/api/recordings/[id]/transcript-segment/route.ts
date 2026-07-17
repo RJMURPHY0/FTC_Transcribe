@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
+import { getAuthUser, canAccessRecording } from '@/lib/auth';
 import type { TranscriptSegment } from '@/lib/ai';
 
 export const dynamic = 'force-dynamic';
@@ -19,6 +20,18 @@ export async function PATCH(
   const body = await req.json() as { segmentIndices?: number[]; newSpeaker?: string };
   if (!Array.isArray(body.segmentIndices) || !body.segmentIndices.length || !body.newSpeaker?.trim()) {
     return NextResponse.json({ error: 'segmentIndices and newSpeaker required.' }, { status: 400 });
+  }
+
+  const user = await getAuthUser();
+  const rec = await prisma.recording.findUnique({
+    where: { id: params.id },
+    select: { userId: true, deletedAt: true },
+  });
+  if (!rec || rec.deletedAt) {
+    return NextResponse.json({ error: 'Recording not found.' }, { status: 404 });
+  }
+  if (!canAccessRecording(rec.userId, user)) {
+    return NextResponse.json({ error: 'Not allowed.' }, { status: 403 });
   }
 
   const transcript = await prisma.transcript.findUnique({

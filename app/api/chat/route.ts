@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
 import { prisma } from '@/lib/db';
+import { getAuthUser } from '@/lib/auth';
 import { reportError } from '@/lib/reportError';
 
 export const dynamic = 'force-dynamic';
@@ -48,8 +49,19 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    // Scope the meetings the chat can see to the current user (admins with
+    // canSeeAll get everything). Without this, the global chat bubble — mounted
+    // on every page — answered from every user's meetings company-wide.
+    const user = await getAuthUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Not authenticated.' }, { status: 401 });
+    }
+    const scope = user.canSeeAll
+      ? {}
+      : { OR: [{ userId: user.id }, { userId: null }] };
+
     const recordings = await prisma.recording.findMany({
-      where: { status: 'completed', deletedAt: null },
+      where: { status: 'completed', deletedAt: null, ...scope },
       include: { transcript: true, summary: true },
       orderBy: { createdAt: 'desc' },
       take: 30,

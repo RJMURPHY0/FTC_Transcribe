@@ -2,9 +2,13 @@ import { createClient } from "@supabase/supabase-js";
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.DATABASE_URL?.split("?")[0] || "";
 const SERVICE_KEY  = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
-const APP_URL      = process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL
-  ? `https://${process.env.VERCEL_URL}`
-  : "https://your-app.vercel.app";
+// Prefer the stable canonical domain; fall back to the per-deployment Vercel URL.
+// (The previous form `A || B ? https://${B} : fallback` mis-grouped as `(A||B) ?
+// https://${B} : fallback`, so it ignored NEXT_PUBLIC_APP_URL entirely and could
+// emit `https://undefined` — breaking the "View Transcript" button in the card.)
+const APP_URL =
+  process.env.NEXT_PUBLIC_APP_URL ||
+  (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "https://ftctranscribe-phi.vercel.app");
 
 interface NotifyPayload {
   recordingId: string;

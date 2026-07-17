@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
+import { getAuthUser, canAccessRecording } from '@/lib/auth';
 import {
   diarizeSegments,
   identifySpeakerNames,
@@ -31,9 +32,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Provide at least 2 valid recording IDs.' }, { status: 400 });
   }
 
+  const user = await getAuthUser();
+  if (!user) {
+    return NextResponse.json({ error: 'Not authenticated.' }, { status: 401 });
+  }
+
   // Fetch all recordings and their transcripts in the order provided
   const recordings = await prisma.recording.findMany({
-    where: { id: { in: recordingIds as string[] } },
+    where: { id: { in: recordingIds as string[] }, deletedAt: null },
     include: { transcript: true, summary: true },
   });
 
@@ -44,6 +50,12 @@ export async function POST(request: NextRequest) {
 
   if (ordered.length < 2) {
     return NextResponse.json({ error: 'Could not find the specified recordings.' }, { status: 404 });
+  }
+
+  // Every source recording must be visible to this user — no merging (and thereby
+  // reading) other people's meetings.
+  if (ordered.some((r) => !canAccessRecording(r.userId, user))) {
+    return NextResponse.json({ error: 'Not allowed.' }, { status: 403 });
   }
 
   // Concatenate transcripts in order, adjusting segment timestamps to be continuous
@@ -90,6 +102,7 @@ export async function POST(request: NextRequest) {
       title: mergedBaseTitle,
       status: 'processing',
       mimeType: 'merged',
+      userId: user.id, // the merged copy belongs to whoever ran the merge
     },
   });
 
