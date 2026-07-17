@@ -22,6 +22,22 @@ export async function GET(request: NextRequest) {
     voice = await probeVoiceId();
   }
 
+  // Teams-notification readiness on demand: it only fires when BOTH a service
+  // role key is set AND at least one microsoft_integrations webhook exists.
+  // `ready` is the single "is it actually working" answer.
+  let teams: { ready: boolean; serviceKey: boolean; webhooks: number } | undefined;
+  if (request.nextUrl.searchParams.get('teams') === '1') {
+    const serviceKey = !!process.env.SUPABASE_SERVICE_ROLE_KEY;
+    let webhooks = 0;
+    try {
+      const rows = await prisma.$queryRawUnsafe<{ n: number }[]>(
+        `SELECT count(teams_webhook_url)::int AS n FROM microsoft_integrations`,
+      );
+      webhooks = Number(rows[0]?.n ?? 0);
+    } catch { /* table absent in this env */ }
+    teams = { ready: serviceKey && webhooks > 0, serviceKey, webhooks };
+  }
+
   return NextResponse.json({
     db,
     recordings,
@@ -31,5 +47,6 @@ export async function GET(request: NextRequest) {
     airtable:   !!(process.env.AIRTABLE_API_KEY  && process.env.AIRTABLE_BASE_ID),
     openrouter: !!process.env.OPENROUTER_API_KEY,
     ...(voice ? { voice } : {}),
+    ...(teams ? { teams } : {}),
   });
 }
