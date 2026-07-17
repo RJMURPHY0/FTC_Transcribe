@@ -53,6 +53,14 @@ export default function RecordPage() {
   const streamRef       = useRef<MediaStream | null>(null);
   const recorderRef     = useRef<MediaRecorder | null>(null);
   const chunkBlobsRef   = useRef<Blob[]>([]);
+  // Chunks whose upload failed after all in-request retries. Kept here and re-sent
+  // (on reconnect, after the next successful upload, and at stop) instead of being
+  // dropped — otherwise a brief network blip loses 2 minutes of the meeting.
+  const failedChunksRef = useRef<{ blob: Blob; offset: number }[]>([]);
+  // Meeting-capture mode ('teams'): the source display + mic streams being mixed,
+  // plus the mixing AudioContext — tracked so we can fully release them on stop.
+  const extraStreamsRef = useRef<MediaStream[]>([]);
+  const mixCtxRef       = useRef<AudioContext | null>(null);
   const timerRef        = useRef<ReturnType<typeof setInterval> | null>(null);
   const chunkTimerRef   = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mimeRef         = useRef('audio/webm');
@@ -118,6 +126,58 @@ export default function RecordPage() {
     audioCtxRef.current = null;
     setVoiceLevel(0);
     speechMsRef.current = 0;
+  }, []);
+
+  // Release the display + mic source streams and the mixing context used by
+  // meeting-capture mode (the recorder only sees the mixed output stream).
+  const stopMeetingCapture = useCallback(() => {
+    extraStreamsRef.current.forEach((s) => s.getTracks().forEach((t) => t.stop()));
+    extraStreamsRef.current = [];
+    mixCtxRef.current?.close().catch(() => {});
+    mixCtxRef.current = null;
+  }, []);
+
+  // Capture the meeting itself: the browser's screen/tab picker provides the
+  // system audio (the other participants), mixed with your microphone (your
+  // side) into a single stream the existing recorder pipeline can consume.
+  // Works in desktop Chrome/Edge; the installable desktop app will cover the
+  // rest. Returns the mixed stream; sources are stashed for cleanup.
+  const getMeetingStream = useCallback(async (): Promise<MediaStream> => {
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getDisplayMedia) {
+      throw new Error('Meeting-audio capture needs desktop Chrome or Edge. On mobile, use In Person or the desktop app.');
+    }
+    // Video is requested only because getDisplayMedia requires it; we immediately
+    // drop the video track and keep just the audio.
+    const display = await navigator.mediaDevices.getDisplayMedia({
+      video: true,
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+    });
+    display.getVideoTracks().forEach((t) => t.stop());
+    const sysAudio = display.getAudioTracks();
+    if (sysAudio.length === 0) {
+      display.getTracks().forEach((t) => t.stop());
+      throw new Error('No meeting audio was shared. In the picker, choose the meeting tab or your whole screen and tick “Share tab audio / system audio”.');
+    }
+
+    const preferredMicId = localStorage.getItem('preferredMicId');
+    let mic: MediaStream;
+    try {
+      mic = await navigator.mediaDevices.getUserMedia({
+        audio: preferredMicId ? { deviceId: { ideal: preferredMicId } } : true,
+      });
+    } catch (e) {
+      display.getTracks().forEach((t) => t.stop()); // don't leak the display capture
+      throw e;
+    }
+
+    extraStreamsRef.current = [display, mic];
+
+    const ctx = new AudioContext();
+    mixCtxRef.current = ctx;
+    const dest = ctx.createMediaStreamDestination();
+    ctx.createMediaStreamSource(new MediaStream(sysAudio)).connect(dest);
+    ctx.createMediaStreamSource(mic).connect(dest);
+    return dest.stream;
   }, []);
 
   const startLiveCaptions = useCallback(async (recordingId: string) => {
@@ -201,6 +261,8 @@ export default function RecordPage() {
     return () => {
       if (chunkTimerRef.current) clearTimeout(chunkTimerRef.current);
       streamRef.current?.getTracks().forEach((t) => t.stop());
+      extraStreamsRef.current.forEach((s) => s.getTracks().forEach((t) => t.stop()));
+      mixCtxRef.current?.close().catch(() => {});
       isActiveRef.current = false;
       if (vadIntervalRef.current) clearInterval(vadIntervalRef.current);
       audioCtxRef.current?.close().catch(() => {});
@@ -233,6 +295,31 @@ export default function RecordPage() {
     }
     throw lastErr;
   }, []);
+
+  // Retry any chunks that failed earlier. Each success corrects the failed count.
+  const flushFailedChunks = useCallback(async () => {
+    if (!failedChunksRef.current.length) return;
+    const pending = failedChunksRef.current;
+    failedChunksRef.current = [];
+    const stillFailed: { blob: Blob; offset: number }[] = [];
+    for (const item of pending) {
+      try {
+        await uploadChunk(item.blob, item.offset);
+        setChunksSaved((n) => n + 1);
+        setChunksFailed((n) => Math.max(0, n - 1));
+      } catch {
+        stillFailed.push(item);
+      }
+    }
+    failedChunksRef.current = stillFailed;
+  }, [uploadChunk]);
+
+  // Re-send queued chunks the moment the network comes back.
+  useEffect(() => {
+    const onOnline = () => { void flushFailedChunks(); };
+    window.addEventListener('online', onOnline);
+    return () => window.removeEventListener('online', onOnline);
+  }, [flushFailedChunks]);
 
   const rotateChunk = useCallback(async () => {
     if (!isActiveRef.current) return;
@@ -284,12 +371,14 @@ export default function RecordPage() {
       try {
         await uploadChunk(blob, offset);
         setChunksSaved((n) => n + 1);
+        void flushFailedChunks(); // a success means we're online — clear any backlog
       } catch (err) {
-        console.warn('[rotate] chunk upload failed:', err instanceof Error ? err.message : err);
+        console.warn('[rotate] chunk upload failed, queued for retry:', err instanceof Error ? err.message : err);
+        failedChunksRef.current.push({ blob, offset });
         setChunksFailed((n) => n + 1);
       }
     }
-  }, [uploadChunk]);
+  }, [uploadChunk, flushFailedChunks]);
 
   const startRecorder = useCallback((stream: MediaStream, mime: string) => {
     const mr = new MediaRecorder(stream, { mimeType: mime });
@@ -331,13 +420,22 @@ export default function RecordPage() {
         // Paused: this segment is safely uploaded — stay paused, keep recording alive.
         if (pausing) return;
 
+        // Last chance to re-send anything that failed mid-session before finalize.
+        await flushFailedChunks();
+
         setState('queued');
         const id = recordingIdRef.current;
         if (!id) return;
         fetch(`/api/recordings/${id}/finalize`, { method: 'POST', keepalive: true }).catch(() => {});
         router.push(`/recordings/${id}`);
       } catch (err) {
-        if (pausing) { setChunksFailed((n) => n + 1); return; }
+        if (pausing) {
+          // Keep the flushed tail (with its header) for retry rather than dropping it.
+          const retryBlobs = offset > 0 && header ? [new Blob([header], { type: mime }), ...blobs] : blobs;
+          failedChunksRef.current.push({ blob: new Blob(retryBlobs, { type: mime }), offset });
+          setChunksFailed((n) => n + 1);
+          return;
+        }
         isActiveRef.current = false;
         setErrorMsg(err instanceof Error ? err.message : 'Upload failed. Please try again.');
         setState('error');
@@ -345,7 +443,7 @@ export default function RecordPage() {
     };
 
     mr.start(500);
-  }, [uploadChunk, router]);
+  }, [uploadChunk, router, flushFailedChunks]);
 
   const start = useCallback(async () => {
     if (isStartingRef.current) return;
@@ -370,7 +468,10 @@ export default function RecordPage() {
       const audioConstraint: MediaTrackConstraints | boolean = preferredMicId
         ? { deviceId: { ideal: preferredMicId } }
         : true;
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraint });
+      // 'teams' = capture the meeting's system audio (+ mic); 'web' = mic only.
+      const stream = source === 'teams'
+        ? await getMeetingStream()
+        : await navigator.mediaDevices.getUserMedia({ audio: audioConstraint });
       streamRef.current = stream;
       await requestWakeLock();
 
@@ -390,13 +491,14 @@ export default function RecordPage() {
         fetch(`/api/recordings/${recordingIdRef.current}`, { method: 'DELETE' }).catch(() => {});
         recordingIdRef.current = null;
       }
+      stopMeetingCapture(); // release any display/mic streams acquired before failure
       releaseWakeLock();
       setErrorMsg(err instanceof Error ? err.message : 'Microphone access denied. Allow mic access and try again.');
       setState('error');
     } finally {
       isStartingRef.current = false;
     }
-  }, [startRecorder, startVAD, startLiveCaptions, rotateChunk, requestWakeLock, releaseWakeLock, source, meetingType]);
+  }, [startRecorder, startVAD, startLiveCaptions, rotateChunk, requestWakeLock, releaseWakeLock, source, meetingType, getMeetingStream, stopMeetingCapture]);
 
   const pause = useCallback(() => {
     if (state !== 'recording' || isPaused) return;
@@ -465,14 +567,16 @@ export default function RecordPage() {
 
     if (wasPaused) {
       // Paused: the segment was already flushed and the mic already released.
-      // Nothing left to record — just finalize and go.
+      // Nothing left to record — retry any queued chunks, then finalize and go.
       setState('queued');
       streamRef.current?.getTracks().forEach((t) => t.stop());
       void releaseWakeLock();
       const id = recordingIdRef.current;
       if (id) {
-        fetch(`/api/recordings/${id}/finalize`, { method: 'POST', keepalive: true }).catch(() => {});
-        router.push(`/recordings/${id}`);
+        flushFailedChunks().finally(() => {
+          fetch(`/api/recordings/${id}/finalize`, { method: 'POST', keepalive: true }).catch(() => {});
+          router.push(`/recordings/${id}`);
+        });
       }
       return;
     }
@@ -482,8 +586,9 @@ export default function RecordPage() {
       recorderRef.current.stop(); // onstop uploads the tail → finalize → navigate
     }
     streamRef.current?.getTracks().forEach((t) => t.stop());
+    stopMeetingCapture();
     void releaseWakeLock();
-  }, [state, isPaused, stopVAD, stopLiveCaptions, releaseWakeLock, router]);
+  }, [state, isPaused, stopVAD, stopLiveCaptions, releaseWakeLock, router, flushFailedChunks, stopMeetingCapture]);
 
   const handleClick = () => {
     if (state === 'recording') stop();
@@ -588,8 +693,10 @@ export default function RecordPage() {
 
           {/* Pause/Resume — sits directly beneath the stop button.
               relative z-10 keeps it above the (decorative) pulse rings so a tap
-              during their expansion always lands on the button. */}
-          {state === 'recording' && (
+              during their expansion always lands on the button.
+              Hidden in meeting-capture mode: resuming would re-open the browser's
+              screen-share picker, so meeting capture is a single start→stop. */}
+          {state === 'recording' && source !== 'teams' && (
             <div className="relative z-10 animate-in fade-in-50 slide-in-from-top-1 duration-300">
               {isPaused ? (
                 <button
@@ -712,11 +819,13 @@ export default function RecordPage() {
                 <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
                   <path d="M12.5 2C11.1 2 10 3.1 10 4.5S11.1 7 12.5 7 15 5.9 15 4.5 13.9 2 12.5 2zm5 3c-.8 0-1.5.7-1.5 1.5S16.7 8 17.5 8 19 7.3 19 6.5 18.3 5 17.5 5zM3 9v10h2v-4h1.5c.3 1.2 1.3 2 2.5 2s2.2-.8 2.5-2H13v4h2V9H3zm8 4H5v-2h6v2z"/>
                 </svg>
-                Teams Call
+                Meeting Audio
               </button>
             </div>
             <p className="text-xs text-center max-w-xs text-surface-muted">
-              Keep screen on while recording. Once you stop, audio is saved on our servers — you can lock your phone and transcription will complete automatically.
+              {source === 'teams'
+                ? 'Captures the call audio (Teams, Zoom, Meet — anyone) plus your mic. When you tap start, pick the meeting tab or your whole screen and tick “Share tab / system audio”. Desktop Chrome or Edge.'
+                : 'Records your microphone. Keep the screen on while recording — once you stop, audio is saved on our servers and transcription completes automatically even if you lock your phone.'}
             </p>
           </div>
         )}
