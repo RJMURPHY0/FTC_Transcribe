@@ -6,7 +6,12 @@ export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
+    const user = await getAuthUser();
+    if (!user) return NextResponse.json({ error: 'Not authenticated.' }, { status: 401 });
     const folders = await prisma.folder.findMany({
+      // Mirror the home page's folderScope: can-see-all admins see every
+      // folder, everyone else sees their own.
+      where: user.canSeeAll ? {} : { userId: user.id },
       orderBy: { createdAt: 'asc' },
       include: { _count: { select: { recordings: true } } },
     });

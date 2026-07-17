@@ -152,7 +152,14 @@ export async function resolveAndPersistVoiceSpeakers(
   try {
     // Profiles load first so the resolver can supervise per-turn assignment
     // with enrolled voiceprints (not just name clusters after the fact).
+    // Scoped to the recording owner's profiles (+ unclaimed legacy null-userId
+    // rows) so one account's voiceprints never label another account's
+    // meetings. Unclaimed recordings keep the previous global matching.
+    const owner = await prisma.recording.findUnique({
+      where: { id: recordingId }, select: { userId: true },
+    }).catch(() => null);
     const profileRows = await prisma.voiceProfile.findMany({
+      where: owner?.userId ? { OR: [{ userId: owner.userId }, { userId: null }] } : {},
       select: { personName: true, embedding: true },
     }).catch(() => [] as Array<{ personName: string; embedding: string }>);
     const profiles = profileRows
@@ -197,9 +204,7 @@ export async function resolveAndPersistVoiceSpeakers(
         return m && m.sim >= LEARN_SIM && se.durationS >= 3;
       });
       if (candidates.length) {
-        const owner = await prisma.recording.findUnique({
-          where: { id: recordingId }, select: { userId: true },
-        }).catch(() => null);
+        // `owner` already fetched above for profile scoping — reuse it here.
         for (const se of candidates) {
           const m = detailedMatches[se.label];
           const personSamples = profiles.filter(p => p.personName === m.name);

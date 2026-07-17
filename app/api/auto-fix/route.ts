@@ -39,12 +39,14 @@ function parseContext(raw: string | Record<string, unknown> | undefined): Record
 
 export async function POST(request: NextRequest) {
   // ── Auth ─────────────────────────────────────────────────────────────────
+  // Fail closed: AUTO_FIX_SECRET must be set AND match. An unset secret used
+  // to allow every request through — on this public (middleware-exempt) route
+  // that let anyone trigger AI auto-fix runs. The secret is configured in
+  // Vercel (Production + Development), so real webhook traffic is unaffected.
   const secret = process.env.AUTO_FIX_SECRET;
-  if (secret) {
-    const provided = request.headers.get('x-auto-fix-secret') ?? request.headers.get('x-webhook-secret');
-    if (provided !== secret) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+  const provided = request.headers.get('x-auto-fix-secret') ?? request.headers.get('x-webhook-secret');
+  if (!secret || provided !== secret) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   // ── Parse ─────────────────────────────────────────────────────────────────

@@ -15,10 +15,14 @@ export async function GET(request: NextRequest) {
 
   const row = await prisma.voiceProfile.findUnique({
     where: { id },
-    select: { audioData: true, audioMime: true },
+    select: { audioData: true, audioMime: true, userId: true },
   });
   if (!row?.audioData?.length) {
     return NextResponse.json({ error: 'No clip stored for this sample.' }, { status: 404 });
+  }
+  // Same visibility rule as recording audio: owner, unclaimed, or can-see-all.
+  if (row.userId && row.userId !== user.id && !user.canSeeAll) {
+    return NextResponse.json({ error: 'Not allowed.' }, { status: 403 });
   }
 
   return new NextResponse(new Uint8Array(row.audioData), {

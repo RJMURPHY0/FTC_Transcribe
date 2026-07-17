@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { prisma } from '@/lib/db';
+import { getAuthUser, canAccessRecording } from '@/lib/auth';
 import React from 'react';
 import {
   Document, Page, Text, View, Image, StyleSheet,
@@ -231,12 +232,18 @@ export async function GET(
     return NextResponse.json({ error: 'Invalid recording ID.' }, { status: 400 });
   }
 
+  const user = await getAuthUser();
+
   const recording = await prisma.recording
     .findUnique({ where: { id: params.id }, include: { summary: true, transcript: true } })
     .catch(() => null);
 
-  if (!recording) {
+  if (!recording || recording.deletedAt) {
     return NextResponse.json({ error: 'Recording not found.' }, { status: 404 });
+  }
+  // Same visibility rule as the recording page: owner, unclaimed, or can-see-all.
+  if (!canAccessRecording(recording.userId, user)) {
+    return NextResponse.json({ error: 'Not allowed.' }, { status: 403 });
   }
 
   const s = recording.summary;

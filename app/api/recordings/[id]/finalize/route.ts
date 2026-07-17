@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { prisma } from '@/lib/db';
+import { getAuthUser, canAccessRecording } from '@/lib/auth';
 import { finalizeRecording } from '@/lib/finalize-recording';
 
 export const dynamic = 'force-dynamic';
@@ -12,6 +14,20 @@ export async function POST(
 ) {
   if (!CUID_RE.test(params.id)) {
     return NextResponse.json({ error: 'Invalid recording ID.' }, { status: 400 });
+  }
+
+  // Ownership gate (cron runs use /api/jobs/finalize, not this route) — same
+  // visibility rule as the recording page: owner, unclaimed, or can-see-all.
+  const user = await getAuthUser();
+  const recording = await prisma.recording.findUnique({
+    where: { id: params.id },
+    select: { userId: true },
+  });
+  if (!recording) {
+    return NextResponse.json({ error: 'Recording not found.' }, { status: 404 });
+  }
+  if (!canAccessRecording(recording.userId, user)) {
+    return NextResponse.json({ error: 'Not allowed.' }, { status: 403 });
   }
 
   const result = await finalizeRecording(params.id);

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
+import { getAuthUser, canAccessRecording } from '@/lib/auth';
 import { diarizeSegments, identifySpeakerNames } from '@/lib/ai';
 import type { TranscriptSegment, RawSegment } from '@/lib/ai';
 import { reanalyzeSpeakers } from '@/lib/finalize-recording';
@@ -15,6 +16,20 @@ export async function POST(
 ) {
   if (!CUID_RE.test(params.id)) {
     return NextResponse.json({ error: 'Invalid ID' }, { status: 400 });
+  }
+
+  // Ownership gate before overwriting the transcript or spending AI budget —
+  // same visibility rule as the recording page: owner, unclaimed, or can-see-all.
+  const user = await getAuthUser();
+  const rec = await prisma.recording.findUnique({
+    where: { id: params.id },
+    select: { userId: true, deletedAt: true },
+  });
+  if (!rec || rec.deletedAt) {
+    return NextResponse.json({ error: 'Recording not found.' }, { status: 404 });
+  }
+  if (!canAccessRecording(rec.userId, user)) {
+    return NextResponse.json({ error: 'Not allowed.' }, { status: 403 });
   }
 
   // Preferred path: acoustic voice separation. Re-clusters this recording's

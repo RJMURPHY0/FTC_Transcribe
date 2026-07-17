@@ -17,8 +17,14 @@ export async function GET(request: NextRequest) {
   if (!name) return NextResponse.json({ error: 'name query param required.' }, { status: 400 });
 
   await ensureSchema();
+  // Scope to the caller's own samples (+ unclaimed legacy null-userId rows),
+  // same visibility rule as samples/audio/route.ts — canSeeAll sees everyone's.
+  // Without this, listing by personName returned other tenants' voiceprint rows.
   const rows = await prisma.voiceProfile.findMany({
-    where: { personName: name },
+    where: {
+      personName: name,
+      ...(user.canSeeAll ? {} : { OR: [{ userId: user.id }, { userId: null }] }),
+    },
     orderBy: { createdAt: 'desc' },
     select: {
       id: true, source: true, durationS: true, deviceLabel: true,
@@ -118,6 +124,17 @@ export async function DELETE(request: NextRequest) {
   const id = request.nextUrl.searchParams.get('id')?.trim();
   if (!id) return NextResponse.json({ error: 'id query param required.' }, { status: 400 });
 
+  // Ownership gate before delete — same rule as samples/audio/route.ts: owner,
+  // unclaimed (null userId), or can-see-all. Blocks cross-user deletion by id.
+  const row = await prisma.voiceProfile.findUnique({
+    where: { id }, select: { userId: true },
+  });
+  if (!row) {
+    return NextResponse.json({ error: 'Sample not found.' }, { status: 404 });
+  }
+  if (row.userId && row.userId !== user.id && !user.canSeeAll) {
+    return NextResponse.json({ error: 'Not allowed.' }, { status: 403 });
+  }
   const deleted = await prisma.voiceProfile.deleteMany({ where: { id } });
   if (deleted.count === 0) {
     return NextResponse.json({ error: 'Sample not found.' }, { status: 404 });

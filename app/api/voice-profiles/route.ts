@@ -18,6 +18,9 @@ export async function GET() {
 
   await ensureSchema();
   const rows = await prisma.voiceProfile.findMany({
+    // Same visibility rule as recordings (canAccessRecording): own rows plus
+    // unclaimed legacy rows (null userId); can-see-all admins see everything.
+    where: user.canSeeAll ? {} : { OR: [{ userId: user.id }, { userId: null }] },
     select: { personName: true, durationS: true, source: true, createdAt: true },
     orderBy: { createdAt: 'desc' },
   });
@@ -106,6 +109,12 @@ export async function DELETE(request: NextRequest) {
   const name = request.nextUrl.searchParams.get('name')?.trim();
   if (!name) return NextResponse.json({ error: 'name query param required.' }, { status: 400 });
 
-  const deleted = await prisma.voiceProfile.deleteMany({ where: { personName: name } });
+  // Scoped like the GET above: a user can only delete their own (or unclaimed
+  // legacy) samples; can-see-all admins keep the previous global delete.
+  const deleted = await prisma.voiceProfile.deleteMany({
+    where: user.canSeeAll
+      ? { personName: name }
+      : { personName: name, OR: [{ userId: user.id }, { userId: null }] },
+  });
   return NextResponse.json({ ok: true, deleted: deleted.count });
 }

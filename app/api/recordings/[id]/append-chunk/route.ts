@@ -2,6 +2,7 @@ import { createHash } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { waitUntil } from '@vercel/functions';
 import { prisma } from '@/lib/db';
+import { getAuthUser, canAccessRecording } from '@/lib/auth';
 import { enqueueFinalizeJob } from '@/lib/finalize-recording';
 import { transcribeChunk } from '@/lib/transcribe-chunk';
 
@@ -43,10 +44,15 @@ export async function POST(
       return NextResponse.json({ error: 'Invalid offset.' }, { status: 400 });
     }
 
-    // Confirm the recording exists
+    // Confirm the recording exists AND belongs to the caller — same visibility
+    // rule as the recording page: owner, unclaimed, or can-see-all.
+    const user = await getAuthUser();
     const recording = await prisma.recording.findUnique({ where: { id: params.id } });
     if (!recording) {
       return NextResponse.json({ error: 'Recording not found.' }, { status: 404 });
+    }
+    if (!canAccessRecording(recording.userId, user)) {
+      return NextResponse.json({ error: 'Not allowed.' }, { status: 403 });
     }
 
     const bytes = await file.arrayBuffer();
