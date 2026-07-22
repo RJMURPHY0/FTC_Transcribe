@@ -42,3 +42,10 @@ yarn-debug.log*
 yarn-error.log*
 
 .vercel
+
+# transcript data - contains real customer meeting text, never commit
+migration-part*.sql
+migration-to-contacts.sql
+run-*.sql
+
+graphify-out/

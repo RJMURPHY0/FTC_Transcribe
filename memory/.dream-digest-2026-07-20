@@ -1,0 +1,34 @@
+# Dream Consolidation — FTC Transcribe — 2026-07-20
+
+## Summary
+Verified 20 active topic files consolidating N8N workflow automation, Prisma DB patterns, and multi-tenant auth architecture. Confirmed DB pooler gotchas and cost-optimization patterns. Memory stable with minimal new signals in last 7 days.
+
+## Changes
+- 0 topic files updated (no new signals from last 7 days)
+- 2 reference errors identified and documented (DB pooler: :6543 pgbouncer, not :5432; MCP queries wrong DB)
+- 0 entries pruned
+- No CLAUDE.md promotion candidates this cycle
+
+## Key Insights
+- **DB pooler exhaustion** at 15 clients — must use :6543?pgbouncer=true, not :5432
+- **Prisma bypasses RLS** — app-layer boundary enforcement required (mirrors Whisper architecture)
+- **N8N memory errors on large datasets** — batching and chunking required; state management gotcha
+- **Cost optimization via /headroom + OpenRouter** standard practice for bulk work
+
+## Skill Gaps Found
+| Skill | Score | Reason | Sessions |
+|-------|-------|--------|----------|
+| (none scored >= 3) | — | Corrections file empty; architecture stable. N8N patterns covered by installed skill. | — |
+
+## Cross-Project Patterns
+- Shared DB (ijeeghdxokfvlfarojlm) RLS patterns consistent with CRM + Whisper
+- Cost optimization routing aligns with CRM + Whisper projects
+- Error visibility requirement mirrors all 6 projects
+
+## Verification Status
+✓ 20 topic files indexed and verified
+✓ MEMORY.md complete (32 lines)
+✓ No contradictions detected
+✓ DB pooler gotchas documented for future sessions
+
+**Phase 6 Complete — Stable memory state.**
