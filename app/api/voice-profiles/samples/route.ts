@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { getAuthUser } from '@/lib/auth';
 import { ensureSchema } from '@/lib/ensure-schema';
-import { cosineSim } from '@/lib/voice-id';
+import { cosineSim, EMB_MODEL_VERSION } from '@/lib/voice-id';
+import { profileVersions } from '@/lib/voice-profile-store';
 
 export const dynamic = 'force-dynamic';
 
@@ -74,18 +75,30 @@ export async function GET(request: NextRequest) {
     return { start: Math.max(0, start), end: Math.min(end, start + 20) };
   }
 
-  // Consistency vs the duration-agnostic centroid of all samples
+  // Confidence vs the person's ANCHOR centroid (enrolment + manual-rename
+  // samples) — the same reference the matcher itself trusts. Scoring against
+  // the all-sample centroid let a large contaminated sample dominate its own
+  // average and look consistent. Falls back to the all-sample centroid only
+  // when no human-verified samples exist.
+  const CONSISTENCY_MIN = parseFloat(process.env.VOICE_SAMPLE_CONSISTENCY_MIN ?? '0.6');
+  const isAnchor = (source: string) => source === 'enrollment' || source === 'relabel';
+  // Confidence is only meaningful within one embedding-model space: current-
+  // model samples score against the current-model anchor centroid; samples
+  // from a retired model are flagged legacy and take no part in matching.
+  const versions = await profileVersions(rows.map(r => r.id));
+  const isCurrent = (id: string) => (versions.get(id) ?? 'campplus') === EMB_MODEL_VERSION;
   const embs = rows.map(r => {
     try { return JSON.parse(r.embedding) as number[]; } catch { return null; }
   });
   let consistency: Array<number | null> = rows.map(() => null);
-  const valid = embs.filter((e): e is number[] => !!e);
-  if (valid.length >= 2) {
-    const dim = valid[0].length;
+  const anchorEmbs = embs.filter((e, i): e is number[] => !!e && isAnchor(rows[i].source) && isCurrent(rows[i].id));
+  const pool = anchorEmbs.length ? anchorEmbs : embs.filter((e, i): e is number[] => !!e && isCurrent(rows[i].id));
+  if (pool.length >= 1) {
+    const dim = pool[0].length;
     const centroid = new Array(dim).fill(0);
-    for (const e of valid) for (let d = 0; d < dim; d++) centroid[d] += e[d];
-    for (let d = 0; d < dim; d++) centroid[d] /= valid.length;
-    consistency = embs.map(e => (e ? Math.round(cosineSim(e, centroid) * 100) / 100 : null));
+    for (const e of pool) for (let d = 0; d < dim; d++) centroid[d] += e[d];
+    for (let d = 0; d < dim; d++) centroid[d] /= pool.length;
+    consistency = embs.map((e, i) => (e && isCurrent(rows[i].id) ? Math.round(cosineSim(e, centroid) * 100) / 100 : null));
   }
 
   return NextResponse.json({
@@ -102,6 +115,14 @@ export async function GET(request: NextRequest) {
         recordingTitle: r.recordingId ? titleOf.get(r.recordingId) ?? null : null,
         excerpt: r.excerpt,
         consistency: consistency[i],
+        // 0-100 rating of "how likely is this clip the person's real voice",
+        // and whether the matcher actually uses it — mirrors screenProfiles():
+        // human-verified samples are always trusted; learned samples must
+        // clear the consistency bar or they are excluded from matching.
+        confidencePct: consistency[i] !== null ? Math.max(0, Math.min(100, Math.round(consistency[i]! * 100))) : null,
+        legacyModel: !isCurrent(r.id),
+        usedForMatching: isCurrent(r.id)
+          && (isAnchor(r.source) || consistency[i] === null || consistency[i]! >= CONSISTENCY_MIN),
         // Playable clip: enrollment samples stream their stored clip; meeting
         // samples seek into the recording's audio at the trained segment.
         clipUrl: r.audioMime

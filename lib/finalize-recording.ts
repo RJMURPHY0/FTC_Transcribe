@@ -14,7 +14,8 @@ import { notifyTeamsChannel } from '@/lib/integrations/teams-notify';
 import { indexTranscript } from '@/lib/embeddings';
 import { alignSpeakersAcrossChunks } from '@/lib/deepgram';
 import type { DeepgramRawSegment } from '@/lib/deepgram';
-import { resolveGlobalSpeakers, matchProfilesDetailed, cosineSim } from '@/lib/voice-id';
+import { resolveGlobalSpeakers, matchProfilesDetailed, cosineSim, LEGACY_MODEL_VERSION } from '@/lib/voice-id';
+import { createVoiceProfileTagged, loadProfilesForVersion } from '@/lib/voice-profile-store';
 import { archiveRecordingAudio } from '@/lib/audio-archive';
 import type { ChunkForAlignment, ChunkVoiceData } from '@/lib/voice-id';
 import {
@@ -95,6 +96,15 @@ async function autoLearnVoiceProfiles(
     const embeddings = await prisma.speakerEmbedding.findMany({ where: { recordingId } });
     if (!embeddings.length) return; // no acoustic data (legacy / mobile / voice-id-off path)
 
+    // These voiceprints came from this recording's embedding model — the new
+    // profile row must carry the same model-space tag.
+    let dataVersion = LEGACY_MODEL_VERSION;
+    try {
+      const v = await prisma.$queryRaw<Array<{ modelVersion: string }>>`
+        SELECT "modelVersion" FROM "SpeakerEmbedding" WHERE "recordingId" = ${recordingId} LIMIT 1`;
+      if (v[0]?.modelVersion) dataVersion = v[0].modelVersion;
+    } catch { /* column missing */ }
+
     for (const [label, name] of namedGenerics) {
       const row = embeddings.find(e => e.speakerLabel === label);
       if (!row) continue;
@@ -131,9 +141,10 @@ async function autoLearnVoiceProfiles(
           .map(s => s.text)
           .join(' ')
           .slice(0, 300);
-        await prisma.voiceProfile.create({
-          data: { userId, personName: name, embedding: row.embedding, durationS: row.durationS, source: 'auto', recordingId, excerpt },
-        });
+        await createVoiceProfileTagged(
+          { userId, personName: name, embedding: row.embedding, durationS: row.durationS, source: 'auto', recordingId, excerpt },
+          dataVersion,
+        );
       }
       // Keep the stored voiceprint label in sync with the resolved name
       await prisma.speakerEmbedding.update({ where: { id: row.id }, data: { speakerLabel: name } });
@@ -163,16 +174,10 @@ export async function resolveAndPersistVoiceSpeakers(
     const owner = await prisma.recording.findUnique({
       where: { id: recordingId }, select: { userId: true },
     }).catch(() => null);
-    const profileRows = await prisma.voiceProfile.findMany({
-      where: owner?.userId ? { OR: [{ userId: owner.userId }, { userId: null }] } : {},
-      select: { personName: true, embedding: true, source: true },
-    }).catch(() => [] as Array<{ personName: string; embedding: string; source: string }>);
-    const profiles = profileRows
-      .map((p) => {
-        try { return { personName: p.personName, embedding: JSON.parse(p.embedding) as number[], source: p.source }; }
-        catch { return null; }
-      })
-      .filter((p): p is { personName: string; embedding: number[]; source: string } => !!p);
+    // Match only within this recording's embedding-model space — chunk
+    // voiceData tagged with the model that produced it, untagged = legacy.
+    const dataVersion = voiceChunks.find(c => c.voiceData)?.voiceData?.modelVersion ?? LEGACY_MODEL_VERSION;
+    const profiles = await loadProfilesForVersion(owner?.userId ?? null, dataVersion);
 
     const resolved = resolveGlobalSpeakers(voiceChunks, profiles);
     if (!resolved || resolved.segments.length === 0) return { resolved: false, segments: null };
@@ -196,6 +201,9 @@ export async function resolveAndPersistVoiceSpeakers(
         durationS: se.durationS,
       })),
     }).catch(() => {});
+    try {
+      await prisma.$executeRaw`UPDATE "SpeakerEmbedding" SET "modelVersion" = ${dataVersion} WHERE "recordingId" = ${recordingId}`;
+    } catch { /* column missing in this env */ }
 
     // Continuous learning: a confidently matched voice contributes this
     // meeting's voiceprint as a fresh sample, so a person's profile keeps
@@ -238,17 +246,15 @@ export async function resolveAndPersistVoiceSpeakers(
             .map(s => s.text)
             .join(' ')
             .slice(0, 300);
-          await prisma.voiceProfile.create({
-            data: {
-              userId: owner?.userId ?? null,
-              personName: m.name,
-              embedding: JSON.stringify(se.embedding),
-              durationS: se.durationS,
-              source: 'match',
-              recordingId,
-              excerpt,
-            },
-          });
+          await createVoiceProfileTagged({
+            userId: owner?.userId ?? null,
+            personName: m.name,
+            embedding: JSON.stringify(se.embedding),
+            durationS: se.durationS,
+            source: 'match',
+            recordingId,
+            excerpt,
+          }, dataVersion);
           console.log(`[finalize] learned new voice sample for ${m.name} (sim ${m.sim.toFixed(2)}, ${se.durationS.toFixed(1)}s)`);
         }
       }

@@ -37,6 +37,9 @@ type VoiceSample = {
   recordingTitle: string | null;
   excerpt: string;
   consistency: number | null;
+  confidencePct: number | null;
+  legacyModel: boolean;
+  usedForMatching: boolean;
   clipUrl: string | null;
   clipStart: number | null;
   clipEnd: number | null;
@@ -531,12 +534,27 @@ export default function VoiceSetupPage() {
                                 <span>{s.deviceLabel}</span>
                               </>
                             )}
-                            {s.consistency !== null && (
+                            {s.confidencePct !== null && (
                               <>
                                 <span className="text-ftc-mid">·</span>
-                                <span className={s.consistency < 0.5 ? 'text-red-500 font-semibold' : ''}>
-                                  {Math.round(s.consistency * 100)}% voice match
-                                  {s.consistency < 0.5 && ' — may be someone else'}
+                                <span className={
+                                  s.confidencePct >= 60 ? 'text-emerald-400 font-semibold'
+                                    : s.confidencePct >= 50 ? 'text-amber-400 font-semibold'
+                                    : 'text-red-500 font-semibold'
+                                }>
+                                  {s.confidencePct}% voice confidence
+                                </span>
+                              </>
+                            )}
+                            {!s.usedForMatching && (
+                              <>
+                                <span className="text-ftc-mid">·</span>
+                                <span className={`px-1.5 py-0.5 rounded text-[11px] font-semibold ${
+                                  s.legacyModel ? 'bg-amber-500/15 text-amber-400' : 'bg-red-500/15 text-red-400'
+                                }`}>
+                                  {s.legacyModel
+                                    ? 'Old voice model — re-record to keep recognition'
+                                    : 'Excluded from training — likely someone else'}
                                 </span>
                               </>
                             )}

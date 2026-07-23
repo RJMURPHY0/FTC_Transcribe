@@ -58,6 +58,17 @@ async function main() {
       console.log(`  ${nameOf(se[i].label)} × ${nameOf(se[j].label)}: ${cosineSim(se[i].embedding, se[j].embedding).toFixed(3)}`);
     }
   }
+
+  // Labelled sequence over a window — lets the transcript's conversational
+  // structure (who alternates with whom) be checked against cluster labels.
+  const winArg = args.find((a) => a.startsWith('--window='));
+  if (winArg) {
+    const [from, to] = winArg.slice(9).split('-').map(Number);
+    console.log(`\nsegments ${from}-${to}s:`);
+    for (const s of resolved.segments.filter((x) => x.end >= from && x.start <= to)) {
+      console.log(`  ${String(Math.round(s.start)).padStart(5)}s ${nameOf(s.speaker).padEnd(20)} ${s.text.slice(0, 90)}`);
+    }
+  }
 }
 
 main();

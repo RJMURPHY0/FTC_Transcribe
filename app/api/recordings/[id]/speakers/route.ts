@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { getAuthUser, canAccessRecording } from '@/lib/auth';
-import { cosineSim } from '@/lib/voice-id';
+import { cosineSim, LEGACY_MODEL_VERSION } from '@/lib/voice-id';
+import { createVoiceProfileTagged } from '@/lib/voice-profile-store';
 import type { TranscriptSegment } from '@/lib/ai';
 
 export const dynamic = 'force-dynamic';
@@ -104,17 +105,23 @@ export async function PATCH(
           .map(seg => seg.text)
           .join(' ')
           .slice(0, 300);
-        await prisma.voiceProfile.create({
-          data: {
-            userId: user?.id ?? null,
-            personName: to,
-            embedding: row.embedding,
-            durationS: row.durationS,
-            source: 'relabel',
-            recordingId: params.id,
-            excerpt,
-          },
-        });
+        // Tag with the SOURCE embedding's model space — a relabel on an old
+        // CAM++ recording produces a CAM++ sample, not a current-model one.
+        let rowVersion = LEGACY_MODEL_VERSION;
+        try {
+          const v = await prisma.$queryRaw<Array<{ modelVersion: string }>>`
+            SELECT "modelVersion" FROM "SpeakerEmbedding" WHERE "id" = ${row.id}`;
+          if (v[0]?.modelVersion) rowVersion = v[0].modelVersion;
+        } catch { /* column missing */ }
+        await createVoiceProfileTagged({
+          userId: user?.id ?? null,
+          personName: to,
+          embedding: row.embedding,
+          durationS: row.durationS,
+          source: 'relabel',
+          recordingId: params.id,
+          excerpt,
+        }, rowVersion);
       }
       await prisma.speakerEmbedding.update({
         where: { id: row.id },

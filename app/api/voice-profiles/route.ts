@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { getAuthUser } from '@/lib/auth';
 import { ensureSchema } from '@/lib/ensure-schema';
-import { embedAudioSample } from '@/lib/voice-id';
+import { embedAudioSample, EMB_MODEL_VERSION } from '@/lib/voice-id';
+import { createVoiceProfileTagged } from '@/lib/voice-profile-store';
 
 export const dynamic = 'force-dynamic';
 // Cold start may download the voiceprint models (~35 MB) before embedding
@@ -78,20 +79,18 @@ export async function POST(request: NextRequest) {
       errors.push('Sample skipped: could not extract a voiceprint (need ≥2s of clear speech).');
       continue;
     }
-    await prisma.voiceProfile.create({
-      data: {
-        userId: user.id,
-        personName: name,
-        embedding: JSON.stringify(result.embedding),
-        durationS: result.durationS,
-        source: 'enrollment',
-        deviceLabel,
-        // Keep the clip itself so the sample inspector can play it back —
-        // enrollment clips are tiny (seconds of opus audio).
-        audioData: buffer,
-        audioMime: baseMime,
-      },
-    });
+    await createVoiceProfileTagged({
+      userId: user.id,
+      personName: name,
+      embedding: JSON.stringify(result.embedding),
+      durationS: result.durationS,
+      source: 'enrollment',
+      deviceLabel,
+      // Keep the clip itself so the sample inspector can play it back —
+      // enrollment clips are tiny (seconds of opus audio).
+      audioData: buffer,
+      audioMime: baseMime,
+    }, EMB_MODEL_VERSION);
     saved += 1;
   }
 

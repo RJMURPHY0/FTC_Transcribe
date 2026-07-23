@@ -19,7 +19,16 @@ import path from 'path';
 
 export interface VoiceTurn { start: number; end: number; speaker: number; embedding?: number[] }
 export interface VoiceSpeaker { speaker: number; embedding: number[]; durationS: number }
-export interface ChunkVoiceData { turns: VoiceTurn[]; speakers: VoiceSpeaker[] }
+export interface ChunkVoiceData { turns: VoiceTurn[]; speakers: VoiceSpeaker[]; modelVersion?: string }
+
+// Embedding-model space tag. Voiceprints from different models are NOT
+// comparable — a CAM++ profile matched against TitaNet turn embeddings is
+// noise that can still cross a cosine threshold by chance. Every stored
+// embedding (profiles, speaker embeddings, chunk voiceData) carries this tag,
+// and matching only ever happens within one space. Data without a tag
+// predates versioning and is 'campplus'.
+export const EMB_MODEL_VERSION = 'titanet-large-v1';
+export const LEGACY_MODEL_VERSION = 'campplus';
 
 export const isVoiceIdEnabled = process.env.VOICE_ID_ENABLED !== 'false';
 
@@ -33,10 +42,10 @@ export const MATCH_THRESHOLD = parseFloat(process.env.VOICE_MATCH_THRESHOLD ?? '
 // but a wrong merge contaminates voiceprints and is unrecoverable.
 const DIARIZE_THRESHOLD = parseFloat(process.env.VOICE_DIARIZE_THRESHOLD ?? '0.5');
 // Global turn-level clustering: merge clusters while best linkage sim ≥ this.
-// Validated on the TTS harness: 0.55 keeps same-voice turns together while
-// separating distinct voices; similar-voice pairs are separated by enrollment
-// supervision, not this threshold.
-const TURN_CLUSTER_THRESHOLD = parseFloat(process.env.VOICE_TURN_CLUSTER_THRESHOLD ?? '0.55');
+// Calibrated for TitaNet-Large on real far-field audio (same-voice turn sims
+// p50≈0.55, different-voice p50≈0.31): 0.65 over-splits safely and the
+// centroid merge below reunites fragments.
+const TURN_CLUSTER_THRESHOLD = parseFloat(process.env.VOICE_TURN_CLUSTER_THRESHOLD ?? '0.65');
 // Re-segmentation: move a turn to another cluster when its centroid beats the
 // assigned one by at least this margin
 const REASSIGN_MARGIN = parseFloat(process.env.VOICE_REASSIGN_MARGIN ?? '0.05');
@@ -66,9 +75,10 @@ const MAX_SPEAKERS = parseInt(process.env.VOICE_MAX_SPEAKERS ?? '12', 10);
 // Final centroid-linkage merge: average linkage over noisy per-turn sims
 // under-merges (outliers drag the pairwise average below threshold), so one
 // voice can survive as several clusters whose CENTROIDS still agree strongly.
-// Real data: same-voice centroid pairs 0.77-0.87, different-voice 0.44-0.58 —
-// 0.7 sits in the gap and stays above the harness's similar-voices pair (0.62).
-const CENTROID_MERGE_THRESHOLD = parseFloat(process.env.VOICE_CENTROID_MERGE_THRESHOLD ?? '0.7');
+// TitaNet real data: same-voice fragment centroids ≥0.8, hardest
+// different-voice pair (two similar UK male voices, same room) 0.775 — 0.8
+// keeps them apart while still reuniting genuine fragments.
+const CENTROID_MERGE_THRESHOLD = parseFloat(process.env.VOICE_CENTROID_MERGE_THRESHOLD ?? '0.8');
 const ISLAND_KEEP_MARGIN = parseFloat(process.env.VOICE_ISLAND_KEEP_MARGIN ?? '0.1');
 // Turns shorter than this don't get their own embedding (too noisy to trust)
 const MIN_TURN_EMBED_S = parseFloat(process.env.VOICE_MIN_TURN_EMBED_S ?? '1.0');
@@ -84,9 +94,14 @@ const MODELS = {
     file: 'pyannote-seg-3.onnx',
     url: 'https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/resolve/main/model.onnx',
   },
+  // NeMo TitaNet-Large: on a real 3-person far-field meeting it separated two
+  // voices that CAM++ measured as one speaker (cross-centroid 0.87 under
+  // CAM++, cleanly apart under TitaNet). Bake-off vs ERes2NetV2 and WeSpeaker
+  // ResNet34 on the same audio: TitaNet had the widest same/different-voice
+  // margin; the other two collapsed entirely on far-field UK English.
   embedding: {
-    file: 'campplus_zh_en.onnx',
-    url: 'https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx',
+    file: 'nemo_en_titanet_large.onnx',
+    url: 'https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/nemo_en_titanet_large.onnx',
   },
 };
 
@@ -376,7 +391,7 @@ export async function analyzeChunkVoices(audio: Buffer, mimeType: string): Promi
     }
 
     if (!speakers.length) return null;
-    return { turns, speakers };
+    return { turns, speakers, modelVersion: EMB_MODEL_VERSION };
   } catch (err) {
     console.warn('[voice-id] chunk analysis failed:', err instanceof Error ? err.message : err);
     return null;
