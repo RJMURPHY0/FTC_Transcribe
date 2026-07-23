@@ -205,7 +205,7 @@ export default async function RecordingPage({ params }: { params: { id: string }
           }
           notes={
             /* ── MIDDLE: AI Notes ── */
-            <div>
+            <div className="notes-panel-col">
               {recording.summary ? (
                 <EditableAINotes
                   recordingId={recording.id}

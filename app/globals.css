@@ -98,6 +98,26 @@
   }
 }
 
+/* ── Auth inputs ──
+   Chrome paints its own background + text colour on autofilled fields, which
+   overrode bg-white and turned the sign-in bars blue-grey. There's no way to
+   set that background directly, so a large inset box-shadow fakes it. */
+.auth-input {
+  background-color: #fff;
+  color: #111827;
+  caret-color: #111827;
+}
+.auth-input:-webkit-autofill,
+.auth-input:-webkit-autofill:hover,
+.auth-input:-webkit-autofill:focus,
+.auth-input:-webkit-autofill:active {
+  -webkit-box-shadow: 0 0 0 1000px #fff inset !important;
+  box-shadow: 0 0 0 1000px #fff inset !important;
+  -webkit-text-fill-color: #111827 !important;
+  caret-color: #111827;
+  transition: background-color 9999s ease-in-out 0s;
+}
+
 /* ── FTC brand gradients ── */
 .btn-brand {
   background: linear-gradient(135deg, #f39200, #d97f00);
@@ -205,9 +225,9 @@
   background: rgb(var(--c-brand));
   width: 56px;
 }
-/* Left & right edge grab-strips: drag the chat panel skinnier / wider from
-   either side. Right edge pins the left, left edge pins the right. */
-.chat-width-handle,
+/* Left-edge grab-strip: drag the chat panel skinnier / wider, pinning the
+   right edge. There is deliberately no right-edge handle — that edge is where
+   the panel's own scrollbar lives and the two fought over every drag. */
 .chat-width-handle-left {
   position: absolute;
   top: 0;
@@ -220,9 +240,6 @@
   touch-action: none;
   z-index: 5;
 }
-/* Sit fully inside the card edge — hanging outside overlapped the panel
-   scrollbar, so grabbing the scrollbar dragged the width instead. */
-.chat-width-handle { right: 0; }
 .chat-width-handle-left { left: 0; }
 .chat-width-grip {
   width: 4px;
@@ -231,8 +248,6 @@
   background: rgb(var(--c-surface-border));
   transition: background 0.15s, height 0.15s;
 }
-.chat-width-handle:hover .chat-width-grip,
-.chat-width-handle:active .chat-width-grip,
 .chat-width-handle-left:hover .chat-width-grip,
 .chat-width-handle-left:active .chat-width-grip {
   background: rgb(var(--c-brand));
@@ -260,7 +275,7 @@
 .chat-corner-grip { width: 11px; height: 11px; }
 /* Width + corner resize only make sense in the desktop multi-column layout */
 @media (max-width: 1023px) {
-  .chat-width-handle, .chat-width-handle-left, .chat-corner-handle { display: none; }
+  .chat-width-handle-left, .chat-corner-handle { display: none; }
 }
 .bounce-delay-0   { animation-delay: 0ms; }
 .bounce-delay-120 { animation-delay: 120ms; }
@@ -292,7 +307,10 @@
     min-width: 0; /* let columns shrink below content width when dragged */
   }
   .detail-grid > .chat-panel-col { padding-right: 0.5rem; }
-  .detail-grid > div:nth-child(3) { padding: 0 0.5rem; } /* notes gutter */
+  /* margin (not padding) on the right: padding sits inside the scroll box, so
+     only a margin puts real space between this panel's scrollbar and the
+     resize rail next to it */
+  .detail-grid > .notes-panel-col { padding: 0 0.5rem; margin-right: 0.5rem; }
   .detail-grid > .transcript-col { padding-left: 0.5rem; }
   .detail-resize-handle {
     display: block;
@@ -352,13 +370,23 @@
     max-height: calc(100vh - 6rem);
     overflow-y: auto;
   }
+  /* No scrollbar on this column: the chat card scrolls its own message list,
+     so a second outer scrollbar was redundant and sat right on the resize
+     rail. The card is capped to the viewport instead, so nothing is clipped. */
   .chat-panel-col {
     position: sticky;
     top: 5rem;
+  }
+  .chat-panel-card { max-height: calc(100vh - 8rem); }
+
+  /* AI Notes scrolls independently like the other two columns. Extra right
+     padding keeps its scrollbar off the resize rail in the gutter. */
+  .notes-panel-col {
+    position: sticky;
+    top: 5rem;
+    align-self: start;
     max-height: calc(100vh - 6rem);
     overflow-y: auto;
-    /* keeps this panel's scrollbar clear of the resize rail beside it */
-    margin-right: 0.25rem;
   }
   /* Right-edge width handle sits fully outside the panel in the page margin,
      so it can never overlap the transcript scrollbar */

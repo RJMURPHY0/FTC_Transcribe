@@ -62,7 +62,7 @@ export default function LoginPage() {
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="w-full rounded-xl border border-gray-200 dark:border-transparent bg-white px-4 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-brand/60 transition-colors"
+                className="auth-input w-full rounded-xl border border-gray-200 dark:border-transparent px-4 py-2.5 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-brand/60 transition-colors"
                 placeholder="you@example.com"
               />
             </div>
@@ -79,7 +79,7 @@ export default function LoginPage() {
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="w-full rounded-xl border border-gray-200 dark:border-transparent bg-white px-4 py-2.5 pr-11 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-brand/60 transition-colors"
+                  className="auth-input w-full rounded-xl border border-gray-200 dark:border-transparent px-4 py-2.5 pr-11 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-brand/60 transition-colors"
                   placeholder="••••••••"
                 />
                 <button

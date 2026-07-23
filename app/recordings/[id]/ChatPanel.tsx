@@ -108,9 +108,10 @@ export default function ChatPanel({ recordingId, userId }: { recordingId: string
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  // axis: 'x' = right edge, 'xl' = left edge, 'y' = bottom edge, 'both' = left + bottom (corner)
+  // axis: 'xl' = left edge, 'y' = bottom edge, 'both' = left + bottom (corner).
+  // No right-edge handle — that edge belongs to the panel's scrollbar.
   const drag = useRef<
-    { startX: number; startY: number; startW: number; startH: number; startO: number; axis: 'x' | 'xl' | 'y' | 'both' } | null
+    { startX: number; startY: number; startW: number; startH: number; startO: number; axis: 'xl' | 'y' | 'both' } | null
   >(null);
 
   const heightKey = `ftc.chatPanelHeight.${userId ?? 'anon'}`;
@@ -147,12 +148,6 @@ export default function ChatPanel({ recordingId, userId }: { recordingId: string
     if (d.axis === 'y' || d.axis === 'both') {
       setHeight(Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, d.startH + (e.clientY - d.startY))));
     }
-    // Width — right edge: left edge (offset) stays put, right edge follows cursor
-    if (d.axis === 'x') {
-      const colW = panelRef.current?.parentElement?.clientWidth ?? MAX_WIDTH;
-      const cap = Math.min(MAX_WIDTH, colW - d.startO);
-      setWidth(Math.max(MIN_WIDTH, Math.min(cap, d.startW + (e.clientX - d.startX))));
-    }
     // Width — left edge (or corner): right edge stays put, left edge follows cursor
     if (d.axis === 'xl' || d.axis === 'both') {
       const rightEdge = d.startO + d.startW;
@@ -180,7 +175,7 @@ export default function ChatPanel({ recordingId, userId }: { recordingId: string
     if (changedOffset) setOffset((o) => { try { localStorage.setItem(offsetKey, String(Math.round(o))); } catch { /* quota */ } return o; });
   }, [onResizeMove, heightKey, widthKey, offsetKey]);
 
-  const startResize = (axis: 'x' | 'xl' | 'y' | 'both') => (e: React.PointerEvent<HTMLDivElement>) => {
+  const startResize = (axis: 'xl' | 'y' | 'both') => (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
     drag.current = {
@@ -193,7 +188,7 @@ export default function ChatPanel({ recordingId, userId }: { recordingId: string
     };
     document.body.style.userSelect = 'none';
     document.body.style.cursor =
-      axis === 'x' || axis === 'xl' ? 'ew-resize' : axis === 'y' ? 'ns-resize' : 'nesw-resize';
+      axis === 'xl' ? 'ew-resize' : axis === 'y' ? 'ns-resize' : 'nesw-resize';
     window.addEventListener('pointermove', onResizeMove);
     window.addEventListener('pointerup', onResizeUp);
   };
@@ -430,7 +425,7 @@ export default function ChatPanel({ recordingId, userId }: { recordingId: string
   return (
     <div
       ref={panelRef}
-      className="relative rounded-2xl border border-surface-border bg-surface-card flex flex-col"
+      className="chat-panel-card relative rounded-2xl border border-surface-border bg-surface-card flex flex-col"
       style={{
         height,
         width: width ?? undefined,
@@ -447,17 +442,6 @@ export default function ChatPanel({ recordingId, userId }: { recordingId: string
         role="separator"
         aria-orientation="vertical"
         className="chat-width-handle-left"
-      >
-        <span className="chat-width-grip" />
-      </div>
-      {/* Right edge: width (make it skinnier / wider) */}
-      <div
-        onPointerDown={startResize('x')}
-        onDoubleClick={resetSize}
-        title="Drag to resize width · double-click to reset"
-        role="separator"
-        aria-orientation="vertical"
-        className="chat-width-handle"
       >
         <span className="chat-width-grip" />
       </div>
