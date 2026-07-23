@@ -63,6 +63,12 @@ const MIN_SPEAKER_FRACTION = parseFloat(process.env.VOICE_MIN_SPEAKER_FRACTION ?
 const ABSORB_FLOOR = parseFloat(process.env.VOICE_ABSORB_FLOOR ?? '0.2');
 // Hard safety cap on distinct speakers a single meeting can produce.
 const MAX_SPEAKERS = parseInt(process.env.VOICE_MAX_SPEAKERS ?? '12', 10);
+// Final centroid-linkage merge: average linkage over noisy per-turn sims
+// under-merges (outliers drag the pairwise average below threshold), so one
+// voice can survive as several clusters whose CENTROIDS still agree strongly.
+// Real data: same-voice centroid pairs 0.77-0.87, different-voice 0.44-0.58 —
+// 0.7 sits in the gap and stays above the harness's similar-voices pair (0.62).
+const CENTROID_MERGE_THRESHOLD = parseFloat(process.env.VOICE_CENTROID_MERGE_THRESHOLD ?? '0.7');
 const ISLAND_KEEP_MARGIN = parseFloat(process.env.VOICE_ISLAND_KEEP_MARGIN ?? '0.1');
 // Turns shorter than this don't get their own embedding (too noisy to trust)
 const MIN_TURN_EMBED_S = parseFloat(process.env.VOICE_MIN_TURN_EMBED_S ?? '1.0');
@@ -569,10 +575,15 @@ function clusterCentroids(turns: GlobalTurn[]): Map<number, number[]> {
 
 export function resolveGlobalSpeakers(
   chunks: ChunkForAlignment[],
-  profiles: ProfileRow[] = [],
+  rawProfiles: ProfileRow[] = [],
 ): ResolvedSpeakers | null {
   const withVoice = chunks.filter((c) => c.voiceData && c.voiceData.speakers.length > 0);
   if (!withVoice.length) return null;
+
+  // Poison control: drop learned samples that no longer resemble the person's
+  // human-verified voice before anything downstream can trust them.
+  const screened = rawProfiles.length ? screenProfiles(rawProfiles) : null;
+  const profiles = screened?.profiles ?? [];
 
   // Flatten every diarized turn into a global timeline
   const globalTurns: GlobalTurn[] = [];
@@ -714,11 +725,33 @@ export function resolveGlobalSpeakers(
       reassign(smallest[0], bestC);
     }
 
+    // Centroid merge: reunite one voice that average linkage left split.
+    // Two profile-supervised clusters are two verified identities — never
+    // merged here, whatever their similarity.
+    for (;;) {
+      centroids = clusterCentroids(globalTurns);
+      const ids = [...centroids.keys()];
+      let bestA = -1, bestB = -1, bestS = -1;
+      for (let i = 0; i < ids.length; i++) {
+        for (let j = i + 1; j < ids.length; j++) {
+          if (protectedClusters.has(ids[i]) && protectedClusters.has(ids[j])) continue;
+          const s = cosineSim(centroids.get(ids[i])!, centroids.get(ids[j])!);
+          if (s > bestS) { bestS = s; bestA = ids[i]; bestB = ids[j]; }
+        }
+      }
+      if (bestS < CENTROID_MERGE_THRESHOLD || bestA < 0) break;
+      const keep = protectedClusters.has(bestB) ? bestB
+        : protectedClusters.has(bestA) ? bestA
+        : (clusterDur.get(bestA) ?? 0) >= (clusterDur.get(bestB) ?? 0) ? bestA : bestB;
+      reassign(keep === bestA ? bestB : bestA, keep);
+    }
     centroids = clusterCentroids(globalTurns);
 
     // Identity merge: two surviving clusters whose centroids both confidently
     // match the SAME enrolled person are one voice split by recording
     // conditions — merge them so a person never appears as two speakers.
+    // Corroborated against the person's anchor centroid so a merely-similar
+    // stranger can't be pulled into an enrolled identity.
     if (profiles.length && centroids.size > 1) {
       const bestPerson = new Map<number, { name: string; sim: number }>();
       for (const [c, cent] of centroids) {
@@ -727,7 +760,9 @@ export function resolveGlobalSpeakers(
           const s = cosineSim(cent, p.embedding);
           if (s > sim) { sim = s; name = p.personName; }
         }
-        if (sim >= MATCH_THRESHOLD) bestPerson.set(c, { name, sim });
+        const anchor = name ? screened?.anchors.get(name) : undefined;
+        const anchorOk = !anchor || cosineSim(cent, anchor) >= ANCHOR_NAME_MIN;
+        if (sim >= MATCH_THRESHOLD && anchorOk) bestPerson.set(c, { name, sim });
       }
       const byName = new Map<string, number[]>();
       for (const [c, { name }] of bestPerson) {
@@ -1032,7 +1067,69 @@ export async function probeVoiceId(): Promise<{ ok: boolean; dim?: number; error
 
 // ── Profile matching ──────────────────────────────────────────────────────────
 
-export interface ProfileRow { personName: string; embedding: number[] }
+export interface ProfileRow { personName: string; embedding: number[]; source?: string }
+
+// Sources a human explicitly verified: reading enrolment phrases, or renaming
+// a speaker by hand. Auto-learned ('match'/'auto') samples are useful for
+// matching but must never be trusted on their own — one misattributed meeting
+// once poisoned a profile with 19 minutes of someone else's voice, after which
+// every later meeting matched the impostor at 0.99.
+const ANCHOR_SOURCES = new Set(['enrollment', 'relabel']);
+// A learned sample is kept for matching only if it still resembles the
+// person's anchor centroid at least this much.
+const SAMPLE_CONSISTENCY_MIN = parseFloat(process.env.VOICE_SAMPLE_CONSISTENCY_MIN ?? '0.6');
+// Naming a cluster after a person additionally requires the cluster to
+// resemble the person's ANCHOR centroid — a bar the real contamination case
+// fails (impostor ≈0.48 vs anchors) and genuine matches clear (0.65–0.83).
+export const ANCHOR_NAME_MIN = parseFloat(process.env.VOICE_ANCHOR_NAME_MIN ?? '0.55');
+
+export interface ScreenedProfiles {
+  profiles: ProfileRow[];               // anchor + consistent learned samples
+  anchors: Map<string, number[]>;       // person → anchor centroid (or all-sample centroid when no anchors exist)
+  hasAnchors: Set<string>;              // persons with at least one human-verified sample
+}
+
+// Screen learned samples against each person's human-verified anchors and
+// precompute the per-person anchor centroid used to corroborate naming.
+// Rows without a source (older callers, test harness) count as anchors.
+export function screenProfiles(rows: ProfileRow[]): ScreenedProfiles {
+  const byPerson = new Map<string, ProfileRow[]>();
+  for (const r of rows) {
+    if (!byPerson.has(r.personName)) byPerson.set(r.personName, []);
+    byPerson.get(r.personName)!.push(r);
+  }
+  const centroidOf = (vecs: number[][]): number[] => {
+    const out = new Array(vecs[0].length).fill(0);
+    for (const v of vecs) {
+      const n = normalizeVec(v);
+      for (let i = 0; i < n.length; i++) out[i] += n[i];
+    }
+    return out.map((x) => x / vecs.length);
+  };
+  const profiles: ProfileRow[] = [];
+  const anchors = new Map<string, number[]>();
+  const hasAnchors = new Set<string>();
+  for (const [name, samples] of byPerson) {
+    const anchor = samples.filter((s) => s.source === undefined || ANCHOR_SOURCES.has(s.source));
+    if (anchor.length) {
+      const cent = centroidOf(anchor.map((s) => s.embedding));
+      anchors.set(name, cent);
+      hasAnchors.add(name);
+      profiles.push(...anchor);
+      for (const s of samples) {
+        if (anchor.includes(s)) continue;
+        if (cosineSim(normalizeVec(s.embedding), cent) >= SAMPLE_CONSISTENCY_MIN) profiles.push(s);
+        else console.warn(`[voice-id] screened out inconsistent learned sample for ${name}`);
+      }
+    } else {
+      // Pure auto-learned person (self-intro path): nothing verified to screen
+      // against, so keep everything and anchor on the joint centroid.
+      anchors.set(name, centroidOf(samples.map((s) => s.embedding)));
+      profiles.push(...samples);
+    }
+  }
+  return { profiles, anchors, hasAnchors };
+}
 
 // Returns map of "Speaker N" → enrolled person name for matches above threshold.
 export function matchProfiles(
@@ -1047,13 +1144,18 @@ export function matchProfiles(
 }
 
 // Like matchProfiles but keeps the winning similarity — callers use it to decide
-// whether a match is confident enough to learn from.
+// whether a match is confident enough to learn from. Naming requires BOTH a
+// best-sample match ≥ MATCH_THRESHOLD and corroboration against the person's
+// anchor (human-verified) centroid — the second bar is what stops a similar
+// stranger being named as an enrolled person and then poisoning their profile
+// through the learning loop.
 export function matchProfilesDetailed(
   speakerEmbeddings: ResolvedSpeakers['speakerEmbeddings'],
-  profiles: ProfileRow[],
+  rawProfiles: ProfileRow[],
 ): Record<string, { name: string; sim: number }> {
   const result: Record<string, { name: string; sim: number }> = {};
-  if (!profiles.length) return result;
+  if (!rawProfiles.length) return result;
+  const { profiles, anchors } = screenProfiles(rawProfiles);
   for (const sp of speakerEmbeddings) {
     let bestName: string | null = null;
     let bestSim = MATCH_THRESHOLD;
@@ -1061,7 +1163,13 @@ export function matchProfilesDetailed(
       const sim = cosineSim(sp.embedding, p.embedding);
       if (sim >= bestSim) { bestSim = sim; bestName = p.personName; }
     }
-    if (bestName) result[sp.label] = { name: bestName, sim: bestSim };
+    if (!bestName) continue;
+    const anchor = anchors.get(bestName);
+    if (anchor && cosineSim(sp.embedding, anchor) < ANCHOR_NAME_MIN) {
+      console.warn(`[voice-id] refused to name ${sp.label} as ${bestName}: sample sim ${bestSim.toFixed(2)} but anchor sim below ${ANCHOR_NAME_MIN}`);
+      continue;
+    }
+    result[sp.label] = { name: bestName, sim: bestSim };
   }
   return result;
 }

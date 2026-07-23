@@ -1,0 +1,63 @@
+// Temporal + acoustic structure of a replayed meeting: per-speaker activity
+// timeline (deciles), speaker-adjacency handoffs, and centroid cross-sims.
+// Distinguishes "one person split into two clusters" (rarely adjacent,
+// moderate cross-sim, alternate with the same partner) from "two people"
+// and "played-back audio" (contiguous block, distinct sims).
+//
+// Usage: npx tsx scripts/analyze-clusters.ts <snapshot.json> [--env K=V]...
+import { readFileSync } from 'fs';
+
+async function main() {
+  const args = process.argv.slice(2);
+  const file = args.find((a) => !a.startsWith('--'))!;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--env' && args[i + 1]) { const [k, v] = args[++i].split('='); process.env[k] = v; }
+  }
+  const snap = JSON.parse(readFileSync(file, 'utf8'));
+  const { resolveGlobalSpeakers, matchProfilesDetailed, cosineSim } = await import('../lib/voice-id');
+
+  const chunks = snap.chunks.map((c: any) => ({ offset: c.offset, segments: c.segments, voiceData: c.voiceData }));
+  const profiles = snap.profiles.map((p: any) => ({ personName: p.personName, embedding: p.embedding, source: p.source }));
+  const resolved = resolveGlobalSpeakers(chunks, profiles)!;
+  const matches = matchProfilesDetailed(resolved.speakerEmbeddings, profiles);
+  const nameOf = (l: string) => matches[l] ? `${matches[l].name}~${l}` : l;
+
+  const total = Math.max(...resolved.segments.map((s) => s.end));
+  const speakers = new Map<string, { dur: number; deciles: number[]; first: number; last: number }>();
+  for (const s of resolved.segments) {
+    const k = nameOf(s.speaker);
+    if (!speakers.has(k)) speakers.set(k, { dur: 0, deciles: new Array(10).fill(0), first: s.start, last: s.end });
+    const sp = speakers.get(k)!;
+    sp.dur += s.end - s.start;
+    sp.first = Math.min(sp.first, s.start);
+    sp.last = Math.max(sp.last, s.end);
+    const d = Math.min(9, Math.floor((s.start / total) * 10));
+    sp.deciles[d] += s.end - s.start;
+  }
+  console.log(`total ${Math.round(total)}s — activity per decile of the meeting (seconds):`);
+  for (const [k, sp] of [...speakers.entries()].sort((a, b) => b[1].dur - a[1].dur)) {
+    console.log(`  ${k.padEnd(22)} ${String(Math.round(sp.dur)).padStart(5)}s  [${sp.deciles.map((d) => String(Math.round(d)).padStart(4)).join(' ')}]  ${Math.round(sp.first)}s→${Math.round(sp.last)}s`);
+  }
+
+  // Adjacency: who follows whom (segment handoffs)
+  const adj = new Map<string, number>();
+  const ordered = [...resolved.segments].sort((a, b) => a.start - b.start);
+  for (let i = 1; i < ordered.length; i++) {
+    const a = nameOf(ordered[i - 1].speaker), b = nameOf(ordered[i].speaker);
+    if (a === b) continue;
+    const k = `${a} → ${b}`;
+    adj.set(k, (adj.get(k) ?? 0) + 1);
+  }
+  console.log('\nhandoffs (top 12):');
+  for (const [k, n] of [...adj.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12)) console.log(`  ${k}: ${n}`);
+
+  console.log('\ncluster centroid cross-sims:');
+  const se = resolved.speakerEmbeddings;
+  for (let i = 0; i < se.length; i++) {
+    for (let j = i + 1; j < se.length; j++) {
+      console.log(`  ${nameOf(se[i].label)} × ${nameOf(se[j].label)}: ${cosineSim(se[i].embedding, se[j].embedding).toFixed(3)}`);
+    }
+  }
+}
+
+main();

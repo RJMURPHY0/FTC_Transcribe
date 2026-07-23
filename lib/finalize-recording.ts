@@ -102,12 +102,17 @@ async function autoLearnVoiceProfiles(
       let emb: number[];
       try { emb = JSON.parse(row.embedding) as number[]; } catch { continue; }
 
-      // Similarity of this candidate voiceprint to the person's existing samples.
+      // Similarity of this candidate voiceprint to the person's existing
+      // samples — anchored on human-verified ones when any exist, so a chain
+      // of auto-learned samples can never corroborate itself onto the wrong
+      // person.
       const existing = await prisma.voiceProfile.findMany({
         where: { personName: name },
-        select: { embedding: true },
+        select: { embedding: true, source: true },
       });
-      const sims = existing
+      const verified = existing.filter(p => p.source === 'enrollment' || p.source === 'relabel');
+      const pool = verified.length ? verified : existing;
+      const sims = pool
         .map(p => { try { return cosineSim(emb, JSON.parse(p.embedding) as number[]); } catch { return NaN; } })
         .filter(n => !Number.isNaN(n));
       const maxSim = sims.length ? Math.max(...sims) : null;
@@ -160,14 +165,14 @@ export async function resolveAndPersistVoiceSpeakers(
     }).catch(() => null);
     const profileRows = await prisma.voiceProfile.findMany({
       where: owner?.userId ? { OR: [{ userId: owner.userId }, { userId: null }] } : {},
-      select: { personName: true, embedding: true },
-    }).catch(() => [] as Array<{ personName: string; embedding: string }>);
+      select: { personName: true, embedding: true, source: true },
+    }).catch(() => [] as Array<{ personName: string; embedding: string; source: string }>);
     const profiles = profileRows
       .map((p) => {
-        try { return { personName: p.personName, embedding: JSON.parse(p.embedding) as number[] }; }
+        try { return { personName: p.personName, embedding: JSON.parse(p.embedding) as number[], source: p.source }; }
         catch { return null; }
       })
-      .filter((p): p is { personName: string; embedding: number[] } => !!p);
+      .filter((p): p is { personName: string; embedding: number[]; source: string } => !!p);
 
     const resolved = resolveGlobalSpeakers(voiceChunks, profiles);
     if (!resolved || resolved.segments.length === 0) return { resolved: false, segments: null };
@@ -202,10 +207,22 @@ export async function resolveAndPersistVoiceSpeakers(
       // speaker with a substantial amount of speech in this meeting, so a
       // marginal cluster can never seed profile drift.
       const LEARN_MIN_S = parseFloat(process.env.VOICE_LEARN_MIN_S ?? '20');
+      // Learning must be corroborated by the person's human-verified anchor
+      // voiceprint, never by previously auto-learned samples — a chain of
+      // learned samples once drifted a profile onto a different person.
+      const LEARN_ANCHOR_MIN = parseFloat(process.env.VOICE_LEARN_ANCHOR_MIN ?? '0.6');
+      const { screenProfiles, cosineSim: cosSim } = await import('@/lib/voice-id');
+      const { anchors, hasAnchors } = screenProfiles(profiles);
       const MAX_SAMPLES_PER_PERSON = 12;
       const candidates = resolved.speakerEmbeddings.filter(se => {
         const m = detailedMatches[se.label];
-        return m && m.sim >= LEARN_SIM && se.durationS >= LEARN_MIN_S;
+        if (!m || m.sim < LEARN_SIM || se.durationS < LEARN_MIN_S) return false;
+        const anchor = anchors.get(m.name);
+        if (anchor && hasAnchors.has(m.name) && cosSim(se.embedding, anchor) < LEARN_ANCHOR_MIN) {
+          console.warn(`[finalize] refused to learn sample for ${m.name}: anchor sim below ${LEARN_ANCHOR_MIN}`);
+          return false;
+        }
+        return true;
       });
       if (candidates.length) {
         // `owner` already fetched above for profile scoping — reuse it here.

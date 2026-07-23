@@ -71,7 +71,7 @@ async function main() {
     console.log(`per-chunk local speaker counts: ${counts.join(',')}`);
   }
 
-  const profiles = useProfiles ? snap.profiles.map((p) => ({ personName: p.personName, embedding: p.embedding })) : [];
+  const profiles = useProfiles ? snap.profiles.map((p) => ({ personName: p.personName, embedding: p.embedding, source: p.source })) : [];
   const t0 = Date.now();
   const resolved = resolveGlobalSpeakers(chunks, profiles);
   const ms = Date.now() - t0;
