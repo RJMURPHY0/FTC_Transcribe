@@ -39,6 +39,7 @@ type VoiceSample = {
   consistency: number | null;
   confidencePct: number | null;
   legacyModel: boolean;
+  referenceQuality: boolean;
   usedForMatching: boolean;
   clipUrl: string | null;
   clipStart: number | null;
@@ -543,6 +544,14 @@ export default function VoiceSetupPage() {
                                     : 'text-red-500 font-semibold'
                                 }>
                                   {s.confidencePct}% voice confidence
+                                </span>
+                              </>
+                            )}
+                            {s.referenceQuality && s.usedForMatching && (
+                              <>
+                                <span className="text-ftc-mid">·</span>
+                                <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 text-[11px] font-semibold">
+                                  Reference quality
                                 </span>
                               </>
                             )}

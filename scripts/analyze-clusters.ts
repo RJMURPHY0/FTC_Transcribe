@@ -51,6 +51,40 @@ async function main() {
   console.log('\nhandoffs (top 12):');
   for (const [k, n] of [...adj.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12)) console.log(`  ${k}: ${n}`);
 
+  // Mid-sentence flip proxy: A→B→A sandwiches where B is short. Real speaker
+  // interjections exist, so this is an upper bound — but a high count means
+  // sentences are being chopped between speakers.
+  {
+    const seq = [...resolved.segments].sort((a, b) => a.start - b.start);
+    let changes = 0, sandwiches = 0, shortSandwiches = 0;
+    for (let i = 1; i < seq.length; i++) {
+      if (seq[i].speaker !== seq[i - 1].speaker) changes++;
+      if (i < seq.length - 1
+        && seq[i - 1].speaker === seq[i + 1].speaker
+        && seq[i].speaker !== seq[i - 1].speaker) {
+        sandwiches++;
+        if (seq[i].end - seq[i].start < 2.5) shortSandwiches++;
+      }
+    }
+    // Text-aware chop: the previous segment ends mid-clause AND the new
+    // speaker's text starts lowercase — a sentence split across speakers.
+    let chops = 0;
+    const chopSamples: string[] = [];
+    for (let i = 1; i < seq.length; i++) {
+      if (seq[i].speaker === seq[i - 1].speaker) continue;
+      const prevEndsClean = /[.?!…]\s*$/.test(seq[i - 1].text.trim());
+      const startsLower = /^[a-z]/.test(seq[i].text.trim());
+      if (!prevEndsClean && startsLower && seq[i].end - seq[i].start < 4) {
+        chops++;
+        if (chopSamples.length < 6) {
+          chopSamples.push(`${Math.round(seq[i].start)}s [${seq[i - 1].speaker}→${seq[i].speaker}] …${seq[i - 1].text.slice(-45)} ‖ ${seq[i].text.slice(0, 45)}`);
+        }
+      }
+    }
+    console.log(`\nspeaker changes=${changes}  A-B-A sandwiches=${sandwiches}  short(<2.5s) sandwiches=${shortSandwiches}  likely mid-sentence chops=${chops}`);
+    for (const s of chopSamples) console.log('  ' + s);
+  }
+
   console.log('\ncluster centroid cross-sims:');
   const se = resolved.speakerEmbeddings;
   for (let i = 0; i < se.length; i++) {

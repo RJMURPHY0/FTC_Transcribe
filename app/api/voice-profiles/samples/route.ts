@@ -121,6 +121,9 @@ export async function GET(request: NextRequest) {
         // clear the consistency bar or they are excluded from matching.
         confidencePct: consistency[i] !== null ? Math.max(0, Math.min(100, Math.round(consistency[i]! * 100))) : null,
         legacyModel: !isCurrent(r.id),
+        // ≥85% vs the verified anchors: this clip strengthens the person's
+        // voice reference itself, not just matching.
+        referenceQuality: consistency[i] !== null && consistency[i]! >= parseFloat(process.env.VOICE_ANCHOR_PROMOTE_MIN ?? '0.85'),
         usedForMatching: isCurrent(r.id)
           && (isAnchor(r.source) || consistency[i] === null || consistency[i]! >= CONSISTENCY_MIN),
         // Playable clip: enrollment samples stream their stored clip; meeting

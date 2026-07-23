@@ -79,6 +79,15 @@ const MAX_SPEAKERS = parseInt(process.env.VOICE_MAX_SPEAKERS ?? '12', 10);
 // different-voice pair (two similar UK male voices, same room) 0.775 — 0.8
 // keeps them apart while still reuniting genuine fragments.
 const CENTROID_MERGE_THRESHOLD = parseFloat(process.env.VOICE_CENTROID_MERGE_THRESHOLD ?? '0.8');
+// Temporal smoothing (Viterbi over the turn sequence): switching speaker
+// costs this much similarity, so a change must be acoustically earned.
+// Suppresses mid-sentence flicker between similar voices; real turn-taking
+// carries far more evidence than the penalty.
+const SWITCH_PENALTY = parseFloat(process.env.VOICE_SWITCH_PENALTY ?? '0.06');
+// A learned sample this similar to the person's verified anchors is treated
+// as reference quality and joins the anchor pool, so recognition keeps
+// improving across devices and time without a human in the loop.
+const ANCHOR_PROMOTE_MIN = parseFloat(process.env.VOICE_ANCHOR_PROMOTE_MIN ?? '0.85');
 const ISLAND_KEEP_MARGIN = parseFloat(process.env.VOICE_ISLAND_KEEP_MARGIN ?? '0.1');
 // Turns shorter than this don't get their own embedding (too noisy to trust)
 const MIN_TURN_EMBED_S = parseFloat(process.env.VOICE_MIN_TURN_EMBED_S ?? '1.0');
@@ -507,6 +516,7 @@ interface GlobalTurn {
   localSpeaker: number;
   embedding: number[] | null;
   cluster: number;        // mutable: current global cluster id
+  supervised?: boolean;   // hard-assigned by an enrolled-profile match
 }
 
 function normalizeVec(v: number[]): number[] {
@@ -673,6 +683,7 @@ export function resolveGlobalSpeakers(
       const bar = ranked.length > 1 ? MATCH_THRESHOLD : MATCH_THRESHOLD + PROFILE_MARGIN;
       if (top.sim >= bar && margin >= PROFILE_MARGIN) {
         t.cluster = personCluster.get(top.name)!;
+        t.supervised = true;
         protectedClusters.add(t.cluster);
         assigned++;
       }
@@ -816,6 +827,49 @@ export function resolveGlobalSpeakers(
     }
   }
 
+  // 3.6. Temporal smoothing: Viterbi over the time-ordered embedded turns.
+  // Emission = similarity to each surviving centroid; switching speaker
+  // costs SWITCH_PENALTY. A genuine change out-earns the penalty; a
+  // mid-sentence flicker between two similar voices does not. Profile-
+  // supervised turns are fixed observations the path must pass through.
+  if (centroids.size > 1) {
+    const states = [...centroids.keys()];
+    const embTurns = globalTurns.filter((t) => t.embedding && t.cluster >= 0);
+    if (embTurns.length > 1) {
+      const n = embTurns.length, k = states.length;
+      const emit = new Float64Array(n * k);
+      for (let i = 0; i < n; i++) {
+        const norm = normalizeVec(embTurns[i].embedding!);
+        for (let s = 0; s < k; s++) {
+          emit[i * k + s] = embTurns[i].supervised
+            ? (states[s] === embTurns[i].cluster ? 1 : -1e9)
+            : cosineSim(norm, centroids.get(states[s])!);
+        }
+      }
+      const score = new Float64Array(n * k);
+      const back = new Int32Array(n * k);
+      for (let s = 0; s < k; s++) score[s] = emit[s];
+      for (let i = 1; i < n; i++) {
+        for (let s = 0; s < k; s++) {
+          let best = -Infinity, bestPrev = 0;
+          for (let p = 0; p < k; p++) {
+            const v = score[(i - 1) * k + p] - (p === s ? 0 : SWITCH_PENALTY);
+            if (v > best) { best = v; bestPrev = p; }
+          }
+          score[i * k + s] = best + emit[i * k + s];
+          back[i * k + s] = bestPrev;
+        }
+      }
+      let cur = 0;
+      for (let s = 1; s < k; s++) if (score[(n - 1) * k + s] > score[(n - 1) * k + cur]) cur = s;
+      for (let i = n - 1; i >= 0; i--) {
+        if (!embTurns[i].supervised) embTurns[i].cluster = states[cur];
+        cur = back[i * k + cur];
+      }
+      centroids = clusterCentroids(globalTurns);
+    }
+  }
+
   // 4a. Non-embedded turns inherit the dominant cluster of their chunk-local
   // speaker; failing that, temporal continuity fills them in.
   const localDominant = new Map<string, number>(); // `${chunkIdx}:${localSpeaker}` → cluster
@@ -879,7 +933,7 @@ export function resolveGlobalSpeakers(
   // the turn boundary) is SPLIT at the boundary, with its words apportioned by
   // time — one label per segment was a major source of wrong mid-sentence
   // attribution. Segments inside a single turn keep the fast path.
-  const MIN_SPLIT_SIDE_S = parseFloat(process.env.VOICE_MIN_SPLIT_SIDE_S ?? '0.5');
+  const MIN_SPLIT_SIDE_S = parseFloat(process.env.VOICE_MIN_SPLIT_SIDE_S ?? '0.7');
   const outSegments: ResolvedSpeakers['segments'] = [];
   let lastLabel = '';
   for (const chunk of chunks) {
@@ -1128,14 +1182,21 @@ export function screenProfiles(rows: ProfileRow[]): ScreenedProfiles {
     const anchor = samples.filter((s) => s.source === undefined || ANCHOR_SOURCES.has(s.source));
     if (anchor.length) {
       const cent = centroidOf(anchor.map((s) => s.embedding));
-      anchors.set(name, cent);
       hasAnchors.add(name);
       profiles.push(...anchor);
+      // Learned samples split three ways against the human-verified centroid:
+      // reference quality (≥ promote bar) join the anchor pool so the voice
+      // reference tracks the person across devices and time; consistent ones
+      // are matchable but don't shift the reference; the rest are screened out.
+      const promoted: ProfileRow[] = [];
       for (const s of samples) {
         if (anchor.includes(s)) continue;
-        if (cosineSim(normalizeVec(s.embedding), cent) >= SAMPLE_CONSISTENCY_MIN) profiles.push(s);
+        const sim = cosineSim(normalizeVec(s.embedding), cent);
+        if (sim >= ANCHOR_PROMOTE_MIN) { promoted.push(s); profiles.push(s); }
+        else if (sim >= SAMPLE_CONSISTENCY_MIN) profiles.push(s);
         else console.warn(`[voice-id] screened out inconsistent learned sample for ${name}`);
       }
+      anchors.set(name, promoted.length ? centroidOf([...anchor, ...promoted].map((s) => s.embedding)) : cent);
     } else {
       // Pure auto-learned person (self-intro path): nothing verified to screen
       // against, so keep everything and anchor on the joint centroid.
