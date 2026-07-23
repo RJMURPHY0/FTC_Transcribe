@@ -1,6 +1,7 @@
 'use client';
 
-import { useRef, useState, useMemo } from 'react';
+import { useEffect, useRef, useState, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import PlaybackBar, { type PlaybackBarHandle, type PlaybackMeta } from './PlaybackBar';
 
@@ -61,7 +62,23 @@ export default function TranscriptPlayer({ recordingId, rawSegments, speakerOrde
   const playerRef    = useRef<PlaybackBarHandle>(null);
   const [activeIdx,  setActiveIdx]  = useState<number>(-1);
   const [menuOpen,   setMenuOpen]   = useState<number | null>(null); // group index
+  // Menu renders in a body portal (the transcript panel's overflow clips
+  // anything absolutely positioned near its bottom edge), anchored to the
+  // trigger button's viewport rect.
+  const [menuAnchor, setMenuAnchor] = useState<{ top: number; right: number } | null>(null);
   const [reassigning, setReassigning] = useState(false);
+
+  // Any scroll or resize invalidates the anchored position — just close.
+  useEffect(() => {
+    if (menuOpen === null) return;
+    const close = () => { setMenuOpen(null); setMenuAnchor(null); };
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => {
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+    };
+  }, [menuOpen]);
 
   const groups = useMemo(() => mergeSegments(rawSegments), [rawSegments]);
 
@@ -125,11 +142,17 @@ export default function TranscriptPlayer({ recordingId, rawSegments, speakerOrde
                   {group.speaker}
                 </span>
                 <span className="text-[10px] text-ftc-mid tabular-nums">{fmt(group.start)}</span>
-                <div className="ml-auto relative">
+                <div className="ml-auto">
                   <button
                     type="button"
                     title="Reassign speaker"
-                    onClick={e => { e.stopPropagation(); setMenuOpen(isMenuOpen ? null : i); }}
+                    onClick={e => {
+                      e.stopPropagation();
+                      if (isMenuOpen) { setMenuOpen(null); setMenuAnchor(null); return; }
+                      const r = e.currentTarget.getBoundingClientRect();
+                      setMenuAnchor({ top: r.bottom + 4, right: window.innerWidth - r.right });
+                      setMenuOpen(i);
+                    }}
                     className="p-1 rounded-lg text-surface-muted hover:text-ftc-mid transition-colors"
                   >
                     <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
@@ -139,9 +162,13 @@ export default function TranscriptPlayer({ recordingId, rawSegments, speakerOrde
                     </svg>
                   </button>
 
-                  {/* Reassign dropdown */}
-                  {isMenuOpen && otherSpeakers.length > 0 && (
-                    <div className="absolute right-0 top-7 z-10 min-w-[120px] rounded-xl border border-surface-border bg-surface-card shadow-lg overflow-hidden">
+                  {/* Reassign dropdown — body portal so the transcript panel's
+                      scroll clipping can never cut it off */}
+                  {isMenuOpen && menuAnchor && otherSpeakers.length > 0 && createPortal(
+                    <div
+                      className="fixed z-[60] min-w-[120px] rounded-xl border border-surface-border bg-surface-card shadow-lg overflow-hidden"
+                      style={{ top: menuAnchor.top, right: menuAnchor.right }}
+                    >
                       <p className="text-[10px] text-surface-muted px-3 py-1.5 border-b border-surface-border">Reassign to</p>
                       {otherSpeakers.map(sp => (
                         <button
@@ -154,7 +181,8 @@ export default function TranscriptPlayer({ recordingId, rawSegments, speakerOrde
                           {sp}
                         </button>
                       ))}
-                    </div>
+                    </div>,
+                    document.body,
                   )}
                 </div>
               </div>

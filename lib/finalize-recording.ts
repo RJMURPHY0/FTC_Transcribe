@@ -198,10 +198,14 @@ export async function resolveAndPersistVoiceSpeakers(
     try {
       const LEARN_SIM = parseFloat(process.env.VOICE_LEARN_THRESHOLD ?? '0.6');
       const DUP_SIM = parseFloat(process.env.VOICE_LEARN_DUP_SIM ?? '0.95');
+      // A learned sample becomes permanent training data — only take it from a
+      // speaker with a substantial amount of speech in this meeting, so a
+      // marginal cluster can never seed profile drift.
+      const LEARN_MIN_S = parseFloat(process.env.VOICE_LEARN_MIN_S ?? '20');
       const MAX_SAMPLES_PER_PERSON = 12;
       const candidates = resolved.speakerEmbeddings.filter(se => {
         const m = detailedMatches[se.label];
-        return m && m.sim >= LEARN_SIM && se.durationS >= 3;
+        return m && m.sim >= LEARN_SIM && se.durationS >= LEARN_MIN_S;
       });
       if (candidates.length) {
         // `owner` already fetched above for profile scoping — reuse it here.

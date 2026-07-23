@@ -46,6 +46,23 @@ const PROFILE_MARGIN = parseFloat(process.env.VOICE_PROFILE_MARGIN ?? '0.07');
 // Smoothing: a speaker island shorter than this, sandwiched between one other
 // speaker, flips to its neighbours unless its own acoustic evidence is strong
 const MIN_ISLAND_S = parseFloat(process.env.VOICE_MIN_ISLAND_S ?? '1.2');
+// Junk-cluster absorption: real-world far-field audio (laptop mics, Teams
+// speakerphone, played-back media) produces turn embeddings whose same-voice
+// cosine can sit well below TURN_CLUSTER_THRESHOLD, so blind clustering leaves
+// a long tail of tiny fragment clusters — a real 2-person meeting once produced
+// 116 "speakers". A cluster only counts as a real participant if it accrues at
+// least this much embedded speech; smaller clusters are absorbed into their
+// acoustically nearest surviving cluster, or dissolved into temporal context
+// when nothing is even vaguely similar (noise, music, crosstalk).
+const MIN_SPEAKER_S = parseFloat(process.env.VOICE_MIN_SPEAKER_S ?? '30');
+// Fraction of total embedded speech used to scale MIN_SPEAKER_S down for short
+// meetings (a 5-minute standup shouldn't demand 30s per speaker).
+const MIN_SPEAKER_FRACTION = parseFloat(process.env.VOICE_MIN_SPEAKER_FRACTION ?? '0.015');
+// Absorb a junk cluster into its nearest survivor when centroid sim ≥ this;
+// below it the fragment is treated as non-speech and dissolved temporally.
+const ABSORB_FLOOR = parseFloat(process.env.VOICE_ABSORB_FLOOR ?? '0.2');
+// Hard safety cap on distinct speakers a single meeting can produce.
+const MAX_SPEAKERS = parseInt(process.env.VOICE_MAX_SPEAKERS ?? '12', 10);
 const ISLAND_KEEP_MARGIN = parseFloat(process.env.VOICE_ISLAND_KEEP_MARGIN ?? '0.1');
 // Turns shorter than this don't get their own embedding (too noisy to trust)
 const MIN_TURN_EMBED_S = parseFloat(process.env.VOICE_MIN_TURN_EMBED_S ?? '1.0');
@@ -603,6 +620,7 @@ export function resolveGlobalSpeakers(
   // enrolled, and it's what stops "labeled as the other person mid-sentence".
   // Turns that don't clear the bar keep their unsupervised cluster; if a whole
   // cluster belongs to one person anyway, centroid matching names it later.
+  const protectedClusters = new Set<number>();
   if (profiles.length) {
     const byPerson = new Map<string, number[][]>();
     for (const p of profiles) {
@@ -629,10 +647,123 @@ export function resolveGlobalSpeakers(
       const bar = ranked.length > 1 ? MATCH_THRESHOLD : MATCH_THRESHOLD + PROFILE_MARGIN;
       if (top.sim >= bar && margin >= PROFILE_MARGIN) {
         t.cluster = personCluster.get(top.name)!;
+        protectedClusters.add(t.cluster);
         assigned++;
       }
     }
     if (assigned) centroids = clusterCentroids(globalTurns);
+  }
+
+  // 3.5. Junk-cluster absorption. A participant is a cluster with a real amount
+  // of embedded speech; everything smaller is a fragment of an existing voice
+  // (absorbed into its acoustically nearest survivor) or non-speech noise
+  // (dissolved — its turns fall back to temporal continuity in step 4a).
+  // Profile-supervised clusters are never dissolved: an enrolled person who
+  // says one sentence is still that person.
+  {
+    const clusterDur = new Map<number, number>();
+    for (const t of globalTurns) {
+      if (!t.embedding || t.cluster < 0) continue;
+      clusterDur.set(t.cluster, (clusterDur.get(t.cluster) ?? 0) + (t.end - t.start));
+    }
+    const totalSpeech = [...clusterDur.values()].reduce((a, b) => a + b, 0);
+    const minSpeakerS = Math.min(MIN_SPEAKER_S, Math.max(6, totalSpeech * MIN_SPEAKER_FRACTION));
+
+    const reassign = (from: number, to: number) => {
+      for (const t of globalTurns) if (t.cluster === from) t.cluster = to;
+      if (to >= 0) clusterDur.set(to, (clusterDur.get(to) ?? 0) + (clusterDur.get(from) ?? 0));
+      clusterDur.delete(from);
+    };
+
+    // Smallest first, so fragments merge into genuinely dominant voices
+    for (;;) {
+      centroids = clusterCentroids(globalTurns);
+      const junk = [...clusterDur.entries()]
+        .filter(([c, d]) => d < minSpeakerS && !protectedClusters.has(c))
+        .sort((a, b) => a[1] - b[1]);
+      if (!junk.length || clusterDur.size <= 1) break;
+      const [c] = junk[0];
+      const own = centroids.get(c);
+      let bestC = -1, bestS = -1;
+      for (const [other, cent] of centroids) {
+        if (other === c || !own) continue;
+        const s = cosineSim(own, cent);
+        if (s > bestS) { bestS = s; bestC = other; }
+      }
+      // Nothing even vaguely similar → noise/media, dissolve into context
+      reassign(c, bestS >= ABSORB_FLOOR ? bestC : -1);
+    }
+
+    // Hard cap: force-merge the smallest remaining clusters into their nearest
+    // neighbour until under the ceiling (safety net, rarely triggered).
+    for (;;) {
+      if (clusterDur.size <= MAX_SPEAKERS) break;
+      centroids = clusterCentroids(globalTurns);
+      const smallest = [...clusterDur.entries()]
+        .filter(([c]) => !protectedClusters.has(c))
+        .sort((a, b) => a[1] - b[1])[0];
+      if (!smallest) break;
+      const own = centroids.get(smallest[0]);
+      let bestC = -1, bestS = -1;
+      for (const [other, cent] of centroids) {
+        if (other === smallest[0] || !own) continue;
+        const s = cosineSim(own, cent);
+        if (s > bestS) { bestS = s; bestC = other; }
+      }
+      if (bestC < 0) break;
+      reassign(smallest[0], bestC);
+    }
+
+    centroids = clusterCentroids(globalTurns);
+
+    // Identity merge: two surviving clusters whose centroids both confidently
+    // match the SAME enrolled person are one voice split by recording
+    // conditions — merge them so a person never appears as two speakers.
+    if (profiles.length && centroids.size > 1) {
+      const bestPerson = new Map<number, { name: string; sim: number }>();
+      for (const [c, cent] of centroids) {
+        let name = '', sim = -1;
+        for (const p of profiles) {
+          const s = cosineSim(cent, p.embedding);
+          if (s > sim) { sim = s; name = p.personName; }
+        }
+        if (sim >= MATCH_THRESHOLD) bestPerson.set(c, { name, sim });
+      }
+      const byName = new Map<string, number[]>();
+      for (const [c, { name }] of bestPerson) {
+        if (!byName.has(name)) byName.set(name, []);
+        byName.get(name)!.push(c);
+      }
+      for (const clusterIds of byName.values()) {
+        if (clusterIds.length < 2) continue;
+        const keep = clusterIds
+          .map((c) => [c, clusterDur.get(c) ?? 0] as const)
+          .sort((a, b) => b[1] - a[1])[0][0];
+        for (const c of clusterIds) {
+          if (c !== keep) reassign(c, keep);
+          if (protectedClusters.has(c)) protectedClusters.add(keep);
+        }
+      }
+      centroids = clusterCentroids(globalTurns);
+    }
+
+    // Post-absorption resegmentation: with the junk gone, some turns sit closer
+    // to another surviving centroid than the one they inherited — same margin
+    // rule as step 2, now over the final speaker set.
+    if (centroids.size > 1) {
+      for (const t of globalTurns) {
+        if (!t.embedding || t.cluster < 0) continue;
+        const norm = normalizeVec(t.embedding);
+        let bestC = t.cluster, bestS = -1, ownS = -1;
+        for (const [c, cent] of centroids) {
+          const s = cosineSim(norm, cent);
+          if (c === t.cluster) ownS = s;
+          if (s > bestS) { bestS = s; bestC = c; }
+        }
+        if (bestC !== t.cluster && bestS - ownS > REASSIGN_MARGIN) t.cluster = bestC;
+      }
+      centroids = clusterCentroids(globalTurns);
+    }
   }
 
   // 4a. Non-embedded turns inherit the dominant cluster of their chunk-local

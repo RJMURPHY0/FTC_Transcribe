@@ -275,8 +275,12 @@
 .chat-corner-grip { width: 11px; height: 11px; }
 /* Width + corner resize only make sense in the desktop multi-column layout */
 @media (max-width: 1023px) {
-  .chat-width-handle-left, .chat-corner-handle { display: none; }
+  .chat-width-handle-left, .chat-corner-handle, .chat-height-handle { display: none; }
 }
+/* Viewport backstop at every breakpoint — the desktop-only rule further down
+   tightens this, but without a base rule a saved oversized height rendered
+   unclamped on mobile/tablet. */
+.chat-panel-card { max-height: calc(100dvh - 8rem); }
 .bounce-delay-0   { animation-delay: 0ms; }
 .bounce-delay-120 { animation-delay: 120ms; }
 .bounce-delay-240 { animation-delay: 240ms; }
@@ -305,6 +309,9 @@
   }
   .detail-grid > *:not(.detail-resize-handle) {
     min-width: 0; /* let columns shrink below content width when dragged */
+    /* Clip, don't leak: fixed-width content inside a hard-shrunk column must
+       never spill across the resize rail into the neighbouring column. */
+    overflow-x: clip;
   }
   .detail-grid > .chat-panel-col { padding-right: 0.5rem; }
   /* margin (not padding) on the right: padding sits inside the scroll box, so

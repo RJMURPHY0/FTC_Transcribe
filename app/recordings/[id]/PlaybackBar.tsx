@@ -1,6 +1,6 @@
 'use client';
 
-import { forwardRef, useImperativeHandle, useRef, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import AudioPlayer, { type AudioPlayerHandle } from './AudioPlayer';
 
@@ -60,6 +60,23 @@ const PlaybackBar = forwardRef<PlaybackBarHandle, Props>(function PlaybackBar(
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const playerRef = useRef<AudioPlayerHandle>(null);
+  const barRef = useRef<HTMLDivElement>(null);
+
+  // Publish the bar's live height so fixed bottom-right UI (the global chat
+  // bubble) can sit above it instead of covering the player controls.
+  useEffect(() => {
+    const bar = barRef.current;
+    if (!bar) return;
+    const root = document.documentElement;
+    const publish = () => root.style.setProperty('--playback-bar-h', `${bar.offsetHeight}px`);
+    publish();
+    const ro = new ResizeObserver(publish);
+    ro.observe(bar);
+    return () => {
+      ro.disconnect();
+      root.style.removeProperty('--playback-bar-h');
+    };
+  }, []);
 
   const openAndPlay = () => {
     setOpen(true);
@@ -94,7 +111,7 @@ const PlaybackBar = forwardRef<PlaybackBarHandle, Props>(function PlaybackBar(
     : '';
 
   return (
-    <div className="fixed bottom-0 inset-x-0 z-30 border-t border-surface-border bg-surface/95 backdrop-blur-md">
+    <div ref={barRef} className="fixed bottom-0 inset-x-0 z-30 border-t border-surface-border bg-surface/95 backdrop-blur-md">
       <div className="max-w-[1800px] mx-auto px-4 py-2.5">
         {/* Player stays mounted while collapsed so opening it is instant */}
         <div className={open ? 'flex items-start gap-3' : 'hidden'}>

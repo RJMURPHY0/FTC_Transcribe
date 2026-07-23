@@ -89,9 +89,13 @@ export default function GlobalChatWidget() {
           className={`fixed z-50 border border-surface-border bg-surface-card shadow-2xl flex flex-col overflow-hidden transition-all duration-200 ${
             fullscreen
               ? 'inset-4 rounded-2xl'
-              : 'bottom-20 right-4 w-80 sm:w-96 rounded-2xl'
+              : 'right-4 w-[calc(100vw-2rem)] max-w-80 sm:max-w-96 rounded-2xl'
           }`}
-          style={fullscreen ? undefined : { height: '500px' }}
+          style={fullscreen ? undefined : {
+            height: 'min(500px, calc(100dvh - 8rem))',
+            // Sit above the recording page's playback bar instead of covering it
+            bottom: 'calc(5rem + var(--playback-bar-h, 0px))',
+          }}
         >
           {/* Header */}
           <div className="px-4 py-3 border-b border-surface-border flex items-center gap-2 flex-shrink-0 bg-surface-raised">
@@ -248,7 +252,8 @@ export default function GlobalChatWidget() {
         <button
           type="button"
           onClick={() => setOpen((o) => !o)}
-          className="fixed bottom-4 right-4 z-50 w-14 h-14 rounded-full btn-brand shadow-xl flex items-center justify-center touch-manipulation transition-transform active:scale-95"
+          className="fixed right-4 z-50 w-14 h-14 rounded-full btn-brand shadow-xl flex items-center justify-center touch-manipulation transition-transform active:scale-95"
+          style={{ bottom: 'calc(1rem + var(--playback-bar-h, 0px))' }}
           aria-label={open ? 'Close chat' : 'Open chat'}
         >
           {open ? (

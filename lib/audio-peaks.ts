@@ -28,6 +28,8 @@ export function peaksFromSegments(
   }
 
   const max = Math.max(...peaks, 1e-6);
-  // sqrt softens the contrast; 0.08 floor keeps silence visible as a baseline
-  return peaks.map(p => 0.08 + 0.92 * Math.sqrt(Math.min(p / max, 1)));
+  // Whisper-app look: silence stays a flat 12% baseline (3px of a 25px bar),
+  // speech rises with a gamma-0.7 curve so quiet speech still reads as speech
+  // while silence gaps stay visibly flat.
+  return peaks.map(p => (p <= 0 ? 0.12 : 0.12 + 0.88 * Math.pow(Math.min(p / max, 1), 0.7)));
 }

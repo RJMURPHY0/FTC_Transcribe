@@ -144,14 +144,20 @@ export default function ChatPanel({ recordingId, userId }: { recordingId: string
   const onResizeMove = useCallback((e: PointerEvent) => {
     const d = drag.current;
     if (!d) return;
+    // Live ceilings: the viewport and the panel's own column track, not the
+    // hardcoded constants — a fixed 1100px max is meaningless on a short
+    // laptop screen and lets stored state grow past anything renderable.
+    const maxH = Math.min(MAX_HEIGHT, window.innerHeight - 96);
+    const colW = panelRef.current?.parentElement?.clientWidth ?? MAX_WIDTH;
+    const maxW = Math.min(MAX_WIDTH, colW);
     // Height — bottom edge or corner
     if (d.axis === 'y' || d.axis === 'both') {
-      setHeight(Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, d.startH + (e.clientY - d.startY))));
+      setHeight(Math.max(MIN_HEIGHT, Math.min(maxH, d.startH + (e.clientY - d.startY))));
     }
     // Width — left edge (or corner): right edge stays put, left edge follows cursor
     if (d.axis === 'xl' || d.axis === 'both') {
       const rightEdge = d.startO + d.startW;
-      const minO = Math.max(0, rightEdge - MAX_WIDTH);
+      const minO = Math.max(0, rightEdge - maxW);
       const maxO = rightEdge - MIN_WIDTH;
       const newO = Math.max(minO, Math.min(maxO, d.startO + (e.clientX - d.startX)));
       setOffset(newO);

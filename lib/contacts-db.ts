@@ -1,5 +1,13 @@
 import { prisma } from '@/lib/db';
 
+// Shared-DB reads against the Contacts app's org tables. Failures return []
+// so the UI stays usable, but they are ALWAYS logged — a dead connection or a
+// renamed table must be distinguishable from "no orgs exist".
+function logged(fn: string, err: unknown): [] {
+  console.error(`[contacts-db] ${fn} failed:`, err instanceof Error ? err.message : err);
+  return [];
+}
+
 export type Org = { id: string; name: string };
 export type OrgTeam = { id: string; name: string; org_id: string };
 export type OrgMember = {
@@ -15,7 +23,7 @@ export async function getOrganisations(): Promise<Org[]> {
     return await prisma.$queryRaw<Org[]>`
       SELECT id::text, name FROM public.organisations ORDER BY name
     `;
-  } catch { return []; }
+  } catch (err) { return logged('getOrganisations', err); }
 }
 
 export async function getOrgTeams(orgId: string): Promise<OrgTeam[]> {
@@ -26,7 +34,7 @@ export async function getOrgTeams(orgId: string): Promise<OrgTeam[]> {
       WHERE org_id = ${orgId}::uuid
       ORDER BY name
     `;
-  } catch { return []; }
+  } catch (err) { return logged('getOrgTeams', err); }
 }
 
 export async function getOrgMembers(orgId: string, teamId?: string | null): Promise<OrgMember[]> {
@@ -49,7 +57,7 @@ export async function getOrgMembers(orgId: string, teamId?: string | null): Prom
       WHERE om.org_id = ${orgId}::uuid
       ORDER BY COALESCE(om.sender_name, au.email)
     `;
-  } catch { return []; }
+  } catch (err) { return logged('getOrgMembers', err); }
 }
 
 export async function getAllOrgMembers(): Promise<OrgMember[]> {
@@ -62,7 +70,7 @@ export async function getAllOrgMembers(): Promise<OrgMember[]> {
       LEFT JOIN auth.users au ON au.id = om.user_id
       ORDER BY om.user_id, COALESCE(om.sender_name, au.email)
     `;
-  } catch { return []; }
+  } catch (err) { return logged('getAllOrgMembers', err); }
 }
 
 export async function getMemberUserIds(orgId?: string | null, teamId?: string | null): Promise<string[]> {
@@ -81,5 +89,5 @@ export async function getMemberUserIds(orgId?: string | null, teamId?: string | 
       return rows.map(r => r.user_id);
     }
     return [];
-  } catch { return []; }
+  } catch (err) { return logged('getMemberUserIds', err); }
 }

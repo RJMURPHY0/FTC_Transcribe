@@ -19,8 +19,21 @@ interface Props {
 export default function ResizableWidth({ userId, storageId, className, children }: Props) {
   const key = `ftc.width.${storageId}.${userId ?? 'anon'}`;
   const wrapRef = useRef<HTMLDivElement>(null);
-  const drag = useRef<{ startX: number; startW: number } | null>(null);
+  const drag = useRef<{ startX: number; startW: number; maxW: number } | null>(null);
   const [width, setWidth] = useState<number | null>(null); // null → fill the column
+
+  // The wrap IS the grid child, so its own grid track — not the whole grid —
+  // is the true width ceiling. Read the track from the grid's computed
+  // template; the wrap's inline width can be narrower than the track.
+  const trackWidth = useCallback((): number => {
+    const wrap = wrapRef.current;
+    const grid = wrap?.parentElement;
+    if (!wrap || !grid) return Infinity;
+    const tracks = getComputedStyle(grid).gridTemplateColumns.split(' ').map(parseFloat);
+    const idx = Array.prototype.indexOf.call(grid.children, wrap);
+    const track = tracks[idx];
+    return isFinite(track) && track > 0 ? track : wrap.clientWidth;
+  }, []);
 
   useEffect(() => {
     try {
@@ -31,11 +44,27 @@ export default function ResizableWidth({ userId, storageId, className, children 
     } catch { /* ignore */ }
   }, [key]);
 
+  // A saved width from a wider window must not overflow the current track
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const onWindowResize = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        setWidth((w) => {
+          if (w == null) return w;
+          const max = trackWidth();
+          return isFinite(max) && w > max ? Math.max(MIN_WIDTH, max) : w;
+        });
+      }, 150);
+    };
+    window.addEventListener('resize', onWindowResize);
+    return () => { clearTimeout(timer); window.removeEventListener('resize', onWindowResize); };
+  }, [trackWidth]);
+
   const onMove = useCallback((e: PointerEvent) => {
     const d = drag.current;
     if (!d) return;
-    const colW = wrapRef.current?.parentElement?.clientWidth ?? Infinity;
-    const next = Math.max(MIN_WIDTH, Math.min(colW, d.startW + (e.clientX - d.startX)));
+    const next = Math.max(MIN_WIDTH, Math.min(d.maxW, d.startW + (e.clientX - d.startX)));
     setWidth(next);
   }, []);
 
@@ -53,7 +82,7 @@ export default function ResizableWidth({ userId, storageId, className, children 
 
   const start = (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
-    drag.current = { startX: e.clientX, startW: wrapRef.current?.offsetWidth ?? MIN_WIDTH };
+    drag.current = { startX: e.clientX, startW: wrapRef.current?.offsetWidth ?? MIN_WIDTH, maxW: trackWidth() };
     document.body.style.userSelect = 'none';
     document.body.style.cursor = 'ew-resize';
     window.addEventListener('pointermove', onMove);

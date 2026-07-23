@@ -4,6 +4,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 const DEFAULT: [number, number, number] = [1.5, 2, 1.6];
 const MIN_FR = 0.25;
+// Real pixel floor per column: below this the panels' fixed-width content
+// (speaker labels, button rows) overflows into the neighbouring column.
+const MIN_COL_PX = 280;
 
 interface Props {
   userId: string | null;
@@ -44,15 +47,20 @@ export default function ResizableColumns({ userId, chat, notes, transcript }: Pr
     const frPerPx = totalFr / d.contentWidth;
     let deltaFr = (e.clientX - d.startX) * frPerPx;
 
+    // Pixel-derived floor: a column can never be dragged below the width its
+    // content actually needs. On narrow desktops where three floors don't fit,
+    // fall back to an equal-thirds floor so the handles still move.
+    const minFr = Math.max(MIN_FR, Math.min(MIN_COL_PX * frPerPx, totalFr / 3));
+
     const [a, b, c] = d.start;
     const next: [number, number, number] = [a, b, c];
     if (d.handle === 0) {
       // Clamp so neither the chat nor notes column drops below the minimum
-      deltaFr = Math.max(-(a - MIN_FR), Math.min(b - MIN_FR, deltaFr));
+      deltaFr = Math.max(-(a - minFr), Math.min(b - minFr, deltaFr));
       next[0] = a + deltaFr;
       next[1] = b - deltaFr;
     } else {
-      deltaFr = Math.max(-(b - MIN_FR), Math.min(c - MIN_FR, deltaFr));
+      deltaFr = Math.max(-(b - minFr), Math.min(c - minFr, deltaFr));
       next[1] = b + deltaFr;
       next[2] = c - deltaFr;
     }

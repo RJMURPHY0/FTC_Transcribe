@@ -102,15 +102,18 @@ const AudioPlayer = forwardRef<AudioPlayerHandle, Props>(function AudioPlayer(
       const WaveSurfer = (await import('wavesurfer.js')).default;
       if (cancelled || !containerRef.current) return;
       const havePeaks = !!peaks && peaks.length > 0 && durationHint > 0;
+      // Styled after the Whisper app's history player: 3px bars with ~2px
+      // gaps centred on the midline, grey until played, brand orange behind
+      // the playhead — progress reads as bars lighting up left to right.
       const ws = WaveSurfer.create({
         container:     containerRef.current,
-        waveColor:     '#555',
+        waveColor:     '#3a3a3a',
         progressColor: '#f39200',
-        cursorColor:   '#f39200',
+        cursorColor:   'transparent',
         height:        56,
-        barWidth:      2,
+        barWidth:      3,
         barGap:        2,
-        barRadius:     2,
+        barRadius:     0,
         normalize:     true,
         media:         audio,
         // Without segment peaks (no transcript) WaveSurfer falls back to

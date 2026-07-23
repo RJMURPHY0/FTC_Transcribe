@@ -10,9 +10,13 @@ export const maxDuration = 800;
 // Keep this low so the 5-min cron never times out.
 const MAX_RECORDINGS_PER_RUN = 2;
 
+// Fail closed, same pattern as /api/auto-fix: this route is exempt from
+// middleware auth, so an unset CRON_SECRET previously let anyone drive the
+// finalize worker and the 30-day purge. Vercel cron sends the Bearer header
+// automatically once CRON_SECRET exists in the project env.
 function isAuthorized(req: NextRequest): boolean {
   const secret = process.env.CRON_SECRET;
-  if (!secret) return true; // No secret configured → fail-open (dev / internal cron)
+  if (!secret) return false;
   const auth = req.headers.get('authorization') ?? '';
   return auth === `Bearer ${secret}`;
 }
