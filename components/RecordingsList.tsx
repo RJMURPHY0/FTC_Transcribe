@@ -450,9 +450,6 @@ export default function RecordingsList({
                   absolute top-1/2 left-3 -translate-y-1/2 z-10
                   w-6 h-6 rounded-full flex items-center justify-center
                   transition-all duration-150 touch-manipulation
-                  ${isSelecting
-                    ? 'opacity-100'
-                    : 'opacity-0 group-hover:opacity-100 focus:opacity-100'}
                   ${isSelected
                     ? 'bg-brand text-white shadow-sm'
                     : 'border-2 border-surface-muted bg-surface-card hover:border-brand'}
@@ -479,9 +476,9 @@ export default function RecordingsList({
                   try { sessionStorage.setItem('came-from-list', '1'); } catch { /* ignore */ }
                 }}
                 className={`
-                  flex flex-col gap-3 rounded-2xl border bg-surface-card p-5 pr-20 transition-all duration-150
+                  flex flex-col gap-3 rounded-2xl border bg-surface-card p-5 pr-20 pl-12 transition-all duration-150
                   active:scale-[0.99] touch-manipulation
-                  ${isSelecting ? 'pl-12 cursor-pointer' : 'pl-5 group-hover:pl-12'}
+                  ${isSelecting ? 'cursor-pointer' : ''}
                   ${isSelected
                     ? 'border-brand/50 bg-brand/5'
                     : 'border-surface-border hover:border-surface-muted'}

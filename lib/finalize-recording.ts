@@ -396,9 +396,16 @@ async function analyzeAndCompleteRecording(recordingId: string): Promise<Finaliz
         topics: JSON.stringify(topics),
       },
     });
+    // Meeting length = end of the last transcript segment — stored so the list
+    // cards and player can show duration without touching the audio.
+    const durationSecs = Math.round(diarized.reduce((m, s) => Math.max(m, s.end ?? 0), 0));
     return tx.recording.update({
       where: { id: recordingId },
-      data: { status: 'completed', ...(title ? { title } : {}) },
+      data: {
+        status: 'completed',
+        ...(durationSecs > 0 ? { duration: durationSecs } : {}),
+        ...(title ? { title } : {}),
+      },
     });
   });
 
@@ -461,6 +468,7 @@ async function finalizeLegacy(recordingId: string): Promise<FinalizeResult> {
 
   if (chunkMetas.length > 0) {
     let fullText = '';
+    let detectedLanguage = '';
     const allSegments: RawSegment[] = [];
 
     for (const chunkMeta of chunkMetas) {
@@ -473,7 +481,8 @@ async function finalizeLegacy(recordingId: string): Promise<FinalizeResult> {
           where: { id: chunkMeta.id },
           select: { audioData: true },
         });
-        const { text, rawSegments } = await transcribeChunkWithRetry(chunkData.audioData as Buffer, ext);
+        const { text, rawSegments, language } = await transcribeChunkWithRetry(chunkData.audioData as Buffer, ext);
+        if (language && !detectedLanguage) detectedLanguage = language;
         if (text.trim()) {
           fullText += (fullText ? ' ' : '') + text.trim();
         }
@@ -497,10 +506,12 @@ async function finalizeLegacy(recordingId: string): Promise<FinalizeResult> {
           recordingId,
           fullText,
           segments: JSON.stringify(allSegments),
+          language: detectedLanguage,
         },
         update: {
           fullText,
           segments: JSON.stringify(allSegments),
+          ...(detectedLanguage ? { language: detectedLanguage } : {}),
         },
       });
     }
@@ -598,6 +609,10 @@ async function finalizeWithJobs(recordingId: string): Promise<FinalizeResult> {
     const thisBatch = remaining.slice(0, MAX_CHUNKS_PER_RUN);
     const moreAfterThis = remaining.length > thisBatch.length;
 
+    // Whisper's detected language for this run's chunks. Best-effort: a resumed
+    // run with no fresh transcriptions leaves it '' (backfill covers those).
+    let runLanguage = '';
+
     await runConcurrent(
       thisBatch.map((chunkMeta) => async () => {
         try {
@@ -626,10 +641,11 @@ async function finalizeWithJobs(recordingId: string): Promise<FinalizeResult> {
               return;
             }
 
-            const { text: chunkText, segments: chunkSegments, voiceData: chunkVoice } = await transcribeChunk(
+            const { text: chunkText, segments: chunkSegments, voiceData: chunkVoice, language: chunkLanguage } = await transcribeChunk(
               blob.audioData as Buffer,
               chunkMeta.mimeType,
             );
+            if (chunkLanguage && !runLanguage) runLanguage = chunkLanguage;
 
             await prisma.chunkTranscript.update({
               where: { jobId_chunkId: { jobId: lock.id, chunkId: chunkMeta.id } },
@@ -710,8 +726,8 @@ async function finalizeWithJobs(recordingId: string): Promise<FinalizeResult> {
     if (fullText.trim()) {
       await prisma.transcript.upsert({
         where: { recordingId },
-        create: { recordingId, fullText, segments: JSON.stringify(allSegments) },
-        update: { fullText, segments: JSON.stringify(allSegments) },
+        create: { recordingId, fullText, segments: JSON.stringify(allSegments), language: runLanguage },
+        update: { fullText, segments: JSON.stringify(allSegments), ...(runLanguage ? { language: runLanguage } : {}) },
       });
     }
 

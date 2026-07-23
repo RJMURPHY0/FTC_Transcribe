@@ -100,7 +100,7 @@ export default function ResizableColumns({ userId, chat, notes, transcript }: Pr
     window.removeEventListener('pointerup', onUp);
   }, [onMove, onUp]);
 
-  const template = `${cols[0]}fr 0.75rem ${cols[1]}fr 0.75rem ${cols[2]}fr`;
+  const template = `${cols[0]}fr 1rem ${cols[1]}fr 1rem ${cols[2]}fr`;
 
   return (
     <div

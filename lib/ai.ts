@@ -97,11 +97,12 @@ function formatTime(seconds: number): string {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-export async function transcribeAudio(filePath: string): Promise<{ text: string; rawSegments: RawSegment[] }> {
+export async function transcribeAudio(filePath: string): Promise<{ text: string; rawSegments: RawSegment[]; language: string }> {
   if (isMockTranscription || !transcriptionClient) {
     return {
       text: 'Demo transcript — add a GROQ_API_KEY (free at console.groq.com) or OPENAI_API_KEY with billing to .env.local.',
       rawSegments: [],
+      language: '',
     };
   }
 
@@ -135,7 +136,11 @@ export async function transcribeAudio(filePath: string): Promise<{ text: string;
           text: s.text,
         }));
 
-        return { text: transcription.text as string, rawSegments };
+        return {
+          text: transcription.text as string,
+          rawSegments,
+          language: typeof transcription.language === 'string' ? transcription.language : '',
+        };
       } catch (err: unknown) {
         const e = err as { status?: number; code?: string; message?: string };
 

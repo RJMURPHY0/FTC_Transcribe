@@ -2,7 +2,7 @@
 
 import { useRef, useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import PlaybackBar, { type PlaybackBarHandle } from './PlaybackBar';
+import PlaybackBar, { type PlaybackBarHandle, type PlaybackMeta } from './PlaybackBar';
 
 interface RawSegment {
   speaker: string;
@@ -24,6 +24,7 @@ interface Props {
   rawSegments:  RawSegment[];
   speakerOrder: string[];
   hasAudio:     boolean;
+  playbackMeta: PlaybackMeta;
 }
 
 const SPEAKER_COLOURS = [
@@ -55,7 +56,7 @@ function mergeSegments(segs: RawSegment[]): MergedGroup[] {
   }, []);
 }
 
-export default function TranscriptPlayer({ recordingId, rawSegments, speakerOrder, hasAudio }: Props) {
+export default function TranscriptPlayer({ recordingId, rawSegments, speakerOrder, hasAudio, playbackMeta }: Props) {
   const router       = useRouter();
   const playerRef    = useRef<PlaybackBarHandle>(null);
   const [activeIdx,  setActiveIdx]  = useState<number>(-1);
@@ -94,6 +95,7 @@ export default function TranscriptPlayer({ recordingId, rawSegments, speakerOrde
         <PlaybackBar
           ref={playerRef}
           recordingId={recordingId}
+          meta={playbackMeta}
           onTimeUpdate={handleTimeUpdate}
         />
       )}

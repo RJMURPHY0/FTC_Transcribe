@@ -61,9 +61,25 @@
     transition: background-color 0.2s ease, color 0.2s ease;
   }
 
-  ::-webkit-scrollbar { width: 4px; }
+  /* Chunkier scrollbars: the old 4px thumb was nearly ungrabbable, especially
+     next to the column-resize rails. 10px hit area with an inset thumb that
+     thickens + darkens on hover. */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
   ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: rgb(var(--c-surface-muted)); border-radius: 99px; }
+  ::-webkit-scrollbar-thumb {
+    background: rgb(var(--c-surface-muted));
+    border-radius: 99px;
+    border: 3px solid transparent;
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover,
+  ::-webkit-scrollbar-thumb:active {
+    background: rgb(var(--c-surface-dark));
+    background-clip: padding-box;
+    border-width: 2px;
+  }
+  /* Firefox */
+  * { scrollbar-color: rgb(var(--c-surface-muted)) transparent; }
 
   /* ── Light-mode contrast fixes ──
      A few Tailwind palette colours are tuned for dark backgrounds and go
@@ -204,8 +220,10 @@
   touch-action: none;
   z-index: 5;
 }
-.chat-width-handle { right: -5px; }
-.chat-width-handle-left { left: -5px; }
+/* Sit fully inside the card edge — hanging outside overlapped the panel
+   scrollbar, so grabbing the scrollbar dragged the width instead. */
+.chat-width-handle { right: 0; }
+.chat-width-handle-left { left: 0; }
 .chat-width-grip {
   width: 4px;
   height: 40px;
@@ -266,7 +284,7 @@
   .detail-grid {
     /* var lets the client component override the ratios without breaking the
        mobile single-column stack (inline styles would beat the media query) */
-    grid-template-columns: var(--detail-cols, 1.5fr 0.75rem 2fr 0.75rem 1.6fr);
+    grid-template-columns: var(--detail-cols, 1.5fr 1rem 2fr 1rem 1.6fr);
     align-items: start;
     gap: 0;
   }
@@ -279,7 +297,7 @@
   .detail-resize-handle {
     display: block;
     align-self: stretch;
-    width: 0.75rem;
+    width: 1rem;
     cursor: col-resize;
     position: relative;
     z-index: 10;
@@ -339,8 +357,11 @@
     top: 5rem;
     max-height: calc(100vh - 6rem);
     overflow-y: auto;
+    /* keeps this panel's scrollbar clear of the resize rail beside it */
+    margin-right: 0.25rem;
   }
-  /* Right-edge width handle sits in the gutter, clear of the panel scrollbar */
+  /* Right-edge width handle sits fully outside the panel in the page margin,
+     so it can never overlap the transcript scrollbar */
   .panel-width-handle {
     display: flex;
     align-items: center;
@@ -348,8 +369,8 @@
     position: absolute;
     top: 0;
     bottom: 0;
-    right: -14px;
-    width: 16px;
+    right: -16px;
+    width: 12px;
     cursor: ew-resize;
     touch-action: none;
     z-index: 8;

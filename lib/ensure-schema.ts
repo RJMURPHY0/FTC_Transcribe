@@ -36,6 +36,7 @@ export async function ensureSchema() {
       ON "ChunkBlob"("recordingId", "contentHash")
       WHERE "contentHash" <> ''`;
     await prisma.$executeRaw`ALTER TABLE "ChunkTranscript" ADD COLUMN IF NOT EXISTS "voiceData" TEXT NOT NULL DEFAULT ''`;
+    await prisma.$executeRaw`ALTER TABLE "Transcript" ADD COLUMN IF NOT EXISTS "language" TEXT NOT NULL DEFAULT ''`;
     await prisma.$executeRaw`
       CREATE TABLE IF NOT EXISTS "VoiceProfile" (
         "id"          TEXT NOT NULL PRIMARY KEY,

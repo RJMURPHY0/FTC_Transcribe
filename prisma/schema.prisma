@@ -127,6 +127,8 @@ model Transcript {
   recording   Recording @relation(fields: [recordingId], references: [id], onDelete: Cascade)
   fullText    String
   segments    String
+  // Whisper-detected language ("english", …); '' when unknown (pre-column rows)
+  language    String    @default("")
   createdAt   DateTime  @default(now())
 }
 

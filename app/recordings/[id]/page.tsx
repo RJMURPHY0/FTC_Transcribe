@@ -15,6 +15,7 @@ import PlaybackBar from './PlaybackBar';
 import ResizableColumns from './ResizableColumns';
 import ResizableWidth from './ResizableWidth';
 import type { TranscriptSegment, TopicSection } from '@/lib/ai';
+import { peaksFromSegments } from '@/lib/audio-peaks';
 import { ensureSchema } from '@/lib/ensure-schema';
 import { getAuthUser } from '@/lib/auth';
 
@@ -86,6 +87,18 @@ export default async function RecordingPage({ params }: { params: { id: string }
   // playback bar renders only when the super admin hasn't disabled it.
   const audioAvailable = recording._count.chunks > 0 || !!recording.audioPath;
   const showAudio = audioAvailable && (authUser?.canPlayAudio ?? true) && !isUploading && !isProcessing;
+
+  // Playback panel metadata — duration prefers the stored value, else the last
+  // transcript segment's end. Peaks give the waveform without any audio decode.
+  const lastSegmentEnd = rawSegments.reduce((m, s) => Math.max(m, s.end ?? 0), 0);
+  const durationSecs = recording.duration > 0 ? recording.duration : Math.round(lastSegmentEnd);
+  const playbackMeta = {
+    createdAt: recording.createdAt.toISOString(),
+    durationSecs,
+    words: recording.transcript?.fullText ? recording.transcript.fullText.trim().split(/\s+/).length : 0,
+    language: recording.transcript?.language ?? '',
+    peaks: peaksFromSegments(rawSegments, durationSecs),
+  };
 
   const etaSecs = (isUploading || isProcessing) ? estimateSeconds(recording._count.chunks) : 0;
   const etaLabel = etaSecs > 0
@@ -233,6 +246,7 @@ export default async function RecordingPage({ params }: { params: { id: string }
                       rawSegments={rawSegments}
                       speakerOrder={speakerOrder}
                       hasAudio={showAudio}
+                      playbackMeta={playbackMeta}
                     />
                   ) : (
                     <>
@@ -241,7 +255,7 @@ export default async function RecordingPage({ params }: { params: { id: string }
                           {recording.transcript.fullText}
                         </p>
                       </div>
-                      {showAudio && <PlaybackBar recordingId={recording.id} />}
+                      {showAudio && <PlaybackBar recordingId={recording.id} meta={playbackMeta} />}
                     </>
                   )}
                 </>

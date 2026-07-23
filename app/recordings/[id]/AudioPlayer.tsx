@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useImperativeHandle, forwardRef } from 're
 
 export interface AudioPlayerHandle {
   seekTo: (seconds: number) => void;
+  play: () => void;
 }
 
 interface Props {
@@ -11,10 +12,10 @@ interface Props {
   onTimeUpdate?: (seconds: number) => void;
   /** Drop the card chrome — used inside the bottom playback bar. */
   bare?: boolean;
-  /** Start playing as soon as the waveform is ready. */
-  autoPlay?: boolean;
-  /** Seek here once ready (seconds) — for "open player at this segment". */
-  initialSeek?: number | null;
+  /** Known duration (seconds) from the DB/transcript — shown before the audio reports one. */
+  durationHint?: number;
+  /** Precomputed pseudo-waveform peaks (0..1). With these the waveform renders instantly. */
+  peaks?: number[];
 }
 
 function formatTime(s: number): string {
@@ -23,37 +24,85 @@ function formatTime(s: number): string {
   return `${m}:${String(sec).padStart(2, '0')}`;
 }
 
+// Playback goes through a native <audio> element so sound starts as soon as
+// the first bytes stream in. WaveSurfer only draws: fed precomputed peaks +
+// duration it never downloads or decodes the audio itself (the old approach
+// decoded the full file client-side before the play button even enabled).
 const AudioPlayer = forwardRef<AudioPlayerHandle, Props>(function AudioPlayer(
-  { recordingId, onTimeUpdate, bare = false, autoPlay = false, initialSeek = null },
+  { recordingId, onTimeUpdate, bare = false, durationHint = 0, peaks },
   ref,
 ) {
-  const containerRef  = useRef<HTMLDivElement>(null);
-  const wsRef         = useRef<import('wavesurfer.js').default | null>(null);
-  const pendingSeekRef = useRef<number | null>(initialSeek);
+  const containerRef   = useRef<HTMLDivElement>(null);
+  const audioRef       = useRef<HTMLAudioElement | null>(null);
+  const wsRef          = useRef<import('wavesurfer.js').default | null>(null);
+  const pendingSeekRef = useRef<number | null>(null);
   const [ready,       setReady]       = useState(false);
   const [playing,     setPlaying]     = useState(false);
+  const [buffering,   setBuffering]   = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
-  const [duration,    setDuration]    = useState(0);
+  const [duration,    setDuration]    = useState(durationHint);
   const [loadError,   setLoadError]   = useState(false);
 
   useImperativeHandle(ref, () => ({
     seekTo(seconds: number) {
-      if (wsRef.current && duration > 0) {
-        wsRef.current.seekTo(Math.min(seconds / duration, 1));
+      const audio = audioRef.current;
+      if (audio && ready) {
+        audio.currentTime = seconds;
       } else {
-        pendingSeekRef.current = seconds; // applied once the waveform is ready
+        pendingSeekRef.current = seconds; // applied on loadedmetadata
       }
+    },
+    play() {
+      void audioRef.current?.play().catch(() => {});
     },
   }));
 
   useEffect(() => {
-    let ws: import('wavesurfer.js').default;
+    let cancelled = false;
 
-    async function init() {
+    // metadata only: headers/duration load up front (cheap), bytes stream on play
+    const audio = new Audio();
+    audio.preload = 'metadata';
+    audio.src = `/api/recordings/${recordingId}/audio`;
+    audioRef.current = audio;
+
+    const onLoadedMetadata = () => {
+      setReady(true);
+      if (isFinite(audio.duration) && audio.duration > 0) setDuration(audio.duration);
+      if (pendingSeekRef.current !== null) {
+        audio.currentTime = pendingSeekRef.current;
+        pendingSeekRef.current = null;
+      }
+    };
+    // MediaRecorder WebM often reports Infinity until buffered — keep the hint until finite
+    const onDurationChange = () => {
+      if (isFinite(audio.duration) && audio.duration > 0) setDuration(audio.duration);
+    };
+    const onTime    = () => { setCurrentTime(audio.currentTime); onTimeUpdate?.(audio.currentTime); };
+    const onPlay    = () => setPlaying(true);
+    const onPause   = () => setPlaying(false);
+    const onWaiting = () => setBuffering(true);
+    const onPlaying = () => setBuffering(false);
+    const onEnded   = () => { setPlaying(false); setCurrentTime(0); };
+    const onError   = () => setLoadError(true);
+
+    audio.addEventListener('loadedmetadata', onLoadedMetadata);
+    audio.addEventListener('durationchange', onDurationChange);
+    audio.addEventListener('timeupdate', onTime);
+    audio.addEventListener('seeking', onTime);
+    audio.addEventListener('play', onPlay);
+    audio.addEventListener('pause', onPause);
+    audio.addEventListener('waiting', onWaiting);
+    audio.addEventListener('playing', onPlaying);
+    audio.addEventListener('ended', onEnded);
+    audio.addEventListener('error', onError);
+
+    async function initWaveform() {
       if (!containerRef.current) return;
       const WaveSurfer = (await import('wavesurfer.js')).default;
-
-      ws = WaveSurfer.create({
+      if (cancelled || !containerRef.current) return;
+      const havePeaks = !!peaks && peaks.length > 0 && durationHint > 0;
+      const ws = WaveSurfer.create({
         container:     containerRef.current,
         waveColor:     '#555',
         progressColor: '#f39200',
@@ -63,41 +112,52 @@ const AudioPlayer = forwardRef<AudioPlayerHandle, Props>(function AudioPlayer(
         barGap:        2,
         barRadius:     2,
         normalize:     true,
-        url:           `/api/recordings/${recordingId}/audio`,
+        media:         audio,
+        // Without segment peaks (no transcript) WaveSurfer falls back to
+        // fetching + decoding the audio to draw — playback still starts
+        // instantly through the media element either way.
+        ...(havePeaks ? { peaks: [peaks as number[]], duration: durationHint } : {}),
       });
-
-      ws.on('ready', dur => {
-        setDuration(dur);
-        setReady(true);
-        if (pendingSeekRef.current !== null && dur > 0) {
-          ws.seekTo(Math.min(pendingSeekRef.current / dur, 1));
-          pendingSeekRef.current = null;
-        }
-        if (autoPlay) void ws.play();
-      });
-      ws.on('audioprocess', t => {
-        setCurrentTime(t);
-        onTimeUpdate?.(t);
-      });
-      ws.on('seeking', t => {
-        setCurrentTime(t);
-        onTimeUpdate?.(t);
-      });
-      ws.on('play',   () => setPlaying(true));
-      ws.on('pause',  () => setPlaying(false));
-      ws.on('finish', () => { setPlaying(false); setCurrentTime(0); });
-      ws.on('error',  () => setLoadError(true));
-
+      ws.on('error', () => { /* surfaced via the <audio> error handler */ });
       wsRef.current = ws;
     }
+    void initWaveform();
 
-    void init();
-    return () => { ws?.destroy(); };
+    return () => {
+      cancelled = true;
+      wsRef.current?.destroy();
+      wsRef.current = null;
+      audio.pause();
+      audio.removeEventListener('loadedmetadata', onLoadedMetadata);
+      audio.removeEventListener('durationchange', onDurationChange);
+      audio.removeEventListener('timeupdate', onTime);
+      audio.removeEventListener('seeking', onTime);
+      audio.removeEventListener('play', onPlay);
+      audio.removeEventListener('pause', onPause);
+      audio.removeEventListener('waiting', onWaiting);
+      audio.removeEventListener('playing', onPlaying);
+      audio.removeEventListener('ended', onEnded);
+      audio.removeEventListener('error', onError);
+      audio.removeAttribute('src');
+      audio.load();
+      audioRef.current = null;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recordingId]);
 
-  const togglePlay = () => wsRef.current?.playPause();
-  const stop = () => { wsRef.current?.stop(); setCurrentTime(0); };
+  const togglePlay = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (audio.paused) void audio.play().catch(() => setLoadError(true));
+    else audio.pause();
+  };
+  const stop = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.pause();
+    audio.currentTime = 0;
+    setCurrentTime(0);
+  };
 
   return (
     <div className={bare ? 'space-y-2' : 'rounded-2xl border border-surface-border bg-surface-card p-4 space-y-3'}>
@@ -113,9 +173,8 @@ const AudioPlayer = forwardRef<AudioPlayerHandle, Props>(function AudioPlayer(
             {/* Stop */}
             <button
               onClick={stop}
-              disabled={!ready}
               title="Stop"
-              className="p-1.5 rounded-lg text-ftc-mid hover:text-ftc-gray disabled:opacity-30 transition-colors"
+              className="p-1.5 rounded-lg text-ftc-mid hover:text-ftc-gray transition-colors"
             >
               <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
                 <rect x="5" y="5" width="14" height="14" rx="1" />
@@ -125,10 +184,9 @@ const AudioPlayer = forwardRef<AudioPlayerHandle, Props>(function AudioPlayer(
             {/* Play / Pause */}
             <button
               onClick={togglePlay}
-              disabled={!ready}
               title={playing ? 'Pause' : 'Play'}
               className="flex items-center justify-center w-9 h-9 rounded-full bg-brand
-                         hover:bg-brand-dark disabled:opacity-30 transition-colors flex-shrink-0"
+                         hover:bg-brand-dark transition-colors flex-shrink-0"
             >
               {playing ? (
                 <svg className="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24">
@@ -148,11 +206,11 @@ const AudioPlayer = forwardRef<AudioPlayerHandle, Props>(function AudioPlayer(
               {duration > 0 && <span className="text-surface-muted"> / {formatTime(duration)}</span>}
             </span>
 
-            {/* Loading indicator */}
-            {!ready && !loadError && (
+            {/* Buffering indicator — only while the stream is catching up */}
+            {buffering && playing && (
               <span className="ml-auto text-xs text-ftc-mid flex items-center gap-1.5">
                 <span className="w-3 h-3 rounded-full border-2 border-ftc-mid/30 border-t-ftc-mid animate-spin" />
-                Loading…
+                Buffering…
               </span>
             )}
           </div>

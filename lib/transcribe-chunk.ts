@@ -54,7 +54,7 @@ export async function transcribeChunkWithRetry(audioData: Buffer, ext: string) {
 export async function transcribeChunkWithDeepgramRetry(
   audioData: Buffer,
   mimeType: string,
-): Promise<{ text: string; segments: DeepgramRawSegment[] } | { text: string; rawSegments: RawSegment[] }> {
+): Promise<{ text: string; segments: DeepgramRawSegment[] } | { text: string; rawSegments: RawSegment[]; language: string }> {
   let lastErr: Error = new Error('Deepgram failed');
 
   for (let attempt = 0; attempt < MAX_CHUNK_ATTEMPTS; attempt++) {
@@ -74,7 +74,7 @@ export async function transcribeChunkWithDeepgramRetry(
 export async function transcribeChunk(
   audioData: Buffer,
   mimeType: string,
-): Promise<{ text: string; segments: RawSegment[] | DeepgramRawSegment[]; voiceData: ChunkVoiceData | null }> {
+): Promise<{ text: string; segments: RawSegment[] | DeepgramRawSegment[]; voiceData: ChunkVoiceData | null; language: string }> {
   // Acoustic voice analysis (diarization + voiceprints) runs in parallel with
   // transcription — it reads the waveform, not the text. Never blocks or fails the chunk.
   const voicePromise: Promise<ChunkVoiceData | null> = isVoiceIdEnabled
@@ -87,8 +87,9 @@ export async function transcribeChunk(
       text: result.text,
       segments: 'segments' in result ? result.segments : result.rawSegments,
       voiceData: await voicePromise,
+      language: 'language' in result ? result.language : '',
     };
   }
   const result = await transcribeChunkWithRetry(audioData, extForMime(mimeType));
-  return { text: result.text, segments: result.rawSegments, voiceData: await voicePromise };
+  return { text: result.text, segments: result.rawSegments, voiceData: await voicePromise, language: result.language };
 }

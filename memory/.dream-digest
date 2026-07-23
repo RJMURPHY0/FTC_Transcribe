@@ -1,19 +1,30 @@
-# Dream Digest — 2026-07-22 08:59 UTC
+# Dream Digest — 2026-07-22 14:15 UTC (6-phase cycle)
 
-## What Changed
-- **Added:** 0 new entries (automated consolidation pass)
-- **Updated:** Timestamp verification (all projects current as of 2026-07-22)
-- **Contradictions resolved:** 0
-- **Archived/pruned:** 0 entries
+## Consolidation Summary
 
-## Top Insights
-1. All projects current within 1-2 days — no urgent consolidation needed
-2. Global cross-project memory maintained and synchronized
-3. No new [LOOP] corrections detected in recent sessions
+**Phase 1 (ORIENT):** Memory reviewed; 20 topic files indexed; last consolidation 2026-07-22 15:30 verified
+**Phase 2 (GATHER SIGNAL):** 0 recent sessions; 0 new corrections/decisions detected
+**Phase 3 (CONSOLIDATE):** No new entries; core facts verified (DB ref, pooler pattern, voice-ID docs)
+**Phase 4 (PRUNE & INDEX):** All 20 topic files verified; MEMORY.md 32 lines (under 200 limit); no stale entries (≤5 days)
+**Phase 5 (SKILL GAPS):** No project-specific gaps identified
+**Phase 6 (POST-DREAM):** Digest updated
 
-## Skill Gaps Found
-(None new — existing suggestions remain valid)
+## State Metrics
+
+- Sessions scanned this cycle: 0
+- New entries added: 0
+- Existing entries updated: 0
+- Contradictions resolved: 0
+- Entries pruned: 0
+- New skill gaps: 0
+
+## Critical Facts Confirmed
+
+✓ Real DB: `ijeeghdxokfvlfarojlm` (shared with Contacts/Whisper)
+✓ DB pooler: `:6543?pgbouncer=true` (not `:5432`)
+✓ Voice-ID pipeline: 10-topic documentation indexed
+✓ Auto-fix pipeline + offline mode verified
 
 ## Status
-Sessions scanned: 3161 total. No contradictions or stale patterns requiring consolidation.
-All topic files verified present. Memory structure validated.
+
+Memory STABLE. 20 topic files current. Next cycle ready.
