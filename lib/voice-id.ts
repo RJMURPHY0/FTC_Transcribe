@@ -933,7 +933,10 @@ export function resolveGlobalSpeakers(
   // the turn boundary) is SPLIT at the boundary, with its words apportioned by
   // time — one label per segment was a major source of wrong mid-sentence
   // attribution. Segments inside a single turn keep the fast path.
-  const MIN_SPLIT_SIDE_S = parseFloat(process.env.VOICE_MIN_SPLIT_SIDE_S ?? '0.7');
+  // 0.5 validated by the harness: raising it to 0.7 smeared genuine speaker
+  // boundaries (S1/S4b fell to ~96%) — flicker suppression belongs to the
+  // Viterbi pass above, not to blunter segment splitting.
+  const MIN_SPLIT_SIDE_S = parseFloat(process.env.VOICE_MIN_SPLIT_SIDE_S ?? '0.5');
   const outSegments: ResolvedSpeakers['segments'] = [];
   let lastLabel = '';
   for (const chunk of chunks) {
