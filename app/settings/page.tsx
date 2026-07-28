@@ -2,6 +2,9 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
+import { Mic, Palette, Fingerprint, Activity, Disc3, Info } from 'lucide-react';
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
+import { setGlowEnabled } from '@/components/ui/spotlight-card';
 
 interface MicDevice { deviceId: string; label: string; }
 interface Health { db: boolean; openai: boolean; anthropic: boolean; groq: boolean; airtable: boolean; }
@@ -30,6 +33,50 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   );
 }
 
+// Category header with a brand-tinted icon — gives the settings page a clear
+// visual grouping instead of bare uppercase labels.
+function SectionHeader({ icon: Icon, title }: { icon: React.ComponentType<{ className?: string }>; title: string }) {
+  return (
+    <h2 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-ftc-mid mb-3">
+      <Icon className="w-3.5 h-3.5 text-brand" />
+      {title}
+    </h2>
+  );
+}
+
+// Accessible on/off switch — orange when on, matching the brand.
+function ToggleSwitch({
+  checked,
+  onChange,
+  disabled,
+  label,
+}: {
+  checked: boolean;
+  onChange: (next: boolean) => void;
+  disabled?: boolean;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors touch-manipulation disabled:opacity-50 ${
+        checked ? 'bg-brand' : 'bg-surface-muted'
+      }`}
+    >
+      <span
+        className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-sm transition-transform ${
+          checked ? 'translate-x-5' : 'translate-x-0.5'
+        }`}
+      />
+    </button>
+  );
+}
+
 export default function SettingsPage() {
   const [mics, setMics]           = useState<MicDevice[]>([]);
   const [selectedMic, setSelected] = useState<string>('');
@@ -38,6 +85,31 @@ export default function SettingsPage() {
   const [healthLoading, setHL]    = useState(true);
   const [testResult, setTestResult] = useState('');
   const [theme, setTheme]         = useState<'dark' | 'light'>('dark');
+  const [liveFx, setLiveFx]       = useState<boolean | null>(null); // null = still loading
+  const [liveFxSuperAdmin, setLiveFxSuperAdmin] = useState(false);
+
+  // Load the saved card-animation preference from the DB (own → default)
+  useEffect(() => {
+    fetch('/api/user-settings')
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => {
+        if (d && typeof d.liveFx === 'boolean') { setLiveFx(d.liveFx); setLiveFxSuperAdmin(!!d.isSuperAdmin); }
+        else setLiveFx(true);
+      })
+      .catch(() => setLiveFx(true));
+  }, []);
+
+  const toggleLiveFx = async (next: boolean) => {
+    setLiveFx(next);
+    setGlowEnabled(next); // instant local effect (updates localStorage + notifies cards)
+    try {
+      await fetch('/api/user-settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ liveFx: next }),
+      });
+    } catch { /* keep the optimistic local state; it'll re-sync on next load */ }
+  };
 
   // Load saved mic preference
   useEffect(() => {
@@ -145,9 +217,7 @@ export default function SettingsPage() {
 
         {/* ── Microphone ── */}
         <section>
-          <h2 className="text-xs font-semibold uppercase tracking-widest text-ftc-mid mb-3">
-            Microphone
-          </h2>
+          <SectionHeader icon={Mic} title="Microphone" />
           <div className="rounded-2xl border border-surface-border bg-surface-card p-5 space-y-4">
 
             {!micGranted && mics.every(m => !m.label || m.label.startsWith('Microphone')) ? (
@@ -163,16 +233,20 @@ export default function SettingsPage() {
             ) : (
               <div>
                 <label className="block text-xs text-ftc-mid mb-2">Default microphone</label>
-                <select
-                  value={selectedMic}
-                  onChange={e => saveMic(e.target.value)}
-                  className="w-full bg-surface-raised border border-surface-border rounded-xl px-3 py-2.5 text-sm text-ftc-gray outline-none focus:border-brand/50 transition-colors"
+                <Select
+                  value={selectedMic || '__default__'}
+                  onValueChange={(v) => saveMic(v === '__default__' ? '' : v)}
                 >
-                  <option value="">System default</option>
-                  {mics.map(m => (
-                    <option key={m.deviceId} value={m.deviceId}>{m.label}</option>
-                  ))}
-                </select>
+                  <SelectTrigger className="py-2.5">
+                    <SelectValue placeholder="System default" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__default__">System default</SelectItem>
+                    {mics.filter(m => m.deviceId).map(m => (
+                      <SelectItem key={m.deviceId} value={m.deviceId}>{m.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
                 <p className="text-xs text-surface-muted mt-2">
                   Currently selected: <span className="text-ftc-mid">{selectedLabel}</span>
                 </p>
@@ -205,9 +279,7 @@ export default function SettingsPage() {
 
         {/* ── Appearance ── */}
         <section>
-          <h2 className="text-xs font-semibold uppercase tracking-widest text-ftc-mid mb-3">
-            Appearance
-          </h2>
+          <SectionHeader icon={Palette} title="Appearance" />
           <div className="rounded-2xl border border-surface-border bg-surface-card p-5">
             <label className="block text-xs text-ftc-mid mb-3">Theme</label>
             <div className="grid grid-cols-2 gap-2">
@@ -246,14 +318,37 @@ export default function SettingsPage() {
             <p className="text-xs text-surface-muted mt-3">
               Saved on this device. Light mode is easier to read in bright conditions.
             </p>
+
+            <div className="h-px bg-surface-border my-4" />
+
+            <div className="flex items-center justify-between gap-4">
+              <div className="min-w-0">
+                <p className="text-sm text-ftc-gray font-medium">Card animations</p>
+                <p className="text-xs text-ftc-mid mt-0.5">
+                  Cursor spotlight and glow effects on meeting and folder cards.
+                </p>
+              </div>
+              <ToggleSwitch
+                checked={liveFx ?? true}
+                onChange={toggleLiveFx}
+                disabled={liveFx === null}
+                label="Card animations"
+              />
+            </div>
+            {liveFxSuperAdmin && (
+              <p className="text-[11px] text-brand mt-2 flex items-start gap-1.5">
+                <svg className="w-3 h-3 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
+                </svg>
+                You&apos;re setting the default for everyone. Anyone can still override it for themselves.
+              </p>
+            )}
           </div>
         </section>
 
         {/* ── Voice Profiles ── */}
         <section>
-          <h2 className="text-xs font-semibold uppercase tracking-widest text-ftc-mid mb-3">
-            Voice Identification
-          </h2>
+          <SectionHeader icon={Fingerprint} title="Voice Identification" />
           <Link
             href="/voice-setup"
             className="flex items-center justify-between rounded-2xl border border-surface-border bg-surface-card p-5 hover:border-brand/40 transition-colors touch-manipulation"
@@ -272,9 +367,7 @@ export default function SettingsPage() {
 
         {/* ── System Status ── */}
         <section>
-          <h2 className="text-xs font-semibold uppercase tracking-widest text-ftc-mid mb-3">
-            System Status
-          </h2>
+          <SectionHeader icon={Activity} title="System Status" />
           <div className="rounded-2xl border border-surface-border bg-surface-card px-5">
             {healthLoading ? (
               <div className="py-8 flex justify-center">
@@ -318,9 +411,7 @@ export default function SettingsPage() {
 
         {/* ── Audio Quality ── */}
         <section>
-          <h2 className="text-xs font-semibold uppercase tracking-widest text-ftc-mid mb-3">
-            Recording
-          </h2>
+          <SectionHeader icon={Disc3} title="Recording" />
           <div className="rounded-2xl border border-surface-border bg-surface-card px-5">
             <Row label="Chunk duration">
               <span className="text-sm text-ftc-mid">2 minutes (auto-saves progress)</span>
@@ -336,9 +427,7 @@ export default function SettingsPage() {
 
         {/* ── About ── */}
         <section>
-          <h2 className="text-xs font-semibold uppercase tracking-widest text-ftc-mid mb-3">
-            About
-          </h2>
+          <SectionHeader icon={Info} title="About" />
           <div className="rounded-2xl border border-surface-border bg-surface-card px-5">
             <Row label="App">
               <span className="text-sm text-ftc-mid">FTC Transcribe</span>

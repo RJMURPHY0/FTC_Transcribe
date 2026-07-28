@@ -11,6 +11,7 @@ import { estimateSeconds } from '@/lib/estimate';
 import { getAuthUser } from '@/lib/auth';
 import { ensureSchema } from '@/lib/ensure-schema';
 import AutoClaim from '@/components/AutoClaim';
+import { SpotlightCard, GlowCard } from '@/components/ui/spotlight-card';
 import {
   getOrganisations,
   getOrgTeams,
@@ -261,10 +262,10 @@ export default async function Home({
               { label: 'Complete', value: completed },
               { label: 'This week', value: thisWeek },
             ].map(({ label, value }) => (
-              <div key={label} className="rounded-2xl border border-surface-border bg-surface-card p-4 text-center">
+              <GlowCard key={label} backdrop="rgb(var(--c-surface-card))" className="p-4 text-center ring-1 ring-surface-border">
                 <p className="text-2xl font-bold text-ftc-gray">{value}</p>
                 <p className="text-xs mt-0.5 text-ftc-mid">{label}</p>
-              </div>
+              </GlowCard>
             ))}
           </div>
         )}
@@ -415,9 +416,10 @@ export default async function Home({
           <ul className="space-y-2 mb-6">
             {orgTeams.map(team => (
               <li key={team.id}>
+                <SpotlightCard>
                 <Link
                   href={`/?org=${activeOrgId}&team=${team.id}`}
-                  className="group flex items-center gap-4 rounded-2xl border border-surface-border bg-surface-card px-5 py-4 transition-colors hover:border-surface-muted active:scale-[0.99] touch-manipulation"
+                  className="group flex items-center gap-4 rounded-2xl px-5 py-4 active:scale-[0.99] touch-manipulation"
                 >
                   <div className="w-9 h-9 rounded-xl bg-brand/10 flex-shrink-0 flex items-center justify-center">
                     <svg className="w-5 h-5 text-brand" fill="none" stroke="currentColor" strokeWidth={1.75} viewBox="0 0 24 24">
@@ -431,6 +433,7 @@ export default async function Home({
                     <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
                   </svg>
                 </Link>
+                </SpotlightCard>
               </li>
             ))}
           </ul>
@@ -441,9 +444,10 @@ export default async function Home({
           <ul className="space-y-2 mb-6">
             {folders.map(folder => (
               <li key={folder.id}>
+                <SpotlightCard>
                 <Link
                   href={`/?folder=${folder.id}`}
-                  className="group flex items-center gap-4 rounded-2xl border border-surface-border bg-surface-card px-5 py-4 transition-colors hover:border-surface-muted active:scale-[0.99] touch-manipulation"
+                  className="group flex items-center gap-4 rounded-2xl px-5 py-4 active:scale-[0.99] touch-manipulation"
                 >
                   <div className="w-9 h-9 rounded-xl bg-brand/10 flex-shrink-0 flex items-center justify-center">
                     <svg className="w-5 h-5 text-brand" fill="none" stroke="currentColor" strokeWidth={1.75} viewBox="0 0 24 24">
@@ -463,6 +467,7 @@ export default async function Home({
                     <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
                   </svg>
                 </Link>
+                </SpotlightCard>
               </li>
             ))}
           </ul>

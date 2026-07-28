@@ -6,6 +6,10 @@ export interface AuthUser {
   email: string;
   canSeeAll: boolean;
   canPlayAudio: boolean;
+  // True only for the hardcoded super-admin email. Distinct from canSeeAll
+  // (which other admins may also hold): only the super-admin sets the global
+  // default for app-wide preferences like card animations.
+  isSuperAdmin: boolean;
 }
 
 // In-process permission cache — avoids a DB round-trip on every server render.
@@ -24,12 +28,12 @@ export async function getAuthUser(): Promise<AuthUser | null> {
   if (!user) return null;
 
   if (user.email === SUPER_ADMIN_EMAIL) {
-    return { id: user.id, email: user.email, canSeeAll: true, canPlayAudio: true };
+    return { id: user.id, email: user.email, canSeeAll: true, canPlayAudio: true, isSuperAdmin: true };
   }
 
   const cached = permCache.get(user.id);
   if (cached && cached.expires > Date.now()) {
-    return { id: user.id, email: user.email ?? '', canSeeAll: cached.canSeeAll, canPlayAudio: cached.canPlayAudio };
+    return { id: user.id, email: user.email ?? '', canSeeAll: cached.canSeeAll, canPlayAudio: cached.canPlayAudio, isSuperAdmin: false };
   }
 
   let canSeeAll = false;
@@ -45,7 +49,7 @@ export async function getAuthUser(): Promise<AuthUser | null> {
 
   permCache.set(user.id, { canSeeAll, canPlayAudio, expires: Date.now() + PERM_TTL_MS });
 
-  return { id: user.id, email: user.email ?? '', canSeeAll, canPlayAudio };
+  return { id: user.id, email: user.email ?? '', canSeeAll, canPlayAudio, isSuperAdmin: false };
 }
 
 /**

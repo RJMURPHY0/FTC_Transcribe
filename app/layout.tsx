@@ -1,7 +1,17 @@
 import type { Metadata, Viewport } from 'next';
+import { Inter } from 'next/font/google';
 import './globals.css';
 import GlobalChatWidget from '@/components/GlobalChatWidget';
 import ServiceWorkerRegistrar from '@/components/ServiceWorkerRegistrar';
+import LiveFxSync from '@/components/LiveFxSync';
+
+// Brand font parity with the Contacts app (Inter). Exposed as a CSS variable so
+// tailwind.config's fontFamily.sans picks it up app-wide.
+const inter = Inter({
+  subsets: ['latin'],
+  display: 'swap',
+  variable: '--font-inter',
+});
 
 export const metadata: Metadata = {
   title: 'FTC Transcribe – AI Meeting Notes',
@@ -25,7 +35,7 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className="dark" suppressHydrationWarning>
+    <html lang="en" className={`dark ${inter.variable}`} suppressHydrationWarning>
       <head>
         {/* Set theme before first paint to avoid a flash. Default is dark;
             only switches to light when the user has chosen it (key: ftc-theme). */}
@@ -45,6 +55,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body className="min-h-screen">
         {children}
+        <LiveFxSync />
         <GlobalChatWidget />
         <ServiceWorkerRegistrar />
       </body>

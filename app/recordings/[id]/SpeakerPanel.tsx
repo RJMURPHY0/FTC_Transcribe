@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
 
 const SPEAKER_COLOURS = [
   { label: 'text-blue-400',    dot: 'bg-blue-400'    },
@@ -137,25 +138,23 @@ export default function SpeakerPanel({ recordingId, speakers }: Props) {
         <div className="rounded-xl border border-brand/20 bg-brand/5 p-3 space-y-2">
           <p className="text-xs text-ftc-mid">Select the speaker to replace, then the target:</p>
           <div className="flex gap-2">
-            <select
-              title="Speaker to replace"
-              value={mergeFrom ?? ''}
-              onChange={e => setMergeFrom(e.target.value || null)}
-              className="flex-1 text-xs bg-surface border border-surface-border rounded-lg px-2.5 py-1.5 text-ftc-gray focus:outline-none"
-            >
-              <option value="">Replace…</option>
-              {speakers.map(s => <option key={s} value={s}>{names[s] ?? s}</option>)}
-            </select>
+            <Select value={mergeFrom ?? undefined} onValueChange={(v) => setMergeFrom(v || null)}>
+              <SelectTrigger title="Speaker to replace" className="w-auto flex-1 min-w-0 h-auto rounded-lg px-2.5 py-1.5 text-xs">
+                <SelectValue placeholder="Replace…" />
+              </SelectTrigger>
+              <SelectContent>
+                {speakers.map(s => <SelectItem key={s} value={s}>{names[s] ?? s}</SelectItem>)}
+              </SelectContent>
+            </Select>
             <span className="text-xs text-ftc-mid self-center">→</span>
-            <select
-              title="Speaker to merge into"
-              value={mergeTo ?? ''}
-              onChange={e => setMergeTo(e.target.value || null)}
-              className="flex-1 text-xs bg-surface border border-surface-border rounded-lg px-2.5 py-1.5 text-ftc-gray focus:outline-none"
-            >
-              <option value="">Into…</option>
-              {speakers.filter(s => s !== mergeFrom).map(s => <option key={s} value={s}>{names[s] ?? s}</option>)}
-            </select>
+            <Select value={mergeTo ?? undefined} onValueChange={(v) => setMergeTo(v || null)}>
+              <SelectTrigger title="Speaker to merge into" className="w-auto flex-1 min-w-0 h-auto rounded-lg px-2.5 py-1.5 text-xs">
+                <SelectValue placeholder="Into…" />
+              </SelectTrigger>
+              <SelectContent>
+                {speakers.filter(s => s !== mergeFrom).map(s => <SelectItem key={s} value={s}>{names[s] ?? s}</SelectItem>)}
+              </SelectContent>
+            </Select>
           </div>
           <button
             type="button"

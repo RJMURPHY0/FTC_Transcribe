@@ -65,6 +65,18 @@ model TranscribePermission {
   @@map("transcribe_permissions")
 }
 
+// Per-user app preferences. One row per user (user_id = auth uid). A reserved
+// row user_id='DEFAULT' holds the super-admin-set global default; individual
+// user rows override it. A null column means "inherit" (fall back to DEFAULT,
+// then the hardcoded default). liveFx = card motion / spotlight-glow effects.
+model UserSetting {
+  userId    String   @id @map("user_id")
+  liveFx    Boolean? @map("live_fx")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("user_settings")
+}
+
 // Raw audio chunks stored during recording — transcribed in bulk at finalize time.
 // Storing audio here (instead of transcribing inline) means the upload phase
 // can never fail due to AI API errors, rate limits, or timeouts.

@@ -59,6 +59,12 @@ export async function ensureSchema() {
     await prisma.$executeRaw`ALTER TABLE "VoiceProfile" ADD COLUMN IF NOT EXISTS "audioPath" TEXT NOT NULL DEFAULT ''`;
     await prisma.$executeRaw`ALTER TABLE transcribe_permissions ADD COLUMN IF NOT EXISTS can_play_audio BOOLEAN NOT NULL DEFAULT TRUE`;
     await prisma.$executeRaw`
+      CREATE TABLE IF NOT EXISTS user_settings (
+        user_id    TEXT NOT NULL PRIMARY KEY,
+        live_fx    BOOLEAN,
+        updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`;
+    await prisma.$executeRaw`
       CREATE TABLE IF NOT EXISTS "SpeakerEmbedding" (
         "id"           TEXT NOT NULL PRIMARY KEY,
         "recordingId"  TEXT NOT NULL,

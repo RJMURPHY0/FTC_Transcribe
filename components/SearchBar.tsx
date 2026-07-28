@@ -155,7 +155,7 @@ export default function SearchBar({ canSeeAll = false }: { canSeeAll?: boolean }
 
       {/* ── Filters panel ── */}
       {filtersOpen && (
-        <div className="absolute top-full mt-1.5 right-0 z-40 w-80 rounded-2xl border border-surface-border bg-surface-card shadow-xl p-4 space-y-4">
+        <div className="absolute top-full mt-1.5 right-0 z-40 w-80 rounded-2xl border border-surface-border bg-surface-card shadow-xl p-4 space-y-4 animate-in fade-in-0 zoom-in-95 slide-in-from-top-2 duration-150">
           <div className="flex items-center justify-between">
             <p className="text-xs font-semibold uppercase tracking-widest text-ftc-mid">Filters</p>
             {hasFilters && (
@@ -270,7 +270,7 @@ export default function SearchBar({ canSeeAll = false }: { canSeeAll?: boolean }
 
       {/* ── Results dropdown ── */}
       {open && (
-        <div className="absolute top-full mt-1.5 left-0 right-0 z-30 rounded-2xl border border-surface-border bg-surface-card shadow-xl overflow-hidden">
+        <div className="absolute top-full mt-1.5 left-0 right-0 z-30 rounded-2xl border border-surface-border bg-surface-card shadow-xl overflow-hidden animate-in fade-in-0 zoom-in-95 slide-in-from-top-2 duration-150">
           {aiActive && (
             <div className="flex items-center gap-1.5 px-4 py-2 border-b border-surface-border text-[11px] font-medium text-brand">
               <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">

@@ -46,7 +46,7 @@ export default function LoginPage() {
           <img src="/logo.png" alt="FTC Transcribe" className="h-10 object-contain" />
         </div>
 
-        <div className="rounded-2xl border border-surface-border bg-surface-card p-8">
+        <div className="rounded-2xl border border-surface-border bg-surface-raised dark:bg-surface-card p-8">
           <h1 className="text-lg font-semibold text-ftc-gray mb-1">Sign in</h1>
           <p className="text-sm text-ftc-mid mb-6">Use your FTC account to continue</p>
 

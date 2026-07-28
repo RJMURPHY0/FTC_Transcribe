@@ -1,4 +1,5 @@
 import type { Config } from 'tailwindcss';
+import tailwindcssAnimate from 'tailwindcss-animate';
 
 const config: Config = {
   content: [
@@ -34,6 +35,48 @@ const config: Config = {
           mid:     'rgb(var(--c-ftc-mid) / <alpha-value>)',   // muted text
           dark:    'rgb(var(--c-ftc-dark) / <alpha-value>)',  // FTC dark charcoal
         },
+
+        // ── shadcn-compatible semantic aliases ──
+        // Mapped onto the surface/brand tokens above so the ported Radix
+        // primitives (Select / DropdownMenu / Popover / Card) inherit dark mode
+        // and the orange accent with zero extra config. Single source of truth
+        // stays the --c-* channels; these are just alternate names.
+        background:  'rgb(var(--c-surface) / <alpha-value>)',
+        foreground:  'rgb(var(--c-ftc-gray) / <alpha-value>)',
+        border:      'rgb(var(--c-surface-border) / <alpha-value>)',
+        input:       'rgb(var(--c-surface-border) / <alpha-value>)',
+        ring:        'rgb(var(--c-brand) / <alpha-value>)',
+        card: {
+          DEFAULT:    'rgb(var(--c-surface-card) / <alpha-value>)',
+          foreground: 'rgb(var(--c-ftc-gray) / <alpha-value>)',
+        },
+        popover: {
+          DEFAULT:    'rgb(var(--c-surface-card) / <alpha-value>)',
+          foreground: 'rgb(var(--c-ftc-gray) / <alpha-value>)',
+        },
+        primary: {
+          DEFAULT:    'rgb(var(--c-brand) / <alpha-value>)',
+          foreground: 'rgb(255 255 255 / <alpha-value>)',
+        },
+        secondary: {
+          DEFAULT:    'rgb(var(--c-surface-raised) / <alpha-value>)',
+          foreground: 'rgb(var(--c-ftc-gray) / <alpha-value>)',
+        },
+        muted: {
+          DEFAULT:    'rgb(var(--c-surface-raised) / <alpha-value>)',
+          foreground: 'rgb(var(--c-ftc-mid) / <alpha-value>)',
+        },
+        accent: {
+          DEFAULT:    'rgb(var(--c-surface-raised) / <alpha-value>)',
+          foreground: 'rgb(var(--c-ftc-gray) / <alpha-value>)',
+        },
+        destructive: {
+          DEFAULT:    'rgb(239 68 68 / <alpha-value>)',
+          foreground: 'rgb(255 255 255 / <alpha-value>)',
+        },
+      },
+      fontFamily: {
+        sans: ['var(--font-inter)', 'ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'sans-serif'],
       },
       boxShadow: {
         brand:        '0 4px 20px rgba(243,146,0,0.28)',
@@ -43,7 +86,7 @@ const config: Config = {
       },
     },
   },
-  plugins: [],
+  plugins: [tailwindcssAnimate],
 };
 
 export default config;
