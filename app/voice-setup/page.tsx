@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
+import { getAudioConstraint } from '@/lib/mic-select';
 
 // Longer, phonetically varied passages produce far stronger voiceprints than
 // short sentences — total enrollment speech should exceed ~60 seconds. The
@@ -174,9 +175,8 @@ export default function VoiceSetupPage() {
 
     let stream: MediaStream;
     try {
-      const preferredMic = localStorage.getItem('preferredMicId');
       stream = await navigator.mediaDevices.getUserMedia({
-        audio: preferredMic ? { deviceId: { ideal: preferredMic } } : true,
+        audio: await getAudioConstraint(),
       });
       streamRef.current = stream;
     } catch {

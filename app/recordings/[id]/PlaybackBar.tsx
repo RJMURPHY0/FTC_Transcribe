@@ -9,7 +9,7 @@ export interface PlaybackMeta {
   durationSecs: number; // 0 = unknown
   words: number;
   language: string;     // '' = unknown (pre-language recordings)
-  peaks: number[];      // pseudo-waveform; empty = let WaveSurfer decode
+  peaks: number[];      // pseudo-waveform; empty = seeded placeholder bars
 }
 
 export interface PlaybackBarHandle {

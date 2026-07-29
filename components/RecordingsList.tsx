@@ -409,7 +409,7 @@ export default function RecordingsList({
                 aria-label={isSelected ? `Deselect (position ${selNum})` : 'Select'}
                 onClick={(e) => toggle(rec.id, e)}
                 className={`
-                  absolute top-1/2 left-3 -translate-y-1/2 z-10
+                  absolute top-1/2 left-3 -translate-y-1/2 z-20
                   w-6 h-6 rounded-full flex items-center justify-center
                   transition-all duration-150 touch-manipulation
                   ${isSelected

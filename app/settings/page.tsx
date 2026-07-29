@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { Mic, Palette, Fingerprint, Activity, Disc3, Info } from 'lucide-react';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
 import { setGlowEnabled } from '@/components/ui/spotlight-card';
+import { pickBestMic } from '@/lib/mic-select';
 
 interface MicDevice { deviceId: string; label: string; }
 interface Health { db: boolean; openai: boolean; anthropic: boolean; groq: boolean; airtable: boolean; }
@@ -111,10 +112,10 @@ export default function SettingsPage() {
     } catch { /* keep the optimistic local state; it'll re-sync on next load */ }
   };
 
-  // Load saved mic preference
+  // Load saved mic preference. Missing → 'auto' (auto-detect best device).
   useEffect(() => {
-    const saved = localStorage.getItem('preferredMicId') ?? '';
-    setSelected(saved);
+    const saved = localStorage.getItem('preferredMicId');
+    setSelected(saved || 'auto');
   }, []);
 
   // Sync theme toggle with the current choice (set pre-paint in layout.tsx)
@@ -163,17 +164,21 @@ export default function SettingsPage() {
     void loadMics(false);
   }, [loadMics]);
 
-  const saveMic = (deviceId: string) => {
-    setSelected(deviceId);
-    if (deviceId) localStorage.setItem('preferredMicId', deviceId);
-    else localStorage.removeItem('preferredMicId');
+  const saveMic = (choice: string) => {
+    setSelected(choice);
+    localStorage.setItem('preferredMicId', choice);
   };
+
+  // What auto-detect would pick right now (Whisper-style name ranking).
+  // Placeholder labels ("Microphone 1") mean permission not yet granted.
+  const autoBest = pickBestMic(mics.filter(m => m.label && !/^Microphone \d+$/.test(m.label)));
 
   const testMic = async () => {
     setTestResult('Testing…');
     try {
+      const testId = selectedMic === 'auto' ? autoBest?.deviceId : selectedMic === 'system' ? '' : selectedMic;
       const constraints: MediaStreamConstraints = {
-        audio: selectedMic ? { deviceId: { exact: selectedMic } } : true,
+        audio: testId ? { deviceId: { exact: testId } } : true,
       };
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       setGranted(true);
@@ -186,7 +191,12 @@ export default function SettingsPage() {
     }
   };
 
-  const selectedLabel = mics.find(m => m.deviceId === selectedMic)?.label ?? 'System default';
+  const selectedLabel =
+    selectedMic === 'auto'
+      ? `Auto-detect${autoBest ? ` (${autoBest.label})` : ''}`
+      : selectedMic === 'system'
+        ? 'System default'
+        : mics.find(m => m.deviceId === selectedMic)?.label ?? 'System default';
 
   const needsAction = health && (!health.db || (!health.openai && !health.groq) || !health.anthropic);
 
@@ -234,14 +244,17 @@ export default function SettingsPage() {
               <div>
                 <label className="block text-xs text-ftc-mid mb-2">Default microphone</label>
                 <Select
-                  value={selectedMic || '__default__'}
-                  onValueChange={(v) => saveMic(v === '__default__' ? '' : v)}
+                  value={selectedMic || 'auto'}
+                  onValueChange={(v) => saveMic(v)}
                 >
                   <SelectTrigger className="py-2.5">
-                    <SelectValue placeholder="System default" />
+                    <SelectValue placeholder="Auto-detect (best available)" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="__default__">System default</SelectItem>
+                    <SelectItem value="auto">
+                      {autoBest ? `Auto-detect (${autoBest.label})` : 'Auto-detect (best available)'}
+                    </SelectItem>
+                    <SelectItem value="system">System default</SelectItem>
                     {mics.filter(m => m.deviceId).map(m => (
                       <SelectItem key={m.deviceId} value={m.deviceId}>{m.label}</SelectItem>
                     ))}

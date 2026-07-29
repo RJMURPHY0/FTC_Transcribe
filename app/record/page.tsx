@@ -3,6 +3,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { getAudioConstraint } from '@/lib/mic-select';
 
 type State = 'idle' | 'recording' | 'uploading' | 'queued' | 'error';
 type Source = 'web' | 'teams';
@@ -159,11 +160,10 @@ export default function RecordPage() {
       throw new Error('No meeting audio was shared. In the picker, choose the meeting tab or your whole screen and tick “Share tab audio / system audio”.');
     }
 
-    const preferredMicId = localStorage.getItem('preferredMicId');
     let mic: MediaStream;
     try {
       mic = await navigator.mediaDevices.getUserMedia({
-        audio: preferredMicId ? { deviceId: { ideal: preferredMicId } } : true,
+        audio: await getAudioConstraint(),
       });
     } catch (e) {
       display.getTracks().forEach((t) => t.stop()); // don't leak the display capture
@@ -464,14 +464,10 @@ export default function RecordPage() {
       if (!createRes.ok || !createData.id) throw new Error(createData.error ?? 'Could not create recording');
       recordingIdRef.current = createData.id;
 
-      const preferredMicId = localStorage.getItem('preferredMicId');
-      const audioConstraint: MediaTrackConstraints | boolean = preferredMicId
-        ? { deviceId: { ideal: preferredMicId } }
-        : true;
       // 'teams' = capture the meeting's system audio (+ mic); 'web' = mic only.
       const stream = source === 'teams'
         ? await getMeetingStream()
-        : await navigator.mediaDevices.getUserMedia({ audio: audioConstraint });
+        : await navigator.mediaDevices.getUserMedia({ audio: await getAudioConstraint() });
       streamRef.current = stream;
       await requestWakeLock();
 
@@ -532,11 +528,7 @@ export default function RecordPage() {
     try {
       // Re-acquire the mic. The browser already granted permission this session,
       // so no dialog appears — iOS just reactivates the mic.
-      const preferredMicId = localStorage.getItem('preferredMicId');
-      const audioConstraint: MediaTrackConstraints | boolean = preferredMicId
-        ? { deviceId: { ideal: preferredMicId } }
-        : true;
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraint });
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: await getAudioConstraint() });
       streamRef.current = stream;
 
       startVAD(stream);
