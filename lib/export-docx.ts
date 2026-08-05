@@ -37,6 +37,13 @@ const SIZE_BODY  = 22;   // 11pt
 const SIZE_META  = 19;   // 9.5pt — dates, due labels
 const SIZE_FOOT  = 16;   // 8pt
 
+// Letter-spacing (tracking) — docx `characterSpacing` is in TWENTIETHS OF A
+// POINT, not points. The all-caps masthead and section bars get a light 1.2–1.4pt
+// of tracking (matching the PDF); the earlier 100–140 here meant 5–7pt, which
+// blew the caps apart. Do not raise these into three digits.
+const TRACK      = 24;   // 1.2pt — section bars
+const TRACK_WIDE = 28;   // 1.4pt — masthead
+
 type Block = Paragraph | Table;
 
 // Every run is created through this so `noProof` is always set: it tells Word
@@ -66,9 +73,9 @@ function logoParagraph(data: Buffer): Paragraph {
 function mastheadBand(): Paragraph {
   return new Paragraph({
     children: [
-      run({ text: MASTHEAD, bold: true, color: WHITE, size: SIZE_BAR, characterSpacing: 140, font: FONT_HEADING }),
+      run({ text: MASTHEAD, bold: true, color: WHITE, size: SIZE_BAR, characterSpacing: TRACK_WIDE, font: FONT_HEADING }),
       run({ text: '   |   ', color: WHITE, size: SIZE_BAR, font: FONT_HEADING }),
-      run({ text: 'MEETING NOTES', color: WHITE, size: SIZE_BAR, characterSpacing: 100, font: FONT_HEADING }),
+      run({ text: 'MEETING NOTES', color: WHITE, size: SIZE_BAR, characterSpacing: TRACK_WIDE, font: FONT_HEADING }),
     ],
     shading: { type: ShadingType.SOLID, color: HEADER, fill: HEADER },
     spacing: { before: 0, after: 0, line: 300 },
@@ -104,7 +111,7 @@ function dateRow(date: Date): Paragraph {
 function sectionBar(text: string): Paragraph {
   return new Paragraph({
     children: [
-      run({ text: text.toUpperCase(), bold: true, color: WHITE, size: SIZE_BAR, characterSpacing: 100, font: FONT_HEADING }),
+      run({ text: text.toUpperCase(), bold: true, color: WHITE, size: SIZE_BAR, characterSpacing: TRACK, font: FONT_HEADING }),
     ],
     shading: { type: ShadingType.SOLID, color: ORANGE, fill: ORANGE },
     spacing: { before: 400, after: 200, line: 280 },

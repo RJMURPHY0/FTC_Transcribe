@@ -37,12 +37,14 @@ export const DOC = {
 /** Word/docx rejects the leading '#', and 8-char ARGB. Six chars, no hash. */
 export const hex6 = (c: string) => c.replace('#', '').toLowerCase();
 
-// FTC brand guide: Avenir Black for headings, Avenir Roman for body. Both are
-// Word-safe names, so Word keeps them where Avenir is installed and substitutes
-// gracefully where it isn't. @react-pdf has no Avenir, so the PDF uses the
-// metric-similar built-in Helvetica for the same visual weight.
-export const FONT_HEADING = 'Avenir Black';
-export const FONT_BODY = 'Avenir Roman';
+// The brand font is Avenir, but naming it in the .docx backfires: most Word
+// installs don't have Avenir and substitute it with an ill-fitting face, so the
+// download looks nothing like the PDF. Arial is Helvetica's metric-equivalent
+// and ships with every copy of Word, so it renders identically everywhere and
+// matches the PDF (which uses the built-in Helvetica). Headings are the same
+// family in bold — no separate "black" face to go missing.
+export const FONT_HEADING = 'Arial';
+export const FONT_BODY = 'Arial';
 
 /** Masthead strapline, left of the document title. */
 export const MASTHEAD = 'FTC TRANSCRIBE';
