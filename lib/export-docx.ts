@@ -8,7 +8,7 @@
 import {
   Document, Packer, Paragraph, TextRun, ImageRun,
   Table, TableRow, TableCell, WidthType, TableLayoutType,
-  AlignmentType, BorderStyle, ShadingType, LineRuleType, VerticalAlign,
+  AlignmentType, BorderStyle, ShadingType, LineRuleType, VerticalAlign, ImportedXmlComponent,
   convertInchesToTwip,
   type IRunOptions,
 } from 'docx';
@@ -56,9 +56,15 @@ const CONTENT_W    = 11906 - PAGE_SIDE * 2;
 
 // Vertical padding inside a colour band, and the gaps around a section bar.
 // Twips: 120 = 6pt, matching the PDF's paddingVertical on the same bars.
-const BAND_PAD_Y     = 120;
 const GAP_BEFORE_BAR = 260;
 const GAP_AFTER_BAR  = 120;
+const GAP_AFTER_MAST = 340;
+
+// Band geometry, in points, mirroring the PDF's padded bars.
+const BAR_H_PT       = 24;   // section bar: 7pt padding either side of 10pt caps
+const MASTHEAD_H_PT  = 28;   // masthead carries a little more air
+const ACCENT_RULE_PT = 3;    // the orange rule under the masthead
+const BAND_PAD_X_EMU = 114300; // 9pt of left/right padding inside a band
 
 const NO_BORDER = { style: BorderStyle.NONE, size: 0, color: 'auto' } as const;
 const CELL_BORDERS = { top: NO_BORDER, bottom: NO_BORDER, left: NO_BORDER, right: NO_BORDER };
@@ -91,59 +97,97 @@ function logoParagraph(data: Buffer): Paragraph {
   });
 }
 
+// ── Colour bands ──────────────────────────────────────────────────────────────
+//
+// The bands are DrawingML `roundRect` shapes, hand-written as raw XML.
+//
+// Nothing else in Word rounds a filled bar: paragraph shading only fills the
+// line box (and squares its corners), and a table cell can't round either. The
+// docx shape API exposes fill and outline but no preset geometry, so the shape
+// XML is written here and injected. The text lives in the shape's text body, so
+// it stays real, selectable text rather than a picture of a heading.
+//
+// Word validates this XML strictly: `wps:cNvSpPr` and `wp:cNvGraphicFramePr`
+// are both required, and omitting either makes Word refuse to open the file.
+// If you edit any of this, regenerate and open the result in Word before
+// shipping it.
+
+const EMU_PER_PT = 12700;
+/** roundRect `adj` is a fraction of the shorter side: 12500 → a 3pt radius on a
+ *  24pt bar, the same corner the PDF draws with `borderRadius: 3`. */
+const BAND_RADIUS_ADJ = 12500;
+const CONTENT_PT = CONTENT_W / 20;
+
+let drawingId = 1000;
+
+const xmlEscape = (s: string) =>
+  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+/** Turn a raw `<w:p>` string into a document child. */
+function rawParagraph(xml: string): Paragraph {
+  // fromXmlString wraps the element; the real w:p is its first child.
+  const imported = ImportedXmlComponent.fromXmlString(xml) as unknown as { root: Paragraph[] };
+  return imported.root[0];
+}
+
+interface BandOptions {
+  fill: string;
+  heightPt: number;
+  /** Omit for a plain filled rule with no text. */
+  label?: string;
+  tracking?: number;
+  /** Square corners — used for the thin accent rule. */
+  square?: boolean;
+  keepNext?: boolean;
+}
+
+function band({ fill, heightPt, label, tracking = TRACK, square = false, keepNext = false }: BandOptions): Paragraph {
+  const cx = Math.round(CONTENT_PT * EMU_PER_PT);
+  const cy = Math.round(heightPt * EMU_PER_PT);
+  const id = ++drawingId;
+  const geom = square
+    ? '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>'
+    : `<a:prstGeom prst="roundRect"><a:avLst><a:gd name="adj" fmla="val ${BAND_RADIUS_ADJ}"/></a:avLst></a:prstGeom>`;
+  const textBody = label
+    ? `<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/></w:pPr>`
+      + `<w:r><w:rPr><w:rFonts w:ascii="${FONT_HEADING}" w:hAnsi="${FONT_HEADING}"/><w:b/>`
+      + `<w:color w:val="${WHITE}"/><w:sz w:val="${SIZE_BAR}"/><w:spacing w:val="${tracking}"/><w:noProof/></w:rPr>`
+      + `<w:t xml:space="preserve">${xmlEscape(label)}</w:t></w:r></w:p>`
+    : `<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="20" w:lineRule="exact"/></w:pPr></w:p>`;
+
+  return rawParagraph(
+    `<w:p><w:pPr>${keepNext ? '<w:keepNext/>' : ''}`
+    + `<w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/></w:pPr>`
+    // The namespaces are redeclared inline on purpose: `a:` in particular is
+    // not declared on the document root, and without it Word rejects the file.
+    + `<w:r><w:drawing>`
+    + `<wp:inline distT="0" distB="0" distL="0" distR="0" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">`
+    + `<wp:extent cx="${cx}" cy="${cy}"/>`
+    + `<wp:docPr id="${id}" name="band-${id}"/><wp:cNvGraphicFramePr/>`
+    + `<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">`
+    + `<a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">`
+    + `<wps:wsp xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">`
+    + `<wps:cNvSpPr txBox="1"/><wps:spPr>`
+    + `<a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm>`
+    + geom
+    + `<a:solidFill><a:srgbClr val="${fill}"/></a:solidFill><a:ln><a:noFill/></a:ln>`
+    + `</wps:spPr><wps:txbx><w:txbxContent>${textBody}</w:txbxContent></wps:txbx>`
+    + `<wps:bodyPr rot="0" vert="horz" wrap="square" lIns="${BAND_PAD_X_EMU}" tIns="0" rIns="${BAND_PAD_X_EMU}" bIns="0" anchor="ctr" anchorCtr="0"/>`
+    + `</wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`,
+  );
+}
+
 /**
- * A full-width colour band with real vertical padding.
- *
- * Word's paragraph shading only fills the line box — it ignores space before
- * and after — so a shaded paragraph gives a bar barely taller than its text,
- * and "at least" line spacing pushes the text to the bottom of the band
- * instead of centring it. A one-cell borderless table is the only construct
- * that gives CSS-style padding with vertically-centred text, so the bars match
- * the PDF's `paddingVertical`.
+ * Charcoal masthead band with the orange accent rule flush beneath it. The rule
+ * used to be a bordered paragraph, which left a full empty line between the two
+ * and let the rule run to a different width; both are now shapes of the same
+ * width in back-to-back zero-spacing paragraphs, as in the PDF.
  */
-function colourBand(fill: string, children: TextRun[], padY = BAND_PAD_Y): Table {
-  return new Table({
-    width: { size: 100, type: WidthType.PERCENTAGE },
-    layout: TableLayoutType.FIXED,
-    borders: {
-      top: NO_BORDER, bottom: NO_BORDER, left: NO_BORDER, right: NO_BORDER,
-      insideHorizontal: NO_BORDER, insideVertical: NO_BORDER,
-    },
-    rows: [
-      new TableRow({
-        cantSplit: true,
-        children: [
-          new TableCell({
-            children: [new Paragraph({
-              children,
-              spacing: { before: 0, after: 0, line: 240, lineRule: LineRuleType.AUTO },
-            })],
-            shading: { type: ShadingType.SOLID, color: fill, fill },
-            borders: CELL_BORDERS,
-            margins: { top: padY, bottom: padY, left: 160, right: 160 },
-            verticalAlign: VerticalAlign.CENTER,
-          }),
-        ],
-      }),
-    ],
-  });
-}
-
-/** Charcoal masthead band — the product name, then this document's kind. */
-function mastheadBand(): Table {
-  return colourBand(HEADER, [
-    run({ text: MASTHEAD, bold: true, color: WHITE, size: SIZE_BAR, characterSpacing: TRACK_WIDE, font: FONT_HEADING }),
-    run({ text: '   |   ', color: WHITE, size: SIZE_BAR, font: FONT_HEADING }),
-    run({ text: 'MEETING NOTES', color: WHITE, size: SIZE_BAR, characterSpacing: TRACK_WIDE, font: FONT_HEADING }),
-  ]);
-}
-
-/** The 3px orange accent rule directly under the band. */
-function accentRule(): Paragraph {
-  return new Paragraph({
-    border: { bottom: { style: BorderStyle.SINGLE, size: 24, color: ORANGE, space: 0 } },
-    spacing: { before: 0, after: 340 },
-  });
+function mastheadBand(): Paragraph[] {
+  return [
+    band({ fill: HEADER, heightPt: MASTHEAD_H_PT, label: `${MASTHEAD}   |   MEETING NOTES`, tracking: TRACK_WIDE }),
+    band({ fill: ORANGE, heightPt: ACCENT_RULE_PT, square: true }),
+  ];
 }
 
 /** h1 — document title, over a 2px orange rule. */
@@ -169,9 +213,7 @@ function dateRow(date: Date): Paragraph {
 function sectionBar(text: string): Block[] {
   return [
     gap(GAP_BEFORE_BAR),
-    colourBand(ORANGE, [
-      run({ text: text.toUpperCase(), bold: true, color: WHITE, size: SIZE_BAR, characterSpacing: TRACK, font: FONT_HEADING }),
-    ]),
+    band({ fill: ORANGE, heightPt: BAR_H_PT, label: text.toUpperCase(), keepNext: true }),
     gap(GAP_AFTER_BAR),
   ];
 }
@@ -305,8 +347,8 @@ export async function buildMeetingDocx(doc: MeetingDoc, logo: Buffer | null): Pr
 
   if (logo) children.push(logoParagraph(logo));
   children.push(
-    mastheadBand(),
-    accentRule(),
+    ...mastheadBand(),
+    gap(GAP_AFTER_MAST),
     documentTitle(doc.title),
     dateRow(doc.createdAt),
   );
