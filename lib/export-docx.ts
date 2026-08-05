@@ -10,6 +10,7 @@ import {
   Table, TableRow, TableCell, WidthType, TableLayoutType,
   AlignmentType, BorderStyle, ShadingType,
   convertInchesToTwip,
+  type IRunOptions,
 } from 'docx';
 import type { TopicSection } from '@/lib/ai';
 import { formatDue } from '@/lib/action-items';
@@ -38,6 +39,20 @@ const SIZE_FOOT  = 16;   // 8pt
 
 type Block = Paragraph | Table;
 
+// Every run is created through this so `noProof` is always set: it tells Word
+// not to spell/grammar-check the run. Without it Word draws red/blue proofing
+// squiggles under the first word of every bullet (each note is a sentence
+// fragment), which makes an otherwise clean document look marked-up on screen.
+// The squiggles never print, but they shouldn't be there at all.
+const run = (opts: IRunOptions) => new TextRun({ noProof: true, ...opts });
+
+// Round list marker (U+2022). The heavy display weight (Avenir Black) is left
+// off the marker glyphs deliberately — a bullet/tick set in a display font
+// substitutes to an inconsistent glyph in web viewers (Google Docs, previews);
+// in the body font it renders as the same small filled dot / check everywhere.
+const BULLET = '•';
+const TICK   = '✓';
+
 // ── Building blocks ───────────────────────────────────────────────────────────
 
 function logoParagraph(data: Buffer): Paragraph {
@@ -51,9 +66,9 @@ function logoParagraph(data: Buffer): Paragraph {
 function mastheadBand(): Paragraph {
   return new Paragraph({
     children: [
-      new TextRun({ text: MASTHEAD, bold: true, color: WHITE, size: SIZE_BAR, characterSpacing: 140, font: FONT_HEADING }),
-      new TextRun({ text: '   |   ', color: WHITE, size: SIZE_BAR, font: FONT_HEADING }),
-      new TextRun({ text: 'MEETING NOTES', color: WHITE, size: SIZE_BAR, characterSpacing: 100, font: FONT_HEADING }),
+      run({ text: MASTHEAD, bold: true, color: WHITE, size: SIZE_BAR, characterSpacing: 140, font: FONT_HEADING }),
+      run({ text: '   |   ', color: WHITE, size: SIZE_BAR, font: FONT_HEADING }),
+      run({ text: 'MEETING NOTES', color: WHITE, size: SIZE_BAR, characterSpacing: 100, font: FONT_HEADING }),
     ],
     shading: { type: ShadingType.SOLID, color: HEADER, fill: HEADER },
     spacing: { before: 0, after: 0, line: 300 },
@@ -72,7 +87,7 @@ function accentRule(): Paragraph {
 /** h1 — document title, over a 2px orange rule. */
 function documentTitle(text: string): Paragraph {
   return new Paragraph({
-    children: [new TextRun({ text, bold: true, color: HEADING, size: SIZE_TITLE, font: FONT_HEADING })],
+    children: [run({ text, bold: true, color: HEADING, size: SIZE_TITLE, font: FONT_HEADING })],
     spacing: { before: 0, after: 140 },
     border: { bottom: { style: BorderStyle.SINGLE, size: 16, color: ORANGE, space: 6 } },
   });
@@ -80,7 +95,7 @@ function documentTitle(text: string): Paragraph {
 
 function dateRow(date: Date): Paragraph {
   return new Paragraph({
-    children: [new TextRun({ text: formatLongDate(date), color: SOFT, size: SIZE_META, font: FONT_BODY })],
+    children: [run({ text: formatLongDate(date), color: SOFT, size: SIZE_META, font: FONT_BODY })],
     spacing: { before: 60, after: 120 },
   });
 }
@@ -89,7 +104,7 @@ function dateRow(date: Date): Paragraph {
 function sectionBar(text: string): Paragraph {
   return new Paragraph({
     children: [
-      new TextRun({ text: text.toUpperCase(), bold: true, color: WHITE, size: SIZE_BAR, characterSpacing: 100, font: FONT_HEADING }),
+      run({ text: text.toUpperCase(), bold: true, color: WHITE, size: SIZE_BAR, characterSpacing: 100, font: FONT_HEADING }),
     ],
     shading: { type: ShadingType.SOLID, color: ORANGE, fill: ORANGE },
     spacing: { before: 400, after: 200, line: 280 },
@@ -99,7 +114,7 @@ function sectionBar(text: string): Paragraph {
 
 function bodyText(text: string): Paragraph {
   return new Paragraph({
-    children: [new TextRun({ text, color: TEXT, size: SIZE_BODY, font: FONT_BODY })],
+    children: [run({ text, color: TEXT, size: SIZE_BODY, font: FONT_BODY })],
     spacing: { after: 120, line: 300 },
     alignment: AlignmentType.JUSTIFIED,
   });
@@ -108,8 +123,8 @@ function bodyText(text: string): Paragraph {
 function bulletPoint(text: string): Paragraph {
   return new Paragraph({
     children: [
-      new TextRun({ text: '●  ', color: ORANGE, size: SIZE_BODY, font: FONT_HEADING }),
-      new TextRun({ text, color: TEXT, size: SIZE_BODY, font: FONT_BODY }),
+      run({ text: `${BULLET}  `, color: ORANGE, size: SIZE_BODY, font: FONT_BODY }),
+      run({ text, color: TEXT, size: SIZE_BODY, font: FONT_BODY }),
     ],
     indent: { left: 360, hanging: 200 },
     spacing: { after: 140, line: 290 },
@@ -125,9 +140,9 @@ function numberedItem(n: number, text: string, due: string | null | undefined, d
   const dueLabel = formatDue(due);
   return new Paragraph({
     children: [
-      new TextRun({ text: `${n}.  `, bold: true, color: ORANGE, size: SIZE_BODY, font: FONT_HEADING, strike: done }),
-      new TextRun({ text, color: done ? SOFT : TEXT, size: SIZE_BODY, font: FONT_BODY, strike: done }),
-      new TextRun({
+      run({ text: `${n}.  `, bold: true, color: ORANGE, size: SIZE_BODY, font: FONT_HEADING, strike: done }),
+      run({ text, color: done ? SOFT : TEXT, size: SIZE_BODY, font: FONT_BODY, strike: done }),
+      run({
         text: dueLabel ? `   (Due ${dueLabel})` : '   (No date set)',
         color: SOFT, size: SIZE_META, italics: true, font: FONT_BODY, strike: done,
       }),
@@ -140,8 +155,8 @@ function numberedItem(n: number, text: string, due: string | null | undefined, d
 function checkItem(text: string): Paragraph {
   return new Paragraph({
     children: [
-      new TextRun({ text: '✓  ', bold: true, color: ORANGE, size: SIZE_BODY, font: FONT_HEADING }),
-      new TextRun({ text, color: TEXT, size: SIZE_BODY, font: FONT_BODY }),
+      run({ text: `${TICK}  `, bold: true, color: ORANGE, size: SIZE_BODY, font: FONT_BODY }),
+      run({ text, color: TEXT, size: SIZE_BODY, font: FONT_BODY }),
     ],
     indent: { left: 360, hanging: 200 },
     spacing: { after: 140, line: 290 },
@@ -177,8 +192,8 @@ function topicsTable(topics: TopicSection[]): Table {
       });
       return new TableRow({
         children: [
-          cell([new TextRun({ text: formatClock(t.time), bold: true, color: ORANGE, size: SIZE_META, font: FONT_HEADING })]),
-          cell([new TextRun({ text: t.title, color: TEXT, size: SIZE_BODY, font: FONT_BODY })]),
+          cell([run({ text: formatClock(t.time), bold: true, color: ORANGE, size: SIZE_META, font: FONT_HEADING })]),
+          cell([run({ text: t.title, color: TEXT, size: SIZE_BODY, font: FONT_BODY })]),
         ],
       });
     }),
@@ -192,7 +207,7 @@ function spacer(after = 160): Paragraph {
 function footerParagraph(date: Date): Paragraph {
   return new Paragraph({
     children: [
-      new TextRun({
+      run({
         text: `Generated by FTC Transcribe  ·  ${formatShortDate(date)}`,
         color: SOFT, size: SIZE_FOOT, italics: true, font: FONT_BODY,
       }),
