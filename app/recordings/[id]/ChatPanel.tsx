@@ -104,19 +104,18 @@ export default function ChatPanel({ recordingId, userId }: { recordingId: string
   const [mounted, setMounted] = useState(false);
   const [height, setHeight] = useState(DEFAULT_HEIGHT);
   const [width, setWidth] = useState<number | null>(null); // null → fill the column
-  const [offset, setOffset] = useState(0); // left-edge indent (px) from left-edge resize
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   // axis: 'xl' = left edge, 'y' = bottom edge, 'both' = left + bottom (corner).
-  // No right-edge handle — that edge belongs to the panel's scrollbar.
+  // No right-edge handle — the card's right edge is pinned to the column's
+  // resize rail (margin-left: auto), so only the left edge is free to move.
   const drag = useRef<
-    { startX: number; startY: number; startW: number; startH: number; startO: number; axis: 'xl' | 'y' | 'both' } | null
+    { startX: number; startY: number; startW: number; startH: number; axis: 'xl' | 'y' | 'both' } | null
   >(null);
 
   const heightKey = `ftc.chatPanelHeight.${userId ?? 'anon'}`;
   const widthKey = `ftc.chatPanelWidth.${userId ?? 'anon'}`;
-  const offsetKey = `ftc.chatPanelOffset.${userId ?? 'anon'}`;
 
   useEffect(() => { setMounted(true); }, []);
 
@@ -133,13 +132,11 @@ export default function ChatPanel({ recordingId, userId }: { recordingId: string
         const w = Number(rawW);
         if (isFinite(w) && w >= MIN_WIDTH) setWidth(w);
       }
-      const rawO = localStorage.getItem(offsetKey);
-      if (rawO) {
-        const o = Number(rawO);
-        if (isFinite(o) && o >= 0) setOffset(o);
-      }
+      // Left-edge offsets saved before the card was pinned to the rail would
+      // now push it back off the right edge — drop them once, on load.
+      localStorage.removeItem(`ftc.chatPanelOffset.${userId ?? 'anon'}`);
     } catch { /* ignore */ }
-  }, [heightKey, widthKey, offsetKey]);
+  }, [heightKey, widthKey, userId]);
 
   const onResizeMove = useCallback((e: PointerEvent) => {
     const d = drag.current;
@@ -154,14 +151,10 @@ export default function ChatPanel({ recordingId, userId }: { recordingId: string
     if (d.axis === 'y' || d.axis === 'both') {
       setHeight(Math.max(MIN_HEIGHT, Math.min(maxH, d.startH + (e.clientY - d.startY))));
     }
-    // Width — left edge (or corner): right edge stays put, left edge follows cursor
+    // Width — left edge (or corner). The right edge is pinned to the column's
+    // resize rail, so dragging the left edge leftwards widens the card.
     if (d.axis === 'xl' || d.axis === 'both') {
-      const rightEdge = d.startO + d.startW;
-      const minO = Math.max(0, rightEdge - maxW);
-      const maxO = rightEdge - MIN_WIDTH;
-      const newO = Math.max(minO, Math.min(maxO, d.startO + (e.clientX - d.startX)));
-      setOffset(newO);
-      setWidth(rightEdge - newO);
+      setWidth(Math.max(MIN_WIDTH, Math.min(maxW, d.startW - (e.clientX - d.startX))));
     }
   }, []);
 
@@ -175,11 +168,9 @@ export default function ChatPanel({ recordingId, userId }: { recordingId: string
     if (!d) return;
     const changedHeight = d.axis === 'y' || d.axis === 'both';
     const changedWidth = d.axis !== 'y';
-    const changedOffset = d.axis === 'xl' || d.axis === 'both';
     if (changedHeight) setHeight((h) => { try { localStorage.setItem(heightKey, String(Math.round(h))); } catch { /* quota */ } return h; });
     if (changedWidth) setWidth((w) => { try { if (w != null) localStorage.setItem(widthKey, String(Math.round(w))); } catch { /* quota */ } return w; });
-    if (changedOffset) setOffset((o) => { try { localStorage.setItem(offsetKey, String(Math.round(o))); } catch { /* quota */ } return o; });
-  }, [onResizeMove, heightKey, widthKey, offsetKey]);
+  }, [onResizeMove, heightKey, widthKey]);
 
   const startResize = (axis: 'xl' | 'y' | 'both') => (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -189,7 +180,6 @@ export default function ChatPanel({ recordingId, userId }: { recordingId: string
       startY: e.clientY,
       startW: panelRef.current?.offsetWidth ?? MIN_WIDTH,
       startH: height,
-      startO: offset,
       axis,
     };
     document.body.style.userSelect = 'none';
@@ -202,8 +192,7 @@ export default function ChatPanel({ recordingId, userId }: { recordingId: string
   const resetSize = () => {
     setHeight(DEFAULT_HEIGHT);
     setWidth(null);
-    setOffset(0);
-    try { localStorage.removeItem(heightKey); localStorage.removeItem(widthKey); localStorage.removeItem(offsetKey); } catch { /* ignore */ }
+    try { localStorage.removeItem(heightKey); localStorage.removeItem(widthKey); } catch { /* ignore */ }
   };
 
   useEffect(() => () => {
@@ -427,17 +416,15 @@ export default function ChatPanel({ recordingId, userId }: { recordingId: string
   }
 
   // Normal inline panel — user-resizable width + height, saved per user.
-  // Left & right edges = width, bottom edge = height, bottom-left corner = both.
+  // The card's right edge is pinned to the column's resize rail (margin-left:
+  // auto in .chat-panel-card), so narrowing it opens space on the left instead
+  // of tearing it away from the divider. Left edge = width, bottom edge =
+  // height, bottom-left corner = both.
   return (
     <div
       ref={panelRef}
       className="chat-panel-card relative rounded-2xl border border-surface-border bg-surface-card flex flex-col"
-      style={{
-        height,
-        width: width ?? undefined,
-        marginLeft: offset || undefined,
-        maxWidth: offset ? `calc(100% - ${offset}px)` : '100%',
-      }}
+      style={{ height, width: width ?? undefined, maxWidth: '100%' }}
     >
       {inner}
       {/* Left edge: width (drag the left side in / out) */}

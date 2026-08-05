@@ -384,7 +384,13 @@
     position: sticky;
     top: 5rem;
   }
-  .chat-panel-card { max-height: calc(100vh - 8rem); }
+  /* Right edge stays welded to the resize rail: narrowing the card opens space
+     on its left, so the divider is always the thing you grab to rebalance the
+     columns — never a strip of dead page between the card and the rail. */
+  .chat-panel-card {
+    max-height: calc(100vh - 8rem);
+    margin-left: auto;
+  }
 
   /* AI Notes scrolls independently like the other two columns. Extra right
      padding keeps its scrollbar off the resize rail in the gutter. */

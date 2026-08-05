@@ -52,3 +52,6 @@ graphify-out/
 
 # Local data snapshots + generated test voices (never commit meeting data)
 .local/
+
+# local export previews (scripts/preview-export.ts)
+tmp-export/
