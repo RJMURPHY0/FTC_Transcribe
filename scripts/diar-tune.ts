@@ -123,7 +123,9 @@ async function main() {
   // The three knobs that decide how many speakers survive. Over-splitting is
   // the observed failure, so the grid leans toward MORE merging than shipped.
   const grid: Config[] = [];
-  for (const turnCluster of ['0.60', '0.65', '0.70']) {
+  // The grid must bracket the optimum on both sides. An earlier run bottomed
+  // out at 0.60, which was its lowest value — an edge result is not an optimum.
+  for (const turnCluster of ['0.45', '0.50', '0.55', '0.58', '0.60', '0.62', '0.65', '0.70']) {
     for (const centroidMerge of ['0.70', '0.75', '0.80', '0.85']) {
       for (const minSpeaker of ['20', '30', '45']) {
         grid.push({
