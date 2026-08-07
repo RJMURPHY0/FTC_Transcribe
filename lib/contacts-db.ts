@@ -73,6 +73,38 @@ export async function getAllOrgMembers(): Promise<OrgMember[]> {
   } catch (err) { return logged('getAllOrgMembers', err); }
 }
 
+/**
+ * Display names for a set of auth user ids — used to show WHO recorded a
+ * meeting when an admin looks beyond their own. Falls back to the email local
+ * part when the user has no org_members row (e.g. external testers).
+ */
+export async function getMemberNames(userIds: string[]): Promise<Record<string, string>> {
+  const ids = [...new Set(userIds.filter(Boolean))];
+  if (ids.length === 0) return {};
+  try {
+    const rows = await prisma.$queryRaw<{ user_id: string; sender_name: string | null; email: string | null }[]>`
+      SELECT u.id::text AS user_id,
+             (SELECT om.sender_name FROM public.org_members om
+               WHERE om.user_id = u.id AND om.sender_name IS NOT NULL LIMIT 1) AS sender_name,
+             u.email
+      FROM auth.users u
+      WHERE u.id::text = ANY(${ids}::text[])
+    `;
+    const out: Record<string, string> = {};
+    for (const r of rows) {
+      out[r.user_id] =
+        r.sender_name ??
+        (r.email
+          ? r.email.split('@')[0].replace(/[._]/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+          : r.user_id.slice(0, 8));
+    }
+    return out;
+  } catch (err) {
+    console.error('[contacts-db] getMemberNames failed:', err instanceof Error ? err.message : err);
+    return {};
+  }
+}
+
 export async function getMemberUserIds(orgId?: string | null, teamId?: string | null): Promise<string[]> {
   try {
     if (teamId && orgId) {

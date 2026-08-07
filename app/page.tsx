@@ -10,7 +10,6 @@ import SearchBar from '@/components/SearchBar';
 import { estimateSeconds } from '@/lib/estimate';
 import { getAuthUser } from '@/lib/auth';
 import { ensureSchema } from '@/lib/ensure-schema';
-import AutoClaim from '@/components/AutoClaim';
 import { SpotlightCard, GlowCard } from '@/components/ui/spotlight-card';
 import {
   getOrganisations,
@@ -18,15 +17,10 @@ import {
   getOrgMembers,
   getAllOrgMembers,
   getMemberUserIds,
+  getMemberNames,
 } from '@/lib/contacts-db';
 
 export const dynamic = 'force-dynamic';
-
-// Legacy-row claim gate: once per user per lambda instance (5-min TTL). The
-// client-side AutoClaim (once per browser session) is the primary mechanism —
-// re-running two UPDATEs on every home render only added pooler pressure.
-const claimGate = new Map<string, number>();
-const CLAIM_TTL_MS = 5 * 60 * 1000;
 
 // ── Async server component so org/member data streams in without blocking the page ─
 async function AdminFiltersLoader({
@@ -101,16 +95,17 @@ export default async function Home({
   const userId    = authUser?.id ?? null;
   const canSeeAll = authUser?.canSeeAll ?? false;
 
-  // Legacy-row claim runs in parallel with everything else (AutoClaim on the
-  // client is the primary mechanism — this is belt and braces)
-  let claimPromise: Promise<unknown> = Promise.resolve();
-  if (userId && Date.now() - (claimGate.get(userId) ?? 0) > CLAIM_TTL_MS) {
-    claimGate.set(userId, Date.now());
-    claimPromise = Promise.all([
-      prisma.recording.updateMany({ where: { userId: null }, data: { userId } }),
-      prisma.folder.updateMany({ where: { userId: null }, data: { userId } }),
-    ]).catch(() => {});
-  }
+  // ── Who am I looking at? ──────────────────────────────────────────────────
+  // Admins land on their OWN meetings, not the whole company. `assignee=all`
+  // widens to everyone; `assignee=<uid>` narrows to one person. Anyone without
+  // canSeeAll is always scoped to themselves regardless of the URL.
+  const viewingEveryone = canSeeAll && activeAssigneeId === 'all';
+  const assigneeUserId  = canSeeAll && activeAssigneeId && activeAssigneeId !== 'all'
+    ? activeAssigneeId
+    : null;
+  // Org/team views are an explicit request for other people's meetings.
+  const inTeamScope = canSeeAll && (!!activeOrgId || !!activeTeamId);
+  const scopedToSelf = !canSeeAll || (!viewingEveryone && !assigneeUserId && !inTeamScope);
 
   // ── Org data — external Contacts API call, only awaited when the breadcrumb
   // or team cards actually need it (org filter active). Otherwise the filter
@@ -125,15 +120,15 @@ export default async function Home({
   // ── Recording scope ───────────────────────────────────────────────────────
   let userScope: Record<string, unknown> = {};
 
-  if (!canSeeAll) {
+  if (scopedToSelf) {
     userScope = userId ? { userId } : {};
-  } else if (activeAssigneeId) {
-    userScope = { userId: activeAssigneeId };
-  } else if (activeTeamId || activeOrgId) {
+  } else if (assigneeUserId) {
+    userScope = { userId: assigneeUserId };
+  } else if (inTeamScope) {
     const ids = await getMemberUserIds(activeOrgId, activeTeamId);
     userScope = ids.length > 0 ? { userId: { in: ids } } : { userId: '__no_match__' };
   }
-  // else canSeeAll + no filters → no userId scope → see everything
+  // else viewingEveryone → no userId scope → see everything
 
   // In org view (org set, no team), we show org_teams as folder cards —
   // so we skip personal Transcribe folders and show all org recordings below.
@@ -147,11 +142,14 @@ export default async function Home({
     };
   }>>> = [];
 
-  // Stats scope: null = unscoped (super admin sees everything).
-  const statsUserId = canSeeAll ? null : userId;
+  // Stats scope mirrors the list scope, so the tiles always count what's shown.
+  // null = unscoped (everyone / org / team views).
+  const statsUserId = scopedToSelf ? userId : assigneeUserId;
   const folderScope = inOrgFolderView
     ? { userId: '__no_match__' }                            // don't load personal folders in org view
-    : canSeeAll ? {} : userId ? { userId } : {};
+    : scopedToSelf   ? (userId ? { userId } : {})
+    : assigneeUserId ? { userId: assigneeUserId }
+    : {};
 
   // The recordings query is the one that matters most: if it fails we must NOT
   // silently render "No recordings yet" (that reads as data-loss). We retry
@@ -193,7 +191,6 @@ export default async function Home({
       WHERE "deletedAt" IS NULL
         AND (${statsUserId}::text IS NULL OR "userId" = ${statsUserId}::text)
     `).catch(() => []),
-    claimPromise,
   ]);
   folders = folderResult;
   recordings = recordingResult;
@@ -202,6 +199,32 @@ export default async function Home({
   // Trim the sentinel extra row and decide whether to offer "Show more".
   const hasMore = recordings.length > limit;
   if (hasMore) recordings = recordings.slice(0, limit);
+
+  // ── Owner labels ──────────────────────────────────────────────────────────
+  // Only looked up when the view spans more than one person — that's the only
+  // time "who recorded this" is ambiguous, and it keeps the personal view at
+  // one query. Also names the person in the heading for a single-assignee view.
+  const showOwner = !scopedToSelf && !assigneeUserId;
+  const nameIds = [
+    ...(showOwner ? recordings.map(r => r.userId).filter((v): v is string => !!v) : []),
+    ...(assigneeUserId ? [assigneeUserId] : []),
+  ];
+  const ownerNames = nameIds.length > 0 ? await getMemberNames(nameIds) : {};
+
+  const scopeHeading = scopedToSelf
+    ? 'My Recordings'
+    : assigneeUserId
+      ? `${ownerNames[assigneeUserId] ?? 'Team member'}'s Recordings`
+      : 'All Recordings';
+
+  // Keep the active assignee scope on every in-page link, so drilling into a
+  // folder or a source tab doesn't silently snap back to your own meetings.
+  const withScope = (params: Record<string, string>) => {
+    const sp = new URLSearchParams(params);
+    if (canSeeAll && activeAssigneeId) sp.set('assignee', activeAssigneeId);
+    const qs = sp.toString();
+    return qs ? `/?${qs}` : '/';
+  };
 
   const showMoreParams = new URLSearchParams();
   if (activeFolderId)   showMoreParams.set('folder', activeFolderId);
@@ -222,7 +245,6 @@ export default async function Home({
 
   return (
     <div className="min-h-screen flex flex-col bg-surface">
-      <AutoClaim />
       {/* Nav */}
       <header className="sticky top-0 z-20 border-b border-surface-border bg-surface/80 backdrop-blur-md">
         <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
@@ -297,7 +319,7 @@ export default async function Home({
         {!activeFolderId && !activeTeamId && teamsCount > 0 && (
           <div className="flex gap-2 mb-5">
             <Link
-              href={activeOrgId ? `/?org=${activeOrgId}` : '/'}
+              href={withScope(activeOrgId ? { org: activeOrgId } : {})}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm font-medium transition-colors ${
                 !activeSource ? 'bg-brand text-white' : 'text-ftc-mid hover:text-ftc-gray hover:bg-surface-raised border border-surface-border'
               }`}
@@ -305,7 +327,7 @@ export default async function Home({
               All
             </Link>
             <Link
-              href={`/?source=web${activeOrgId ? `&org=${activeOrgId}` : ''}`}
+              href={withScope({ source: 'web', ...(activeOrgId ? { org: activeOrgId } : {}) })}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm font-medium transition-colors ${
                 activeSource === 'web' ? 'bg-brand text-white' : 'text-ftc-mid hover:text-ftc-gray hover:bg-surface-raised border border-surface-border'
               }`}
@@ -316,7 +338,7 @@ export default async function Home({
               In Person
             </Link>
             <Link
-              href={`/?source=teams${activeOrgId ? `&org=${activeOrgId}` : ''}`}
+              href={withScope({ source: 'teams', ...(activeOrgId ? { org: activeOrgId } : {}) })}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm font-medium transition-colors ${
                 activeSource === 'teams' ? 'bg-[#6264A7] text-white' : 'text-ftc-mid hover:text-ftc-gray hover:bg-surface-raised border border-surface-border'
               }`}
@@ -336,13 +358,13 @@ export default async function Home({
           {activeFolderId ? (
             <div className="flex items-center gap-2 min-w-0">
               <Link
-                href="/"
+                href={withScope({})}
                 className="flex items-center gap-1 text-sm text-ftc-mid hover:text-ftc-gray transition-colors flex-shrink-0"
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
                 </svg>
-                All
+                Back
               </Link>
               <svg className="w-3.5 h-3.5 text-surface-muted flex-shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
@@ -397,9 +419,9 @@ export default async function Home({
             </h2>
 
           ) : (
-            /* Default heading */
+            /* Default heading — names whose meetings are on screen */
             <h2 className="text-xs font-semibold uppercase tracking-widest text-ftc-mid">
-              All Recordings
+              {scopeHeading}
             </h2>
           )}
 
@@ -446,7 +468,7 @@ export default async function Home({
               <li key={folder.id}>
                 <SpotlightCard>
                 <Link
-                  href={`/?folder=${folder.id}`}
+                  href={withScope({ folder: folder.id })}
                   className="group flex items-center gap-4 rounded-2xl px-5 py-4 active:scale-[0.99] touch-manipulation"
                 >
                   <div className="w-9 h-9 rounded-xl bg-brand/10 flex-shrink-0 flex items-center justify-center">
@@ -543,6 +565,9 @@ export default async function Home({
                   : null,
                 _count: rec._count,
                 eta: isQueued ? formatEta(estimateSeconds(rec._count.chunks)) : null,
+                ownerName: showOwner
+                  ? (rec.userId ? ownerNames[rec.userId] ?? 'Unknown' : 'Unassigned')
+                  : null,
               };
             })}
             folders={folderList}

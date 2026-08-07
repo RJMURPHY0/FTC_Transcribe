@@ -44,7 +44,6 @@ export async function middleware(request: NextRequest) {
   const isPublic =
     pathname === '/login' ||
     pathname === '/auth/sso' ||
-    pathname === '/claim' ||
     pathname.startsWith('/api/auto-fix') ||
     pathname.startsWith('/api/jobs/finalize') ||
     pathname.startsWith('/api/health') ||

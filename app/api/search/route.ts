@@ -35,12 +35,17 @@ export async function GET(req: NextRequest) {
   const canSeeAll = user?.canSeeAll ?? false;
 
   // ── User scope (mirrors dashboard) ─────────────────────────────────────────
+  // No assignee param = your own meetings, for admins too. 'all' widens.
+  const assigneeUserId = canSeeAll && assignee && assignee !== 'all' ? assignee : null;
+  const inTeamScope    = canSeeAll && (!!org || !!team);
+  const scopedToSelf   = !canSeeAll || (assignee !== 'all' && !assigneeUserId && !inTeamScope);
+
   let scope: Prisma.RecordingWhereInput = {};
-  if (!canSeeAll) {
-    scope = userId ? { OR: [{ userId }, { userId: null }] } : {};
-  } else if (assignee) {
-    scope = { userId: assignee };
-  } else if (org || team) {
+  if (scopedToSelf) {
+    scope = userId ? { userId } : {};
+  } else if (assigneeUserId) {
+    scope = { userId: assigneeUserId };
+  } else if (inTeamScope) {
     const ids = await getMemberUserIds(org, team);
     scope = ids.length > 0 ? { userId: { in: ids } } : { userId: '__no_match__' };
   }
@@ -60,7 +65,7 @@ export async function GET(req: NextRequest) {
     // vectorSearch scopes by a single userId; pass the assignee (or the user's
     // own id for non-admins) as a cheap narrow, then re-apply the full filter
     // set when hydrating so source/type/date/org still constrain the results.
-    const vecUser = canSeeAll ? (assignee ?? null) : userId;
+    const vecUser = scopedToSelf ? userId : assigneeUserId;
     const hits = await vectorSearch(q, vecUser, 20);
     if (hits.length === 0) return NextResponse.json([]);
 
