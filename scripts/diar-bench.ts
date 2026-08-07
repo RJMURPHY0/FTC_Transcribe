@@ -139,7 +139,7 @@ interface SceneSpec {
   farField: boolean;      // reverb + band-limiting + per-speaker distance
 }
 
-interface Turn { start: number; end: number; spk: string }
+export interface Turn { start: number; end: number; spk: string }
 
 // SNRs are measured at the mic over the whole mix. A real meeting room with a
 // phone on the table sits around 20-25 dB; 14 dB is a genuinely bad room with
@@ -298,12 +298,12 @@ function hungarian(cost: number[][]): number[] {
   return res;
 }
 
-interface DerResult {
+export interface DerResult {
   der: number; missed: number; falseAlarm: number; confusion: number;
   refSpeakers: number; hypSpeakers: number; refSpeechS: number;
 }
 
-function computeDER(truth: Turn[], hyp: Turn[], durationS: number): DerResult {
+export function computeDER(truth: Turn[], hyp: Turn[], durationS: number): DerResult {
   const nF = Math.ceil(durationS / FRAME);
   const refLabels = [...new Set(truth.map((t) => t.spk))].sort();
   const hypLabels = [...new Set(hyp.map((t) => t.spk))].sort();
@@ -544,4 +544,10 @@ async function main() {
   console.log(`\nresults → ${path.join(workDir, 'results.json')}`);
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+// Only run the sweep when invoked directly — scripts/diar-tune.ts imports
+// computeDER and the scene loaders from here.
+const invokedDirectly = process.argv[1]
+  && path.resolve(process.argv[1]).endsWith(path.join('scripts', 'diar-bench.ts'));
+if (invokedDirectly) {
+  main().catch((e) => { console.error(e); process.exit(1); });
+}
