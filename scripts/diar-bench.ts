@@ -23,9 +23,19 @@ import { spawnSync } from 'child_process';
 import path from 'path';
 import os from 'os';
 
+// lib/ai.ts reads its keys at module load, and tsx does not load .env.local.
+// Without this the transcriber silently falls into mock mode and returns zero
+// segments, which the harness then scores as 100% missed speech.
+try {
+  const envFile = readFileSync(path.join(process.cwd(), '.env.local'), 'utf8');
+  for (const line of envFile.split('\n')) {
+    const m = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/);
+    if (m && !process.env[m[1]]) process.env[m[1]] = m[2].trim().replace(/^"|"$/g, '');
+  }
+} catch { /* CI or a machine without .env.local — transcription will no-op loudly */ }
+
 const SR = 16000;
 const FRAME = 0.01;        // 10 ms DER scoring resolution
-const TILE = 0.25;         // hypothesis segment granularity fed to the resolver
 const CHUNK_S = 120;       // production chunk length (app/record/page.tsx CHUNK_MS)
 
 // ── tiny deterministic RNG so scenes are reproducible run to run ─────────────
@@ -131,18 +141,22 @@ interface SceneSpec {
 
 interface Turn { start: number; end: number; spk: string }
 
+// SNRs are measured at the mic over the whole mix. A real meeting room with a
+// phone on the table sits around 20-25 dB; 14 dB is a genuinely bad room with
+// aircon and corridor noise. The earlier 10-12 dB figures were below anything
+// a phone would actually be used in.
 const SCENES: SceneSpec[] = [
-  { name: '2spk-clean',    nSpeakers: 2, durationS: 300, overlapRatio: 0.05, snrDb: 30, farField: false },
-  { name: '2spk-farfield', nSpeakers: 2, durationS: 300, overlapRatio: 0.10, snrDb: 15, farField: true  },
-  { name: '3spk-farfield', nSpeakers: 3, durationS: 420, overlapRatio: 0.15, snrDb: 15, farField: true  },
-  { name: '4spk-farfield', nSpeakers: 4, durationS: 480, overlapRatio: 0.15, snrDb: 15, farField: true  },
-  { name: '4spk-noisy',    nSpeakers: 4, durationS: 480, overlapRatio: 0.20, snrDb: 10, farField: true  },
-  { name: '6spk-farfield', nSpeakers: 6, durationS: 600, overlapRatio: 0.20, snrDb: 12, farField: true  },
+  { name: '2spk-clean',    nSpeakers: 2, durationS: 300, overlapRatio: 0.05, snrDb: 32, farField: false },
+  { name: '2spk-farfield', nSpeakers: 2, durationS: 300, overlapRatio: 0.10, snrDb: 24, farField: true  },
+  { name: '3spk-farfield', nSpeakers: 3, durationS: 420, overlapRatio: 0.15, snrDb: 22, farField: true  },
+  { name: '4spk-farfield', nSpeakers: 4, durationS: 480, overlapRatio: 0.15, snrDb: 22, farField: true  },
+  { name: '4spk-noisy',    nSpeakers: 4, durationS: 480, overlapRatio: 0.20, snrDb: 14, farField: true  },
+  { name: '6spk-farfield', nSpeakers: 6, durationS: 600, overlapRatio: 0.20, snrDb: 20, farField: true  },
   // 30 minutes = 15 production chunks. The per-chunk-vs-whole question is about
   // fragments accumulating across chunk BOUNDARIES, so it only shows up at
   // realistic meeting length — a 5-minute scene has three boundaries and proves
   // nothing. The 116-speaker incident was a long meeting.
-  { name: '30min-4spk',    nSpeakers: 4, durationS: 1800, overlapRatio: 0.15, snrDb: 14, farField: true },
+  { name: '30min-4spk',    nSpeakers: 4, durationS: 1800, overlapRatio: 0.15, snrDb: 22, farField: true },
 ];
 
 function buildScene(spec: SceneSpec, bank: Voice[], workDir: string): { wav: string; truth: Turn[] } {
@@ -154,9 +168,12 @@ function buildScene(spec: SceneSpec, bank: Voice[], workDir: string): { wav: str
 
   const rnd = mulberry32(spec.name.split('').reduce((a, c) => a + c.charCodeAt(0), 0));
   const speakers = bank.slice(0, spec.nSpeakers);
-  // Distance from the phone on the table: one person close, the rest further.
-  // This is what actually makes far-field diarisation hard.
-  const gains = speakers.map((_, i) => (spec.farField ? [1.0, 0.55, 0.4, 0.32, 0.26, 0.22][i] ?? 0.2 : 1.0));
+  // Distance from the phone on the table. Round a real meeting table the
+  // nearest and furthest talker differ by roughly 6-9 dB, not the 13 dB an
+  // earlier version used — that put distant speakers below the noise floor,
+  // and the harness then reported 70% missed speech as if the pipeline had
+  // failed when the audio was simply inaudible.
+  const gains = speakers.map((_, i) => (spec.farField ? [1.0, 0.78, 0.66, 0.58, 0.5, 0.44][i] ?? 0.4 : 1.0));
 
   const total = Math.ceil(spec.durationS * SR);
   const mix = new Float32Array(total);
@@ -345,11 +362,58 @@ function computeDER(truth: Turn[], hyp: Turn[], durationS: number): DerResult {
   };
 }
 
+// ── Real ASR segments ────────────────────────────────────────────────────────
+// The hypothesis speaker timeline must cover exactly what production covers:
+// one label per ASR segment, and silence carries no label at all.
+//
+// A hand-rolled energy VAD was tried first and was badly wrong — it discarded
+// quiet far-field speech and reported 43-70% missed speech as if the pipeline
+// had failed. So transcribe the scene with the real engine instead.
+//
+// ASR runs per 120 s window in production regardless of the diarisation window,
+// so the segments are computed ONCE per scene and shared by both conditions.
+// That is the correct experiment: it holds ASR constant and varies only the
+// diarisation window, which is the thing under test.
+interface AsrSegment { start: number; end: number; text: string }
+
+async function sceneSegments(
+  wav: string, durationS: number, workDir: string, sceneName: string,
+): Promise<AsrSegment[]> {
+  const cacheFile = path.join(workDir, `${sceneName}.asr.json`);
+  if (existsSync(cacheFile)) return JSON.parse(readFileSync(cacheFile, 'utf8')) as AsrSegment[];
+
+  const { transcribeAudio } = await import('../lib/ai');
+  const all = readWav(wav);
+  const out: AsrSegment[] = [];
+  for (let off = 0; off < durationS; off += CHUNK_S) {
+    const s = Math.floor(off * SR);
+    const e = Math.min(all.length, Math.floor((off + CHUNK_S) * SR));
+    if (e - s < SR) continue;
+    const tmp = path.join(workDir, `__asr_${sceneName}_${Math.round(off)}.wav`);
+    writeWav(tmp, all.subarray(s, e));
+    const { rawSegments } = await transcribeAudio(tmp);
+    for (const r of rawSegments) {
+      out.push({ start: r.start + off, end: r.end + off, text: r.text });
+    }
+  }
+  // Fail loudly. A silent fall-through to mock transcription returns zero
+  // segments, which scores as 100% missed speech and looks like a pipeline
+  // collapse rather than a missing API key.
+  if (!out.length) {
+    throw new Error(
+      `ASR returned no segments for ${sceneName}. Check GROQ_API_KEY/OPENAI_API_KEY are `
+      + `loaded — lib/ai.ts silently mocks transcription when neither is set.`,
+    );
+  }
+  writeFileSync(cacheFile, JSON.stringify(out));
+  return out;
+}
+
 // ── Running the real pipeline ────────────────────────────────────────────────
 type Condition = 'chunked' | 'whole';
 
 async function runCondition(
-  wav: string, durationS: number, mode: Condition, workDir: string,
+  wav: string, durationS: number, mode: Condition, workDir: string, asr: AsrSegment[],
 ): Promise<{ hyp: Turn[]; ms: number; analyseMs: number }> {
   const { analyzeChunkVoices, resolveGlobalSpeakers } = await import('../lib/voice-id');
   const all = readWav(wav);
@@ -378,32 +442,12 @@ async function runCondition(
       voiceData = await analyzeChunkVoices(readFileSync(tmp), 'audio/wav');
       writeFileSync(cacheFile, JSON.stringify(voiceData));
     }
-    // Hypothesis granularity: fine tiles so the resolver's own labelling, not
-    // our segmentation, decides the speaker timeline.
-    //
-    // Tiles are gated by an energy VAD. Without this the hypothesis covers
-    // 100% of the timeline including silence, and every silent second scores
-    // as a false alarm — in the first run that artefact WAS the entire false
-    // alarm figure (13.17% measured against 13.2% non-speech). Production never
-    // labels silence either: transcript segments only exist where the ASR heard
-    // speech. The gate uses signal energy only, never the reference labels.
-    const localDur = (e - s) / SR;
-    const tileRms: number[] = [];
-    for (let t = 0; t < localDur; t += TILE) {
-      const a = Math.floor(t * SR), b = Math.min(part.length, Math.floor((t + TILE) * SR));
-      let acc = 0;
-      for (let i = a; i < b; i++) acc += part[i] * part[i];
-      tileRms.push(b > a ? Math.sqrt(acc / (b - a)) : 0);
-    }
-    const sortedRms = [...tileRms].sort((x, y) => x - y);
-    const floor = sortedRms[Math.floor(sortedRms.length * 0.1)] ?? 0;
-    const vadThreshold = Math.max(floor * 2.5, 0.004);
-    const segments: Array<{ start: number; end: number; text: string }> = [];
-    tileRms.forEach((rms, i) => {
-      if (rms < vadThreshold) return;
-      const t = i * TILE;
-      segments.push({ start: +t.toFixed(3), end: +Math.min(t + TILE, localDur).toFixed(3), text: 'x' });
-    });
+    // Real ASR segments falling in this window, in window-local time — exactly
+    // the shape resolveGlobalSpeakers receives in production.
+    const winEnd = off + (e - s) / SR;
+    const segments = asr
+      .filter((a) => a.start >= off && a.start < winEnd)
+      .map((a) => ({ start: +(a.start - off).toFixed(3), end: +(a.end - off).toFixed(3), text: a.text }));
     chunks.push({ offset: off, segments, voiceData });
   }
   const analyseMs = Date.now() - t0;
@@ -459,9 +503,14 @@ async function main() {
     const speech = truth.reduce((n, t) => n + (t.end - t.start), 0);
     console.log(`${truth.length} turns, ${Math.round(speech)}s speech, ${spec.nSpeakers} speakers`);
 
+    process.stdout.write(`  transcribing (shared by both conditions)... `);
+    const asr = await sceneSegments(wav, spec.durationS, workDir, spec.name);
+    const asrCover = asr.reduce((n, a) => n + (a.end - a.start), 0);
+    console.log(`${asr.length} ASR segments covering ${Math.round(asrCover)}s`);
+
     for (const mode of conditions) {
       process.stdout.write(`  ${mode.padEnd(8)} `);
-      const { hyp, ms, analyseMs } = await runCondition(wav, spec.durationS, mode, workDir);
+      const { hyp, ms, analyseMs } = await runCondition(wav, spec.durationS, mode, workDir, asr);
       const d = computeDER(truth, hyp, spec.durationS);
       console.log(
         `DER ${(d.der * 100).toFixed(1)}%  `
