@@ -27,11 +27,14 @@ interface Scene {
   durationS: number;
   truth: Turn[];
   asr: AsrSegment[];
-  windows: Array<{ offset: number; voiceData: unknown }>;
+  windows: Array<{ offset: number; lengthS: number; voiceData: unknown }>;
 }
 
 // Rebuild the exact chunk list the benchmark fed the resolver, from cache only.
-function loadScenes(workDir: string, want?: string[]): Scene[] {
+// `window` picks which cached condition to tune against: the production 120 s
+// chunks, or the whole-recording window. Tuning must be comparable to whatever
+// window the app actually ships.
+function loadScenes(workDir: string, want?: string[], window: 'chunked' | 'whole' = 'chunked'): Scene[] {
   const cacheDir = path.join(workDir, 'analysis-cache');
   if (!existsSync(cacheDir)) throw new Error(`no analysis cache in ${workDir} — run diar-bench.ts first`);
   const truthFiles = readdirSync(workDir).filter((f) => f.endsWith('.truth.json'));
@@ -46,13 +49,18 @@ function loadScenes(workDir: string, want?: string[]): Scene[] {
     const asr: AsrSegment[] = JSON.parse(readFileSync(asrFile, 'utf8'));
     const durationS = Math.ceil(Math.max(...truth.map((t) => t.end)) + 1);
 
-    // Production condition only: 120 s windows.
+    // Cache files are named `<scene>__<windowLength>__<offset>.json`. The
+    // chunked condition uses 120 s windows; the whole condition uses a single
+    // window whose length is the scene duration + 1.
+    const prefix = window === 'chunked' ? `${name}__${CHUNK_S}__` : `${name}__`;
     const files = readdirSync(cacheDir)
-      .filter((f) => f.startsWith(`${name}__${CHUNK_S}__`))
+      .filter((f) => f.startsWith(prefix))
+      .filter((f) => window === 'chunked' || Number(f.split('__')[1]) !== CHUNK_S)
       .sort((a, b) => Number(a.split('__')[2].replace('.json', '')) - Number(b.split('__')[2].replace('.json', '')));
     if (!files.length) continue;
     const windows = files.map((f) => ({
       offset: Number(f.split('__')[2].replace('.json', '')),
+      lengthS: Number(f.split('__')[1]),
       voiceData: JSON.parse(readFileSync(path.join(cacheDir, f), 'utf8')),
     }));
     scenes.push({ name, durationS, truth, asr, windows });
@@ -72,7 +80,7 @@ async function scoreConfig(scenes: Scene[], config: Config) {
 
   const rows = scenes.map((sc) => {
     const chunks = sc.windows.map((w) => {
-      const winEnd = w.offset + CHUNK_S;
+      const winEnd = w.offset + w.lengthS;
       return {
         offset: w.offset,
         segments: sc.asr
@@ -113,7 +121,9 @@ async function main() {
   const workDir = getOpt('workdir');
   if (!workDir) { console.error('usage: tsx scripts/diar-tune.ts --workdir DIR [--scenes a,b] [--top 15]'); process.exit(1); }
   const top = Number(getOpt('top') ?? '15');
-  const scenes = loadScenes(workDir, getOpt('scenes')?.split(','));
+  const window = (getOpt('window') ?? 'chunked') as 'chunked' | 'whole';
+  const scenes = loadScenes(workDir, getOpt('scenes')?.split(','), window);
+  console.log(`window: ${window}`);
   console.log(`scenes: ${scenes.map((s) => `${s.name}(${s.windows.length}w)`).join(', ')}\n`);
 
   // Baseline = whatever the shipped defaults currently are.
