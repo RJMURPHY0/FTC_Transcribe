@@ -55,3 +55,12 @@ graphify-out/
 
 # local export previews (scripts/preview-export.ts)
 tmp-export/
+
+# Local agent/tooling state — machine-specific, not shared knowledge
+.claude-flow/
+.dream-digest
+.last-dream
+
+# Backups and incremental build state
+*.bak
+tsconfig.tsbuildinfo
