@@ -1,6 +1,12 @@
 import { createClient } from "@supabase/supabase-js";
 
-const SUPABASE_URL = process.env.SUPABASE_URL || process.env.DATABASE_URL?.split("?")[0] || "";
+// The fallback used to be `DATABASE_URL.split("?")[0]`, which is a
+// `postgres://...` connection string, not a Supabase REST endpoint. SUPABASE_URL
+// is not set in any environment (only NEXT_PUBLIC_SUPABASE_URL is), so the moment
+// a service-role key was added this would have handed createClient a postgres URL
+// and failed silently — notifyTeamsChannel has no error surface.
+const SUPABASE_URL =
+  process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const SERVICE_KEY  = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 // Prefer the stable canonical domain; fall back to the per-deployment Vercel URL.
 // (The previous form `A || B ? https://${B} : fallback` mis-grouped as `(A||B) ?

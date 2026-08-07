@@ -12,6 +12,20 @@ export type MeetingType = 'general' | 'standup' | 'sales' | 'interview' | 'revie
 const CHUNK_MS = 2 * 60 * 1000;
 const SILENCE_RMS = 0.01;
 const SKIP_SPEECH_RATIO = 0.04; // skip upload if < 4% of chunk is speech
+// MediaRecorder is asked for data every 500 ms. If nothing arrives for this
+// long the recorder is wedged or the page was frozen by the OS (screen lock,
+// app switch, Low Power Mode) — audio for that window is already lost, so the
+// job is to notice, tell the user, and restart cleanly rather than sit there
+// showing a running timer over a dead recorder.
+const STALL_MS = 12_000;
+const STALL_POLL_MS = 3_000;
+
+// Minimal shape of the Screen Wake Lock sentinel — the DOM lib in this
+// TypeScript version does not declare it.
+interface WakeSentinel {
+  release(): Promise<void>;
+  addEventListener?(type: 'release', listener: () => void): void;
+}
 
 const MEETING_TYPES: { id: MeetingType; label: string; icon: string }[] = [
   { id: 'general',   label: 'General',   icon: '💬' },
@@ -48,6 +62,11 @@ export default function RecordPage() {
   const [captions,      setCaptions]      = useState<string[]>([]);
   const [captionsOpen,  setCaptionsOpen]  = useState(false);
   const [isPaused,      setIsPaused]      = useState(false);
+  // null = not asked yet. false means the OS refused to keep the screen awake
+  // (iOS Low Power Mode is the common cause) and the user needs to know, since
+  // a locked screen suspends the page and loses audio.
+  const [wakeLockHeld,  setWakeLockHeld]  = useState<boolean | null>(null);
+  const [stalled,       setStalled]       = useState(false);
 
   const router = useRouter();
 
@@ -74,7 +93,19 @@ export default function RecordPage() {
   const pauseOffsetRef  = useRef(0);                        // frozen upload offset for the flushed tail
   const pauseHeaderRef  = useRef<ArrayBuffer | null>(null); // frozen WebM header for the flushed tail
   const noSleepRef      = useRef<{ enable(): Promise<boolean>; disable(): void } | null>(null);
+  const wakeSentinelRef = useRef<WakeSentinel | null>(null);
   const webmHeaderRef   = useRef<ArrayBuffer | null>(null);
+  // Watchdog: when MediaRecorder last handed us audio, and a ref-held recovery
+  // fn so the visibilitychange listener can call it without depending on
+  // callbacks declared further down.
+  const lastDataAtRef   = useRef(Date.now());
+  const recoverRef      = useRef<(() => Promise<void>) | null>(null);
+  const isRecoveringRef = useRef(false);
+  // Wall-clock timing. A per-second counter under-reports badly when the OS
+  // freezes the page (the very case this screen has to survive), so the
+  // displayed duration is derived from real timestamps instead.
+  const runStartedAtRef = useRef(0);
+  const bankedSecsRef   = useRef(0);
 
   // Deepgram live-captions WebSocket
   const dgWsRef         = useRef<WebSocket | null>(null);
@@ -85,12 +116,30 @@ export default function RecordPage() {
   const vadIntervalRef  = useRef<ReturnType<typeof setInterval> | null>(null);
   const speechMsRef     = useRef(0); // ms of detected speech in current 2-min window
 
-  // Timer — runs only while actively recording (frozen while paused)
+  // Timer — runs only while actively recording (frozen while paused).
+  // Derived from wall-clock timestamps rather than counting ticks: when the OS
+  // freezes the page the interval stops firing, and a tick counter would then
+  // under-report the meeting length by however long the screen was off.
   useEffect(() => {
-    if (state === 'recording' && !isPaused) {
-      timerRef.current = setInterval(() => setSeconds((s) => s + 1), 1000);
-    }
+    if (state !== 'recording' || isPaused) return;
+    const tick = () => setSeconds(
+      Math.floor(bankedSecsRef.current + (Date.now() - runStartedAtRef.current) / 1000),
+    );
+    tick();
+    timerRef.current = setInterval(tick, 1000);
     return () => { if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; } };
+  }, [state, isPaused]);
+
+  // Stall watchdog. MediaRecorder is asked for data every 500 ms; a long gap
+  // means the recorder is wedged or the page was frozen. Surfacing it matters
+  // more than the recovery: the previous behaviour showed a happily ticking
+  // timer over a dead recorder, so users only discovered the loss afterwards.
+  useEffect(() => {
+    if (state !== 'recording' || isPaused) { setStalled(false); return; }
+    const id = setInterval(() => {
+      setStalled(Date.now() - lastDataAtRef.current > STALL_MS);
+    }, STALL_POLL_MS);
+    return () => clearInterval(id);
   }, [state, isPaused]);
 
   const startVAD = useCallback((stream: MediaStream) => {
@@ -228,27 +277,58 @@ export default function RecordPage() {
   }, []);
 
   const releaseWakeLock = useCallback(() => {
+    wakeSentinelRef.current?.release().catch(() => {});
+    wakeSentinelRef.current = null;
     noSleepRef.current?.disable();
   }, []);
 
+  // Two-tier: the native Screen Wake Lock API first (iOS Safari 16.4+, Chrome
+  // 84+ — a real OS-level lock), falling back to the nosleep.js hidden-video
+  // hack on older browsers. Neither can override the OS: iOS Low Power Mode
+  // refuses the lock outright, and nothing on the web can stop a user pressing
+  // the power button. So we also record WHETHER we got it, and warn if not.
   const requestWakeLock = useCallback(async () => {
     if (typeof window === 'undefined') return;
+    try {
+      const nav = navigator as Navigator & {
+        wakeLock?: { request(type: 'screen'): Promise<WakeSentinel> };
+      };
+      if (nav.wakeLock && !wakeSentinelRef.current) {
+        const sentinel = await nav.wakeLock.request('screen');
+        // The browser drops the lock whenever the page is hidden; the
+        // visibilitychange handler below re-requests it on return.
+        sentinel.addEventListener?.('release', () => { wakeSentinelRef.current = null; });
+        wakeSentinelRef.current = sentinel;
+        setWakeLockHeld(true);
+        return;
+      }
+      if (wakeSentinelRef.current) return;
+    } catch {
+      // Native refused (Low Power Mode, permissions policy) — try the shim.
+    }
     try {
       if (!noSleepRef.current) {
         const { default: NoSleep } = await import('nosleep.js');
         noSleepRef.current = new NoSleep();
       }
       await noSleepRef.current.enable();
+      setWakeLockHeld(true);
     } catch {
-      // Low Power Mode or unsupported — recording continues regardless
+      setWakeLockHeld(false);
     }
   }, []);
 
   useEffect(() => {
     const onVisibility = () => {
-      if (document.visibilityState === 'visible' && state === 'recording') {
-        void requestWakeLock();
-      }
+      if (document.visibilityState !== 'visible' || state !== 'recording') return;
+      void requestWakeLock();
+      // The page may have been frozen while hidden (screen lock, app switch),
+      // in which case MediaRecorder stopped producing data and the audio for
+      // that window is simply gone. We cannot prevent it, but we can notice it
+      // and heal instead of silently "recording" nothing.
+      // Called through a ref: recovery needs startRecorder/rotateChunk, which
+      // are declared further down, and a ref keeps this listener stable.
+      if (Date.now() - lastDataAtRef.current > STALL_MS) void recoverRef.current?.();
     };
     document.addEventListener('visibilitychange', onVisibility);
     return () => {
@@ -389,6 +469,7 @@ export default function RecordPage() {
 
     mr.ondataavailable = (e) => {
       if (e.data.size > 0) {
+        lastDataAtRef.current = Date.now(); // watchdog heartbeat
         chunkBlobsRef.current.push(e.data);
         // Stream to Deepgram for live captions
         if (dgWsRef.current?.readyState === WebSocket.OPEN) {
@@ -443,7 +524,67 @@ export default function RecordPage() {
     };
 
     mr.start(500);
+    lastDataAtRef.current = Date.now();
   }, [uploadChunk, router, flushFailedChunks]);
+
+  // Heal a wedged recorder after the OS froze the page (screen lock, app
+  // switch). The audio for the frozen window is already gone — no web API can
+  // recover it — so the goal is to flush what we DID capture, restart cleanly,
+  // and keep the timeline offsets truthful so later chunks still line up.
+  //
+  // Meeting-capture mode is excluded: re-acquiring it means a fresh
+  // getDisplayMedia picker, and silently reopening a screen-share prompt is
+  // worse than the stall. Desktop rarely freezes anyway.
+  const recoverRecorder = useCallback(async () => {
+    if (!isActiveRef.current || isPausingRef.current || isRecoveringRef.current) return;
+    if (source === 'teams') return;
+    isRecoveringRef.current = true;
+    try {
+      // Flush the existing segment through the pause path so onstop uploads it
+      // and does NOT finalize/navigate.
+      const mr = recorderRef.current;
+      if (mr && mr.state !== 'inactive') {
+        isPausingRef.current = true;
+        pauseOffsetRef.current = timeOffsetRef.current;
+        pauseHeaderRef.current = webmHeaderRef.current;
+        // Wait for the stop event before restarting. onstop captures
+        // chunkBlobsRef synchronously, and startRecorder reassigns that same
+        // ref — restarting without waiting drops the last buffered audio.
+        // The timeout means a genuinely wedged recorder cannot block recovery.
+        const flushed = new Promise<void>((resolve) => {
+          const done = () => resolve();
+          mr.addEventListener('stop', done, { once: true });
+          setTimeout(done, 2000);
+        });
+        try {
+          mr.stop();
+          await flushed;
+        } catch {
+          isPausingRef.current = false;
+        }
+      }
+      // Advance past the dead air so subsequent chunk offsets stay honest.
+      timeOffsetRef.current += (Date.now() - chunkStartRef.current) / 1000;
+
+      if (chunkTimerRef.current) { clearTimeout(chunkTimerRef.current); chunkTimerRef.current = null; }
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+      stopVAD();
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: await getAudioConstraint() });
+      streamRef.current = stream;
+      startVAD(stream);
+      startRecorder(stream, mimeRef.current);
+      chunkTimerRef.current = setTimeout(rotateChunk, CHUNK_MS);
+      setStalled(false);
+    } catch (err) {
+      console.warn('[recover] could not restart recorder:', err instanceof Error ? err.message : err);
+      // Leave `stalled` set so the banner keeps warning the user.
+    } finally {
+      isRecoveringRef.current = false;
+    }
+  }, [source, startVAD, stopVAD, startRecorder, rotateChunk]);
+
+  useEffect(() => { recoverRef.current = recoverRecorder; }, [recoverRecorder]);
 
   const start = useCallback(async () => {
     if (isStartingRef.current) return;
@@ -479,6 +620,8 @@ export default function RecordPage() {
       startVAD(stream);
       startRecorder(stream, mime);
       chunkTimerRef.current = setTimeout(rotateChunk, CHUNK_MS);
+      bankedSecsRef.current = 0;
+      runStartedAtRef.current = Date.now();
       setState('recording');
       // Fire-and-forget — if Deepgram isn't configured it returns silently
       void startLiveCaptions(createData.id);
@@ -503,6 +646,7 @@ export default function RecordPage() {
 
     setIsPaused(true);              // freezes the timer via the effect
     isPausingRef.current = true;    // onstop: flush this segment, don't finalize
+    bankedSecsRef.current += (Date.now() - runStartedAtRef.current) / 1000;
 
     // Freeze the upload offset + header for the flushed tail, then advance the
     // audio timeline synchronously so a fast resume starts the next segment cleanly.
@@ -536,6 +680,7 @@ export default function RecordPage() {
       chunkTimerRef.current = setTimeout(rotateChunk, CHUNK_MS);
       if (recordingIdRef.current) void startLiveCaptions(recordingIdRef.current);
 
+      runStartedAtRef.current = Date.now();
       setIsPaused(false);            // restarts the timer via the effect
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Could not access the microphone to resume.');
@@ -740,6 +885,24 @@ export default function RecordPage() {
           {state === 'recording' && chunksFailed > 0 && (
             <p className="text-sm text-amber-500">
               {chunksFailed} segment{chunksFailed !== 1 ? 's' : ''} failed to save — check your connection
+            </p>
+          )}
+
+          {/* The recorder has gone quiet. Say so loudly: the old behaviour was a
+              cheerfully ticking timer over a dead recorder, so people only found
+              out audio was missing once the meeting was over. */}
+          {state === 'recording' && !isPaused && stalled && (
+            <p className="text-sm font-medium text-red-500">
+              Recording paused by your phone. Keep this screen on and open — tap the screen to resume capture.
+            </p>
+          )}
+
+          {/* Best-effort only: no web page can override the OS. If the lock was
+              refused (Low Power Mode is the usual reason) the user needs to know
+              their screen will sleep and take the recording with it. */}
+          {state === 'recording' && !isPaused && wakeLockHeld === false && (
+            <p className="text-sm text-amber-500">
+              Your phone may lock the screen and pause recording. Turn off Low Power Mode, or set Auto-Lock to Never.
             </p>
           )}
 
