@@ -89,6 +89,13 @@ const SWITCH_PENALTY = parseFloat(process.env.VOICE_SWITCH_PENALTY ?? '0.06');
 // improving across devices and time without a human in the loop.
 const ANCHOR_PROMOTE_MIN = parseFloat(process.env.VOICE_ANCHOR_PROMOTE_MIN ?? '0.85');
 const ISLAND_KEEP_MARGIN = parseFloat(process.env.VOICE_ISLAND_KEEP_MARGIN ?? '0.1');
+// Re-run the centroid merge AFTER temporal smoothing. The merge pass below
+// runs before the Viterbi pass, and smoothing then moves turns between
+// clusters, so two clusters can finish more similar than the merge threshold
+// with nothing left to catch it. Measured on a real 26-minute meeting: the
+// closest surviving pair sat at 0.824 against a 0.80 merge threshold — a merge
+// the existing rules already call for, missed purely on pass ordering.
+const FINAL_MERGE = process.env.VOICE_FINAL_MERGE !== 'false';
 // Turns shorter than this don't get their own embedding (too noisy to trust)
 const MIN_TURN_EMBED_S = parseFloat(process.env.VOICE_MIN_TURN_EMBED_S ?? '1.0');
 // Cap the audio used per speaker embedding — CPU cost control
@@ -868,6 +875,37 @@ export function resolveGlobalSpeakers(
       }
       centroids = clusterCentroids(globalTurns);
     }
+  }
+
+  // 3.7. Final centroid merge, after smoothing has finished moving turns.
+  // Same rule and same threshold as the merge in 3.5 — this only closes the
+  // ordering gap where a merge the rules already call for is missed because the
+  // clusters only became that similar once Viterbi had reassigned their turns.
+  // Two profile-supervised clusters are two verified identities and are never
+  // merged, exactly as in 3.5.
+  if (FINAL_MERGE && centroids.size > 1) {
+    const durOf = (c: number) => globalTurns.reduce(
+      (n, t) => n + (t.cluster === c ? t.end - t.start : 0), 0);
+    for (;;) {
+      centroids = clusterCentroids(globalTurns);
+      const ids = [...centroids.keys()];
+      let bestA = -1, bestB = -1, bestS = -1;
+      for (let i = 0; i < ids.length; i++) {
+        for (let j = i + 1; j < ids.length; j++) {
+          if (protectedClusters.has(ids[i]) && protectedClusters.has(ids[j])) continue;
+          const s = cosineSim(centroids.get(ids[i])!, centroids.get(ids[j])!);
+          if (s > bestS) { bestS = s; bestA = ids[i]; bestB = ids[j]; }
+        }
+      }
+      if (bestS < CENTROID_MERGE_THRESHOLD || bestA < 0) break;
+      const keep = protectedClusters.has(bestB) ? bestB
+        : protectedClusters.has(bestA) ? bestA
+        : durOf(bestA) >= durOf(bestB) ? bestA : bestB;
+      const drop = keep === bestA ? bestB : bestA;
+      for (const t of globalTurns) if (t.cluster === drop) t.cluster = keep;
+      if (protectedClusters.has(drop)) protectedClusters.add(keep);
+    }
+    centroids = clusterCentroids(globalTurns);
   }
 
   // 4a. Non-embedded turns inherit the dominant cluster of their chunk-local
