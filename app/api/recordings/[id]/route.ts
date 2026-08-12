@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { getAuthUser, canAccessRecording } from '@/lib/auth';
+import { logAudit, requestIp } from '@/lib/audit';
 
 export const dynamic = 'force-dynamic';
 
@@ -73,6 +74,15 @@ export async function PATCH(
       where: { id: params.id },
       data: updateData,
     });
+    await logAudit({
+      userId: user?.id,
+      userEmail: user?.email,
+      action: 'recording.update',
+      targetType: 'recording',
+      targetId: params.id,
+      ip: requestIp(request),
+      metadata: { fields: Object.keys(updateData) },
+    });
     return NextResponse.json({ title: recording.title, folderId: recording.folderId });
   } catch {
     return NextResponse.json({ error: 'Failed to update recording.' }, { status: 500 });
@@ -102,7 +112,8 @@ export async function DELETE(
     // Soft delete by default: instant (no cascade over audio blobs), hidden from
     // all lists immediately, hard-purged by the cron after 30 days.
     // ?hard=1 deletes immediately (used by merge-undo to remove the merged copy).
-    if (request.nextUrl.searchParams.get('hard') === '1') {
+    const hard = request.nextUrl.searchParams.get('hard') === '1';
+    if (hard) {
       await prisma.recording.delete({ where: { id: params.id } });
     } else {
       await prisma.recording.update({
@@ -110,6 +121,15 @@ export async function DELETE(
         data: { deletedAt: new Date(), folderId: null },
       });
     }
+    await logAudit({
+      userId: user?.id,
+      userEmail: user?.email,
+      action: 'recording.delete',
+      targetType: 'recording',
+      targetId: params.id,
+      ip: requestIp(request),
+      metadata: { hard },
+    });
     return NextResponse.json({ success: true });
   } catch {
     return NextResponse.json({ error: 'Failed to delete recording.' }, { status: 500 });

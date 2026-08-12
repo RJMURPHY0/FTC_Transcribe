@@ -1,3 +1,4 @@
+import { cache } from 'react';
 import { createClient } from '@/lib/supabase/server';
 import { prisma } from '@/lib/db';
 
@@ -6,7 +7,7 @@ export interface AuthUser {
   email: string;
   canSeeAll: boolean;
   canPlayAudio: boolean;
-  // True only for the hardcoded super-admin email. Distinct from canSeeAll
+  // True only for the super-admin email. Distinct from canSeeAll
   // (which other admins may also hold): only the super-admin sets the global
   // default for app-wide preferences like card animations.
   isSuperAdmin: boolean;
@@ -17,14 +18,26 @@ export interface AuthUser {
 const permCache = new Map<string, { canSeeAll: boolean; canPlayAudio: boolean; expires: number }>();
 const PERM_TTL_MS = 5 * 60 * 1000;
 
-const SUPER_ADMIN_EMAIL = 'ryan.murphy@ftc-ss.com';
+// Overridable per environment; the literal fallback keeps existing deploys
+// working until SUPER_ADMIN_EMAIL is set in Vercel.
+const SUPER_ADMIN_EMAIL = process.env.SUPER_ADMIN_EMAIL || 'ryan.murphy@ftc-ss.com';
 
-export async function getAuthUser(): Promise<AuthUser | null> {
+// getUser() verifies the JWT with the Supabase Auth server rather than
+// trusting the cookie contents (getSession decodes without verification, so a
+// crafted cookie could impersonate any user). This is the app's only auth
+// boundary — middleware just redirects for UX. cache() dedupes the network
+// round-trip across a single server render pass, so pages that call
+// getAuthUser in several components still verify once per request.
+export const getAuthUser = cache(async (): Promise<AuthUser | null> => {
   const supabase = await createClient();
-  // getSession reads the cookie directly (no network call); safe because
-  // middleware already validated the JWT on every request.
-  const { data: { session } } = await supabase.auth.getSession();
-  const user = session?.user;
+  let user = null;
+  try {
+    const { data, error } = await supabase.auth.getUser();
+    if (!error) user = data.user;
+  } catch {
+    // Auth server unreachable — treat as unauthenticated rather than trusting
+    // an unverifiable cookie.
+  }
   if (!user) return null;
 
   if (user.email === SUPER_ADMIN_EMAIL) {
@@ -50,7 +63,7 @@ export async function getAuthUser(): Promise<AuthUser | null> {
   permCache.set(user.id, { canSeeAll, canPlayAudio, expires: Date.now() + PERM_TTL_MS });
 
   return { id: user.id, email: user.email ?? '', canSeeAll, canPlayAudio, isSuperAdmin: false };
-}
+});
 
 /**
  * Row-level visibility rule for a recording, mirroring the recording page and
@@ -60,6 +73,8 @@ export async function getAuthUser(): Promise<AuthUser | null> {
  * Middleware only proves a user is logged in — it never checks WHICH user owns
  * WHICH row — so every per-recording route must call this itself. Pass the
  * recording's `userId` (most routes already fetch it, so no extra query).
+ * scripts/check-recording-access.js fails the build if a route under
+ * app/api/recordings/[id] forgets.
  */
 export function canAccessRecording(recordingUserId: string | null, user: AuthUser | null): boolean {
   if (!user) return false;

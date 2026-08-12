@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { getAuthUser, canAccessRecording } from '@/lib/auth';
+import { logAudit, requestIp } from '@/lib/audit';
 import { meetingDocFrom, exportFilename, readDocLogo } from '@/lib/export-doc';
 import { renderMeetingPdf } from '@/lib/export-pdf';
 
@@ -31,6 +32,16 @@ export async function GET(
   if (!canAccessRecording(recording.userId, user)) {
     return NextResponse.json({ error: 'Not allowed.' }, { status: 403 });
   }
+
+  await logAudit({
+    userId: user?.id,
+    userEmail: user?.email,
+    action: 'recording.export',
+    targetType: 'recording',
+    targetId: params.id,
+    ip: requestIp(_req),
+    metadata: { format: 'pdf' },
+  });
 
   let buffer: Buffer;
   try {

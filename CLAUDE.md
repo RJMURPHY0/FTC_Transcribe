@@ -33,18 +33,21 @@ Copy `.env.example` → `.env.local`. Key vars: `DATABASE_URL`, `NEXT_PUBLIC_SUP
 **Key files**
 | Path | What |
 |---|---|
-| `middleware.ts` | Auth gate + public-path allowlist + matcher |
-| `lib/auth.ts` | `getAuthUser()`, `canAccessRecording()`, 5-min permission cache, hardcoded super-admin email |
+| `middleware.ts` | Login redirect (UX only — the auth boundary is `getAuthUser()`) + public-path allowlist + matcher |
+| `lib/auth.ts` | `getAuthUser()` (server-verified via `getUser()`), `canAccessRecording()`, 5-min permission cache, `SUPER_ADMIN_EMAIL` env var |
+| `lib/audit.ts` | Append-only `AuditLog` writes (actor + Contacts `orgId` + IP); never fails the audited action |
+| `lib/rate-limit.ts` | In-process fixed-window limiter (per serverless instance; generous limits) |
+| `scripts/check-recording-access.js` | Build gate — fails the build if a route under `app/api/recordings/[id]` skips `canAccessRecording` |
 | `lib/db.ts` | Prisma singleton + `withDbRetry()` transient-failure retry |
 | `lib/finalize-recording.ts` | Chunk → transcript → summary pipeline |
 | `lib/voice-id.ts` | Speaker embedding / matching, `VOICE_ID_ENABLED` |
 | `lib/audio-archive.ts` | Moves merged audio to Supabase Storage bucket `recording-audio` |
 | `lib/contacts-db.ts` | Raw SQL against the Contacts app's org tables |
 | `lib/ensure-schema.ts` | Idempotent DDL, skipped unless `RUN_SCHEMA_CHECK=1` |
-| `prisma/schema.prisma` | 12 models — Recording, ChunkBlob, FinalizeJob, ChunkTranscript, Transcript, Summary, VoiceProfile, SpeakerEmbedding, SpeakerProfile, TranscribePermission, Folder, AutoFixAttempt |
+| `prisma/schema.prisma` | 13 models — Recording, ChunkBlob, FinalizeJob, ChunkTranscript, Transcript, Summary, VoiceProfile, SpeakerEmbedding, SpeakerProfile, TranscribePermission, Folder, AutoFixAttempt, AuditLog |
 | `vercel.json` | Region, per-route `maxDuration`, cron |
 
-**Per-route `maxDuration`** (`vercel.json`) — 800s: `/api/transcribe`, `/api/recordings/[id]/finalize`, `/api/recordings/[id]/rediarize`, `/api/jobs/finalize`. 120s: `/api/auto-fix`, `/api/recordings/[id]/append-chunk`, `/api/voice-profiles`. 60s: `/api/recordings/[id]/chat`. New long-running routes need an entry here or they die at the platform default.
+**Per-route `maxDuration`** (`vercel.json`) — 800s: `/api/transcribe`, `/api/recordings/[id]/finalize`, `/api/recordings/[id]/rediarize`, `/api/jobs/finalize`. 120s: `/api/auto-fix`, `/api/recordings/[id]/append-chunk`, `/api/voice-profiles`. 60s: `/api/recordings/[id]/chat`, `/api/user/export`. New long-running routes need an entry here or they die at the platform default.
 
 **Cron** — `*/5 * * * *` → `GET /api/jobs/finalize`. Enqueues stale uploads, marks >24h stuck recordings failed, hard-purges soft-deleted recordings after 30 days, then finalises up to 2 recordings per run. The route is exempted from middleware auth, so its own secret check is the only gate — see D.
 
@@ -59,9 +62,9 @@ Copy `.env.example` → `.env.local`. Key vars: `DATABASE_URL`, `NEXT_PUBLIC_SUP
 - `2026-07-17` — `/api/auto-fix` **fails closed**: unset `AUTO_FIX_SECRET` now rejects. It is middleware-exempt, so an unset secret previously let anyone trigger AI fix runs.
 - `2026-07-23` — `/api/jobs/finalize` now **fails closed** (was fail-open): unset `CRON_SECRET` rejects, matching the auto-fix pattern. `CRON_SECRET` was generated and set in Vercel production + `.env.local` the same day — Vercel cron attaches the Bearer header automatically once the env var exists.
 - `2026-07-23` — Voice-ID resolver gained junk-cluster absorption (`VOICE_MIN_SPEAKER_S`=30 scaled by `VOICE_MIN_SPEAKER_FRACTION`=1.5% of speech, absorb floor `VOICE_ABSORB_FLOOR`=0.2, hard cap `VOICE_MAX_SPEAKERS`=12), same-person identity merge, and post-absorption resegmentation. Root cause of the 116-speaker meeting: real-world same-voice turn cosine (p25≈0.46) sits below the 0.55 cluster threshold, so noisy fragments never merged. Offline tuning loop: `scripts/snapshot-recording-voice.js` → `scripts/replay-voice-resolver.ts` (`--stats`, `--env K=V`) → `scripts/reanalyze-speakers.ts` to rewrite a recording. Match-learn floor raised to 20s (`VOICE_LEARN_MIN_S`).
-- **RISK / open** — cookie-only `getSession()` in both `middleware.ts` and `lib/auth.ts` is documented in-code as "adequate for this internal app". It reads the JWT from the cookie without a server-side verification round-trip. That assumption breaks the moment there is an external customer — revisit before selling seats.
+- `2026-08-12` — Enterprise hardening pass. `getAuthUser()` now verifies the JWT server-side via `supabase.auth.getUser()` (wrapped in React `cache()` so a render pass verifies once); middleware keeps the fast cookie check as a UX redirect only. Added: `AuditLog` table + `lib/audit.ts` (actions carry the actor's Contacts `org_id` via `getUserOrgId()` — Transcribe reuses the Contacts org tables, no parallel org model), in-process rate limiting on chat / create / stream-token / export, GDPR data export at `/api/user/export`, and a build gate (`scripts/check-recording-access.js`) that fails the deploy if a per-recording route skips `canAccessRecording`. The gate immediately caught two live gaps: `status` (no auth at all) and `stream-token` (unauthenticated Deepgram key minting) — both now fixed. `/api/recordings/create` requires a verified user (no more anonymous-owner rows).
 - **RISK / open (reduced 2026-07-23)** — `lib/contacts-db.ts` catches now log via `console.error` before returning `[]`, so failures are visible in Vercel logs; the `.catch(() => [])` / `.catch(() => {})` pattern still exists in `/api/jobs/finalize`.
-- **RISK / open** — super-admin is a hardcoded email literal in `lib/auth.ts` (`SUPER_ADMIN_EMAIL`). Fine internally, wrong for a multi-tenant product.
+- **RISK / open (reduced 2026-08-12)** — super-admin defaults to a hardcoded email in `lib/auth.ts`, now overridable via the `SUPER_ADMIN_EMAIL` env var. Email-based super-admin remains wrong for a multi-tenant product — replace with a role model before external customers.
 
 ## E · Memory Map
 

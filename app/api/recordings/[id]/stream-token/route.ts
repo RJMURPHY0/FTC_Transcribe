@@ -1,10 +1,27 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getAuthUser } from '@/lib/auth';
+import { rateLimit } from '@/lib/rate-limit';
 
 export const dynamic = 'force-dynamic';
 
 const DG_KEY = process.env.DEEPGRAM_API_KEY;
 
+// access-check-exempt: mints a short-lived Deepgram caption token; touches no
+// per-recording data (the id param is unused), so per-user auth + throttle is
+// the right gate rather than canAccessRecording.
 export async function GET(_req: NextRequest) {
+  const user = await getAuthUser();
+  if (!user) return NextResponse.json({ error: 'Not authenticated.' }, { status: 401 });
+
+  // Each call creates a real Deepgram API key — throttle per user.
+  const limited = rateLimit(`stream-token:${user.id}`, 10, 5 * 60 * 1000);
+  if (!limited.ok) {
+    return NextResponse.json(
+      { error: 'Too many caption sessions — try again shortly.' },
+      { status: 429, headers: { 'Retry-After': String(limited.retryAfterS) } },
+    );
+  }
+
   if (!DG_KEY) {
     return NextResponse.json({ error: 'Deepgram not configured.' }, { status: 503 });
   }

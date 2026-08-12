@@ -5,7 +5,8 @@
   "main": "index.js",
   "scripts": {
     "dev": "next dev",
-    "build": "prisma generate && next build",
+    "build": "prisma generate && node scripts/check-recording-access.js && next build",
+    "check:access": "node scripts/check-recording-access.js",
     "postinstall": "prisma generate",
     "start": "next start",
     "db:migrate": "prisma migrate dev --name init",

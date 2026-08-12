@@ -24,6 +24,9 @@
     },
     "app/api/voice-profiles/route.ts": {
       "maxDuration": 120
+    },
+    "app/api/user/export/route.ts": {
+      "maxDuration": 60
     }
   },
   "crons": [

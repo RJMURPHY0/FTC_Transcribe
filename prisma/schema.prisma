@@ -215,6 +215,27 @@ model SpeakerProfile {
   @@index([userId])
 }
 
+// Append-only audit trail of user-visible actions (create/delete/export/chat/
+// voice enrolment...). orgId is the actor's Contacts organisation — Transcribe
+// reuses the Contacts org tables rather than keeping its own org model.
+// Written via lib/audit.ts; a failed write never fails the audited action.
+model AuditLog {
+  id         String   @id @default(cuid())
+  createdAt  DateTime @default(now())
+  userId     String?
+  userEmail  String?
+  orgId      String?
+  action     String
+  targetType String?
+  targetId   String?
+  ip         String?
+  metadata   String? // JSON
+
+  @@index([userId, createdAt])
+  @@index([targetId])
+  @@index([createdAt])
+}
+
 // Deduplication log for the auto-fix pipeline. One row per unique error
 // message (hashed) within a 24-hour window — prevents 49 identical errors
 // from spawning 49 PRs.

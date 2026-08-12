@@ -105,6 +105,29 @@ export async function getMemberNames(userIds: string[]): Promise<Record<string, 
   }
 }
 
+// Org membership lookup for audit context. Cached in-process (5 min) so audit
+// writes don't add a query per action; membership changes are rare.
+const orgIdCache = new Map<string, { orgId: string | null; expires: number }>();
+const ORG_TTL_MS = 5 * 60 * 1000;
+
+export async function getUserOrgId(userId: string): Promise<string | null> {
+  const cached = orgIdCache.get(userId);
+  if (cached && cached.expires > Date.now()) return cached.orgId;
+  try {
+    const rows = await prisma.$queryRaw<{ org_id: string }[]>`
+      SELECT org_id::text FROM public.org_members
+      WHERE user_id = ${userId}::uuid
+      LIMIT 1
+    `;
+    const orgId = rows[0]?.org_id ?? null;
+    orgIdCache.set(userId, { orgId, expires: Date.now() + ORG_TTL_MS });
+    return orgId;
+  } catch (err) {
+    console.error('[contacts-db] getUserOrgId failed:', err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
 export async function getMemberUserIds(orgId?: string | null, teamId?: string | null): Promise<string[]> {
   try {
     if (teamId && orgId) {

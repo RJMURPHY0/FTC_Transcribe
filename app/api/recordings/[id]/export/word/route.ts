@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { getAuthUser, canAccessRecording } from '@/lib/auth';
+import { logAudit, requestIp } from '@/lib/audit';
 import { meetingDocFrom, exportFilename, readDocLogo } from '@/lib/export-doc';
 import { buildMeetingDocx } from '@/lib/export-docx';
 
@@ -32,6 +33,16 @@ export async function GET(
   if (!recording.summary) {
     return NextResponse.json({ error: 'No summary found.' }, { status: 404 });
   }
+
+  await logAudit({
+    userId: user?.id,
+    userEmail: user?.email,
+    action: 'recording.export',
+    targetType: 'recording',
+    targetId: params.id,
+    ip: requestIp(_req),
+    metadata: { format: 'docx' },
+  });
 
   let buffer: Buffer;
   try {

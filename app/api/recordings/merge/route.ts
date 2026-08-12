@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { getAuthUser, canAccessRecording } from '@/lib/auth';
+import { logAudit, requestIp } from '@/lib/audit';
 import {
   diarizeSegments,
   identifySpeakerNames,
@@ -57,6 +58,15 @@ export async function POST(request: NextRequest) {
   if (ordered.some((r) => !canAccessRecording(r.userId, user))) {
     return NextResponse.json({ error: 'Not allowed.' }, { status: 403 });
   }
+
+  await logAudit({
+    userId: user.id,
+    userEmail: user.email,
+    action: 'recording.merge',
+    targetType: 'recording',
+    ip: requestIp(request),
+    metadata: { sourceIds: recordingIds },
+  });
 
   // Concatenate transcripts in order, adjusting segment timestamps to be continuous
   let fullText = '';

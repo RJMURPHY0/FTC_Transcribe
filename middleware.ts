@@ -28,8 +28,10 @@ export async function middleware(request: NextRequest) {
     },
   );
 
-  // Read session from cookie — fast (no network call).
-  // JWT expiry is enforced by Supabase client; adequate for this internal app.
+  // Cookie-only session read — fast (no network call). This is a UX redirect,
+  // NOT the auth boundary: every data access verifies the JWT server-side via
+  // getAuthUser() (supabase.auth.getUser()), so a forged cookie gets past this
+  // redirect but can never read data.
   let user = null;
   try {
     const { data } = await supabase.auth.getSession();

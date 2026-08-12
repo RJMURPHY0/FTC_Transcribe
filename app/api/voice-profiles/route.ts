@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { getAuthUser } from '@/lib/auth';
+import { logAudit, requestIp } from '@/lib/audit';
 import { ensureSchema } from '@/lib/ensure-schema';
 import { embedAudioSample, EMB_MODEL_VERSION } from '@/lib/voice-id';
 import { createVoiceProfileTagged } from '@/lib/voice-profile-store';
@@ -97,6 +98,17 @@ export async function POST(request: NextRequest) {
   if (saved === 0) {
     return NextResponse.json({ error: errors[0] ?? 'No usable samples.', errors }, { status: 422 });
   }
+
+  // Voice embeddings are biometric data — enrolment must always leave a trail.
+  await logAudit({
+    userId: user.id,
+    userEmail: user.email,
+    action: 'voice.enroll',
+    targetType: 'voiceProfile',
+    ip: requestIp(request),
+    metadata: { personName: name, samples: saved },
+  });
+
   return NextResponse.json({ ok: true, saved, errors });
 }
 
@@ -115,5 +127,15 @@ export async function DELETE(request: NextRequest) {
       ? { personName: name }
       : { personName: name, OR: [{ userId: user.id }, { userId: null }] },
   });
+
+  await logAudit({
+    userId: user.id,
+    userEmail: user.email,
+    action: 'voice.delete',
+    targetType: 'voiceProfile',
+    ip: requestIp(request),
+    metadata: { personName: name, deleted: deleted.count },
+  });
+
   return NextResponse.json({ ok: true, deleted: deleted.count });
 }

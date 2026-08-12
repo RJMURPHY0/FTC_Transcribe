@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
 import { prisma } from '@/lib/db';
 import { getAuthUser, canAccessRecording } from '@/lib/auth';
+import { logAudit, requestIp } from '@/lib/audit';
+import { rateLimit } from '@/lib/rate-limit';
 import { parseDueArray, formatDue } from '@/lib/action-items';
 
 export const dynamic = 'force-dynamic';
@@ -65,6 +67,24 @@ export async function POST(
     if (!canAccessRecording(recording.userId, user)) {
       return NextResponse.json({ error: 'Not allowed.' }, { status: 403 });
     }
+
+    // Each message is a Claude call — cap runaway clients per user.
+    const limited = rateLimit(`chat:${user!.id}`, 30, 5 * 60 * 1000);
+    if (!limited.ok) {
+      return NextResponse.json(
+        { error: 'Too many messages — wait a moment and try again.' },
+        { status: 429, headers: { 'Retry-After': String(limited.retryAfterS) } },
+      );
+    }
+
+    await logAudit({
+      userId: user!.id,
+      userEmail: user!.email,
+      action: 'recording.chat',
+      targetType: 'recording',
+      targetId: params.id,
+      ip: requestIp(request),
+    });
 
     if (!recording.transcript) {
       return NextResponse.json({

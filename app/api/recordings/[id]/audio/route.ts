@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
-import { getAuthUser } from '@/lib/auth';
+import { getAuthUser, canAccessRecording } from '@/lib/auth';
+import { logAudit, requestIp } from '@/lib/audit';
 import { getAdminClient } from '@/lib/supabase/admin';
 
 export const dynamic = 'force-dynamic';
@@ -38,11 +39,22 @@ export async function GET(
     return NextResponse.json({ error: 'Recording not found.' }, { status: 404 });
   }
   // Same visibility rule as the recording page: owner, unclaimed, or can-see-all.
-  if (recording.userId && recording.userId !== user.id && !user.canSeeAll) {
+  if (!canAccessRecording(recording.userId, user)) {
     return NextResponse.json({ error: 'Not allowed.' }, { status: 403 });
   }
 
   const wantsDownload = req.nextUrl.searchParams.get('download') === '1';
+  if (wantsDownload) {
+    // Log downloads only — plain playback would write a row per seek.
+    await logAudit({
+      userId: user.id,
+      userEmail: user.email,
+      action: 'recording.download',
+      targetType: 'recording',
+      targetId: params.id,
+      ip: requestIp(req),
+    });
+  }
 
   // Pre-archive recordings (and installs without a service key) keep audio in
   // the ChunkBlob table — serve it merged, exactly as during processing.

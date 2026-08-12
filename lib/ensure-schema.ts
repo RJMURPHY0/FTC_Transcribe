@@ -66,6 +66,22 @@ export async function ensureSchema() {
         updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
       )`;
     await prisma.$executeRaw`
+      CREATE TABLE IF NOT EXISTS "AuditLog" (
+        "id"         TEXT NOT NULL PRIMARY KEY,
+        "createdAt"  TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "userId"     TEXT,
+        "userEmail"  TEXT,
+        "orgId"      TEXT,
+        "action"     TEXT NOT NULL,
+        "targetType" TEXT,
+        "targetId"   TEXT,
+        "ip"         TEXT,
+        "metadata"   TEXT
+      )`;
+    await prisma.$executeRaw`CREATE INDEX IF NOT EXISTS "AuditLog_userId_createdAt_idx" ON "AuditLog"("userId", "createdAt")`;
+    await prisma.$executeRaw`CREATE INDEX IF NOT EXISTS "AuditLog_targetId_idx" ON "AuditLog"("targetId")`;
+    await prisma.$executeRaw`CREATE INDEX IF NOT EXISTS "AuditLog_createdAt_idx" ON "AuditLog"("createdAt")`;
+    await prisma.$executeRaw`
       CREATE TABLE IF NOT EXISTS "SpeakerEmbedding" (
         "id"           TEXT NOT NULL PRIMARY KEY,
         "recordingId"  TEXT NOT NULL,
