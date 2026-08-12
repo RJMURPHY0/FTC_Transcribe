@@ -290,7 +290,9 @@ export async function reanalyzeSpeakers(
 
   const voiceChunks: ChunkForAlignment[] = [];
   for (const row of rows) {
-    let parsed: Array<{ start: number; end: number; text: string; speaker?: number | string }> = [];
+    // `channel` is present on dual-channel meetings (mic vs call); it rides
+    // through the stored JSON untouched and confines labelling to its own side.
+    let parsed: Array<{ start: number; end: number; text: string; speaker?: number | string; channel?: 'mic' | 'system' }> = [];
     try { parsed = JSON.parse(row.segments); } catch { continue; }
     let voiceData: ChunkVoiceData | null = null;
     try { if (row.voiceData) voiceData = JSON.parse(row.voiceData) as ChunkVoiceData; } catch { /* no voice data */ }
@@ -718,7 +720,7 @@ async function finalizeWithJobs(recordingId: string): Promise<FinalizeResult> {
     for (const row of rows) {
       if (row.transcript.trim()) fullText += (fullText ? ' ' : '') + row.transcript.trim();
       try {
-        const parsed = JSON.parse(row.segments) as Array<{ start: number; end: number; text: string; speaker?: number | string }>;
+        const parsed = JSON.parse(row.segments) as Array<{ start: number; end: number; text: string; speaker?: number | string; channel?: 'mic' | 'system' }>;
         let voiceData: ChunkVoiceData | null = null;
         try {
           if (row.voiceData) voiceData = JSON.parse(row.voiceData) as ChunkVoiceData;

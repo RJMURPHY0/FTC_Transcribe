@@ -7,14 +7,21 @@
 // Bluetooth hands-free profiles late (they sound terrible), loopback/virtual
 // endpoints last (they hear the speakers, not the user).
 
+import { CONFERENCING_HINTS } from './capture-support';
+
 export type MicDevice = { deviceId: string; label: string };
 
 const VIRTUAL = [
   'stereo mix', 'sound mapper', 'primary sound', 'what u hear', 'wave out',
-  'pc speaker', 'loopback', 'virtual', 'cable', 'eshare', 'teams audio',
-  'zoom audio', 'voicemeeter', 'vb-audio', 'obs', 'ndi',
+  'pc speaker', 'loopback', 'virtual', 'cable', 'eshare',
+  'voicemeeter', 'vb-audio', 'obs', 'ndi',
   // Localised Windows loopback endpoints
   'stereomix', 'mixage', 'mezcla', 'missaggio', 'микшер', 'ミキサー',
+  // Conferencing apps' own virtual endpoints. Same list the meeting detector
+  // uses, kept in one place so the two cannot drift: here they must never be
+  // picked as a microphone (they hear the speakers, not the user), there their
+  // presence hints that a meeting app is installed.
+  ...CONFERENCING_HINTS,
 ];
 const BT_HANDSFREE = ['bluetooth', 'hands-free', 'hfp', ' ag audio'];
 const DEDICATED = [

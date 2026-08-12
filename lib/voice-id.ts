@@ -17,7 +17,17 @@ import { readFile, writeFile, unlink, rename } from 'fs/promises';
 import os from 'os';
 import path from 'path';
 
-export interface VoiceTurn { start: number; end: number; speaker: number; embedding?: number[] }
+// `channel` is set only for dual-channel (online meeting) recordings, where the
+// local microphone and the call audio were captured as separate tracks. 'mic'
+// turns are the device owner and nobody else, which the global resolver relies
+// on to pin them to one identity.
+export interface VoiceTurn {
+  start: number;
+  end: number;
+  speaker: number;
+  embedding?: number[];
+  channel?: 'mic' | 'system';
+}
 export interface VoiceSpeaker { speaker: number; embedding: number[]; durationS: number }
 export interface ChunkVoiceData { turns: VoiceTurn[]; speakers: VoiceSpeaker[]; modelVersion?: string }
 
@@ -96,6 +106,26 @@ const ISLAND_KEEP_MARGIN = parseFloat(process.env.VOICE_ISLAND_KEEP_MARGIN ?? '0
 // closest surviving pair sat at 0.824 against a 0.80 merge threshold — a merge
 // the existing rules already call for, missed purely on pass ordering.
 const FINAL_MERGE = process.env.VOICE_FINAL_MERGE !== 'false';
+// ── Dual-channel (online meeting) capture ────────────────────────────────────
+// Two channels count as a genuine mic/call pair only when they actually differ.
+// A mono source decoded to stereo gives two identical channels correlating at
+// ~1.0, and treating that as mic-plus-call would wreck an ordinary recording.
+const DUAL_MAX_CORRELATION = parseFloat(process.env.VOICE_DUAL_MAX_CORR ?? '0.98');
+// Below this RMS a channel is treated as carrying nothing.
+const DUAL_MIN_RMS = parseFloat(process.env.VOICE_DUAL_MIN_RMS ?? '0.002');
+// Echo leakage: remote voices coming out of the speakers and back into the mic.
+// Detected on 10 ms energy envelopes rather than raw samples — sample-level
+// cross-correlation over a 400 ms lag window would be ~10^9 operations per
+// turn, while the envelope form is a few thousand and just as decisive, because
+// leaked audio tracks the call's energy pattern at a fixed delay while genuine
+// local speech does not.
+const LEAK_CORRELATION = parseFloat(process.env.VOICE_LEAK_CORR ?? '0.7');
+const LEAK_MAX_LAG_MS = parseFloat(process.env.VOICE_LEAK_MAX_LAG_MS ?? '400');
+const LEAK_FRAME_MS = 10;
+// Reserved cluster id for the local speaker on a dual-channel recording. Far
+// above anything clustering can produce, so it can never collide.
+const PINNED_CLUSTER = 1_000_000;
+
 // Turns shorter than this don't get their own embedding (too noisy to trust)
 const MIN_TURN_EMBED_S = parseFloat(process.env.VOICE_MIN_TURN_EMBED_S ?? '1.0');
 // Cap the audio used per speaker embedding — CPU cost control
@@ -277,6 +307,111 @@ function ffmpegPath(): string | null {
 }
 
 async function decodeTo16kMono(audio: Buffer, mimeType: string): Promise<Float32Array | null> {
+  return decodePcm(audio, mimeType, 1);
+}
+
+/**
+ * Decode to two 16 kHz channels.
+ *
+ * Always asks ffmpeg for stereo, even when the source is mono — a mono source
+ * is simply duplicated, which `channelsAreDistinct` then recognises. That
+ * avoids needing ffprobe (not a dependency here) purely to count channels, and
+ * costs nothing: decode time is dominated by demuxing, not channel count.
+ */
+async function decodeTo16kStereo(
+  audio: Buffer,
+  mimeType: string,
+): Promise<{ left: Float32Array; right: Float32Array } | null> {
+  const interleaved = await decodePcm(audio, mimeType, 2);
+  if (!interleaved) return null;
+  const n = interleaved.length >> 1;
+  const left = new Float32Array(n);
+  const right = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    left[i] = interleaved[2 * i];
+    right[i] = interleaved[2 * i + 1];
+  }
+  return { left, right };
+}
+
+/** Equivalent to ffmpeg's own stereo → mono downmix, for the fallback path. */
+function downmix(left: Float32Array, right: Float32Array): Float32Array {
+  const out = new Float32Array(left.length);
+  for (let i = 0; i < left.length; i++) out[i] = (left[i] + right[i]) / 2;
+  return out;
+}
+
+function rms(x: Float32Array): number {
+  if (!x.length) return 0;
+  let sum = 0;
+  for (let i = 0; i < x.length; i++) sum += x[i] * x[i];
+  return Math.sqrt(sum / x.length);
+}
+
+/**
+ * Whether two channels are a real mic/call pair rather than one signal twice.
+ *
+ * This is the whole auto-detection. Nothing trusts the client's claim about
+ * what it recorded: a duplicated mono track correlates at ~1.0 and takes the
+ * ordinary path, so an old or lying client cannot misroute a recording into
+ * dual-channel handling.
+ */
+function channelsAreDistinct(left: Float32Array, right: Float32Array): boolean {
+  if (left.length < SAMPLE_RATE || left.length !== right.length) return false;
+  if (rms(left) < DUAL_MIN_RMS && rms(right) < DUAL_MIN_RMS) return false;
+  let dot = 0, nl = 0, nr = 0;
+  for (let i = 0; i < left.length; i++) {
+    dot += left[i] * right[i];
+    nl += left[i] * left[i];
+    nr += right[i] * right[i];
+  }
+  if (nl === 0 || nr === 0) return true; // one side silent — genuinely different
+  return dot / Math.sqrt(nl * nr) < DUAL_MAX_CORRELATION;
+}
+
+/** 16-bit PCM mono WAV, the one container every transcription provider accepts. */
+function encodeWav16(samples: Float32Array): Buffer {
+  const dataBytes = samples.length * 2;
+  const buf = Buffer.alloc(44 + dataBytes);
+  buf.write('RIFF', 0);
+  buf.writeUInt32LE(36 + dataBytes, 4);
+  buf.write('WAVE', 8);
+  buf.write('fmt ', 12);
+  buf.writeUInt32LE(16, 16);
+  buf.writeUInt16LE(1, 20);
+  buf.writeUInt16LE(1, 22);
+  buf.writeUInt32LE(SAMPLE_RATE, 24);
+  buf.writeUInt32LE(SAMPLE_RATE * 2, 28);
+  buf.writeUInt16LE(2, 32);
+  buf.writeUInt16LE(16, 34);
+  buf.write('data', 36);
+  buf.writeUInt32LE(dataBytes, 40);
+  for (let i = 0; i < samples.length; i++) {
+    const v = Math.max(-1, Math.min(1, samples[i]));
+    buf.writeInt16LE(Math.round(v * 32767), 44 + i * 2);
+  }
+  return buf;
+}
+
+/**
+ * Split an online-meeting chunk into its two sides, or return null if this is
+ * not a dual-channel recording.
+ *
+ * Detection is the same test the diarisation path uses, so transcription and
+ * diarisation can never disagree about what kind of recording this is.
+ */
+export async function splitChannelsToWav(
+  audio: Buffer,
+  mimeType: string,
+): Promise<{ mic: Buffer; system: Buffer } | null> {
+  const stereo = await decodeTo16kStereo(audio, mimeType);
+  if (!stereo || stereo.left.length < SAMPLE_RATE) return null;
+  const { left, right } = stereo;
+  if (!channelsAreDistinct(left, right) || rms(right) < DUAL_MIN_RMS) return null;
+  return { mic: encodeWav16(left), system: encodeWav16(right) };
+}
+
+async function decodePcm(audio: Buffer, mimeType: string, channels: 1 | 2): Promise<Float32Array | null> {
   const ffmpeg = ffmpegPath();
   if (!ffmpeg) {
     console.warn('[voice-id] ffmpeg-static unavailable');
@@ -296,7 +431,7 @@ async function decodeTo16kMono(audio: Buffer, mimeType: string): Promise<Float32
     await new Promise<void>((resolve, reject) => {
       const p = spawn(ffmpeg, [
         '-hide_banner', '-loglevel', 'error', '-nostdin',
-        '-i', inPath, '-ac', '1', '-ar', String(SAMPLE_RATE),
+        '-i', inPath, '-ac', String(channels), '-ar', String(SAMPLE_RATE),
         '-acodec', 'pcm_s16le', '-y', outPath,
       ]);
       let errOut = '';
@@ -345,69 +480,233 @@ export function cosineSim(a: number[] | Float32Array, b: number[] | Float32Array
 
 // ── Per-chunk analysis: diarize + one embedding per local speaker ─────────────
 
+// Reserved chunk-local speaker id for the device owner on a dual-channel
+// recording. Remote speakers are shifted up by one so this stays free.
+const LOCAL_SPEAKER = 0;
+
+// Per-turn voiceprints: the global resolver clusters and profile-checks
+// individual turns, so one bad within-chunk cluster can't poison the whole
+// chunk. Short turns stay embedding-less and inherit labels from context.
+async function embedTurnsInPlace(turns: VoiceTurn[], samples: Float32Array): Promise<void> {
+  for (const t of turns) {
+    const dur = t.end - t.start;
+    if (dur < MIN_TURN_EMBED_S) continue;
+    const s = Math.max(0, Math.floor(t.start * SAMPLE_RATE));
+    const e = Math.min(samples.length, Math.floor(Math.min(t.end, t.start + MAX_TURN_EMBED_SECONDS) * SAMPLE_RATE));
+    if (e - s < SAMPLE_RATE * MIN_TURN_EMBED_S) continue;
+    const emb = await computeEmbedding(samples.subarray(s, e));
+    // 4 decimals is plenty for cosine math and halves the stored JSON size
+    if (emb) t.embedding = emb.map((v) => Math.round(v * 1e4) / 1e4);
+  }
+}
+
+// Concatenate each speaker's speech (longest turns first, capped) and embed it
+async function speakerEmbeddingsFor(turns: VoiceTurn[], samples: Float32Array): Promise<VoiceSpeaker[]> {
+  const bySpeaker = new Map<number, Array<{ start: number; end: number }>>();
+  for (const t of turns) {
+    if (!bySpeaker.has(t.speaker)) bySpeaker.set(t.speaker, []);
+    bySpeaker.get(t.speaker)!.push({ start: t.start, end: t.end });
+  }
+
+  const speakers: VoiceSpeaker[] = [];
+  for (const [speaker, spans] of bySpeaker) {
+    const sorted = [...spans].sort((a, b) => (b.end - b.start) - (a.end - a.start));
+    const pieces: Float32Array[] = [];
+    let secs = 0;
+    let totalSecs = 0;
+    for (const span of sorted) {
+      totalSecs += span.end - span.start;
+      if (secs >= MAX_EMBED_SECONDS) continue;
+      const s = Math.max(0, Math.floor(span.start * SAMPLE_RATE));
+      const e = Math.min(samples.length, Math.floor(span.end * SAMPLE_RATE));
+      if (e <= s) continue;
+      pieces.push(samples.subarray(s, e));
+      secs += (e - s) / SAMPLE_RATE;
+    }
+    if (secs < 1) continue; // too little speech for a reliable voiceprint
+    const joined = new Float32Array(pieces.reduce((n, p) => n + p.length, 0));
+    let off = 0;
+    for (const p of pieces) { joined.set(p, off); off += p.length; }
+    const embedding = await computeEmbedding(joined);
+    if (embedding) speakers.push({ speaker, embedding, durationS: Math.round(totalSecs * 10) / 10 });
+  }
+  return speakers;
+}
+
+// ── Echo leakage ──────────────────────────────────────────────────────────────
+
+/** Per-frame RMS, the signal the leakage test actually compares. */
+function energyEnvelope(x: Float32Array, frameSamples: number): Float32Array {
+  const frames = Math.floor(x.length / frameSamples);
+  const env = new Float32Array(frames);
+  for (let f = 0; f < frames; f++) {
+    let sum = 0;
+    const base = f * frameSamples;
+    for (let i = 0; i < frameSamples; i++) { const v = x[base + i]; sum += v * v; }
+    env[f] = Math.sqrt(sum / frameSamples);
+  }
+  return env;
+}
+
+/**
+ * Best Pearson correlation between a window of the mic envelope and the call
+ * envelope, searching over playback delay. The mic hears the call late, so only
+ * non-negative lags are meaningful.
+ */
+function bestLagCorrelation(
+  micEnv: Float32Array, sysEnv: Float32Array,
+  from: number, to: number, maxLag: number,
+): number {
+  const n = to - from;
+  if (n < 4) return 0;
+  let meanM = 0;
+  for (let i = from; i < to; i++) meanM += micEnv[i];
+  meanM /= n;
+  let varM = 0;
+  for (let i = from; i < to; i++) { const d = micEnv[i] - meanM; varM += d * d; }
+  if (varM <= 0) return 0;
+
+  let best = 0;
+  for (let lag = 0; lag <= maxLag; lag++) {
+    const s0 = from - lag;
+    if (s0 < 0) break;
+    if (s0 + n > sysEnv.length) continue;
+    let meanS = 0;
+    for (let i = 0; i < n; i++) meanS += sysEnv[s0 + i];
+    meanS /= n;
+    let cov = 0, varS = 0;
+    for (let i = 0; i < n; i++) {
+      const dm = micEnv[from + i] - meanM;
+      const ds = sysEnv[s0 + i] - meanS;
+      cov += dm * ds;
+      varS += ds * ds;
+    }
+    if (varS <= 0) continue;
+    const r = cov / Math.sqrt(varM * varS);
+    if (r > best) best = r;
+  }
+  return best;
+}
+
+/**
+ * Remove mic turns that are really the call coming back through the speakers.
+ *
+ * This is the direct fix for remote participants being labelled as the person
+ * holding the device. The browser's echo canceller handles most of it at
+ * capture time; this catches what survives, which is exactly the case where
+ * someone is on speakerphone or using external speakers.
+ */
+function dropLeakedTurns(turns: VoiceTurn[], mic: Float32Array, sys: Float32Array): VoiceTurn[] {
+  const frameSamples = Math.round((SAMPLE_RATE * LEAK_FRAME_MS) / 1000);
+  const micEnv = energyEnvelope(mic, frameSamples);
+  const sysEnv = energyEnvelope(sys, frameSamples);
+  const maxLag = Math.round(LEAK_MAX_LAG_MS / LEAK_FRAME_MS);
+  let dropped = 0;
+  const kept = turns.filter((t) => {
+    const from = Math.max(0, Math.floor((t.start * 1000) / LEAK_FRAME_MS));
+    const to = Math.min(micEnv.length, Math.ceil((t.end * 1000) / LEAK_FRAME_MS));
+    // Too short to judge: a fraction of a second of envelope correlates with
+    // almost anything, so keep it rather than risk deleting real speech.
+    if (to - from < 20) return true;
+    const r = bestLagCorrelation(micEnv, sysEnv, from, to, maxLag);
+    if (r >= LEAK_CORRELATION) { dropped++; return false; }
+    return true;
+  });
+  if (dropped) console.log(`[voice-id] dropped ${dropped} mic turn(s) as call leakage`);
+  return kept;
+}
+
+// ── Per-chunk analysis: diarize + one embedding per local speaker ─────────────
+
+async function analyzeMono(diarizer: any, samples: Float32Array): Promise<ChunkVoiceData | null> {
+  const segs = diarizer.process(samples) as Array<{ start: number; end: number; speaker: number }>;
+  if (!segs.length) return null;
+
+  const turns: VoiceTurn[] = segs.map((s) => ({
+    start: Math.round(s.start * 100) / 100,
+    end: Math.round(s.end * 100) / 100,
+    speaker: s.speaker,
+  }));
+
+  await embedTurnsInPlace(turns, samples);
+  const speakers = await speakerEmbeddingsFor(turns, samples);
+  if (!speakers.length) return null;
+  return { turns, speakers, modelVersion: EMB_MODEL_VERSION };
+}
+
+/**
+ * Online meetings, where the local mic and the call arrived on separate
+ * channels.
+ *
+ * The point of keeping them apart: the mic channel is one person by
+ * construction, so the local speaker needs no acoustic guess at all, and the
+ * call channel is clustered without the local voice or the local room in it,
+ * which is a strictly easier problem than the blended mono signal this
+ * replaced.
+ */
+async function analyzeDual(diarizer: any, mic: Float32Array, sys: Float32Array): Promise<ChunkVoiceData | null> {
+  // Remote participants: ordinary diarisation. Ids shift up by one so the
+  // reserved local id stays free.
+  const sysSegs = diarizer.process(sys) as Array<{ start: number; end: number; speaker: number }>;
+  const sysTurns: VoiceTurn[] = sysSegs.map((s) => ({
+    start: Math.round(s.start * 100) / 100,
+    end: Math.round(s.end * 100) / 100,
+    speaker: s.speaker + 1,
+    channel: 'system' as const,
+  }));
+
+  // Local speaker: the diarizer is used only for its speech segmentation here.
+  // Whatever clustering it reports is discarded, because every segment on this
+  // channel is the same person.
+  const micSegs = diarizer.process(mic) as Array<{ start: number; end: number; speaker: number }>;
+  const micTurns = dropLeakedTurns(
+    micSegs.map((s) => ({
+      start: Math.round(s.start * 100) / 100,
+      end: Math.round(s.end * 100) / 100,
+      speaker: LOCAL_SPEAKER,
+      channel: 'mic' as const,
+    })),
+    mic, sys,
+  );
+
+  if (!micTurns.length && !sysTurns.length) return null;
+
+  await embedTurnsInPlace(micTurns, mic);
+  await embedTurnsInPlace(sysTurns, sys);
+
+  const speakers = [
+    ...(await speakerEmbeddingsFor(micTurns, mic)),
+    ...(await speakerEmbeddingsFor(sysTurns, sys)),
+  ];
+  if (!speakers.length) return null;
+
+  const turns = [...micTurns, ...sysTurns].sort((a, b) => a.start - b.start);
+  return { turns, speakers, modelVersion: EMB_MODEL_VERSION };
+}
+
 export async function analyzeChunkVoices(audio: Buffer, mimeType: string): Promise<ChunkVoiceData | null> {
   if (!isVoiceIdEnabled) return null;
   try {
     const diarizer = await getDiarizer();
     if (!diarizer) return null;
-    const samples = await decodeTo16kMono(audio, mimeType);
-    if (!samples || samples.length < SAMPLE_RATE) return null; // <1s of audio
+    const stereo = await decodeTo16kStereo(audio, mimeType);
+    if (!stereo || stereo.left.length < SAMPLE_RATE) return null; // <1s of audio
+    const { left, right } = stereo;
 
-    const segs = diarizer.process(samples) as Array<{ start: number; end: number; speaker: number }>;
-    if (!segs.length) return null;
-
-    const turns: VoiceTurn[] = segs.map((s) => ({
-      start: Math.round(s.start * 100) / 100,
-      end: Math.round(s.end * 100) / 100,
-      speaker: s.speaker,
-    }));
-
-    // Per-turn voiceprints: the global resolver clusters and profile-checks
-    // individual turns, so one bad within-chunk cluster can't poison the whole
-    // chunk. Short turns stay embedding-less and inherit labels from context.
-    for (const t of turns) {
-      const dur = t.end - t.start;
-      if (dur < MIN_TURN_EMBED_S) continue;
-      const s = Math.max(0, Math.floor(t.start * SAMPLE_RATE));
-      const e = Math.min(samples.length, Math.floor(Math.min(t.end, t.start + MAX_TURN_EMBED_SECONDS) * SAMPLE_RATE));
-      if (e - s < SAMPLE_RATE * MIN_TURN_EMBED_S) continue;
-      const emb = await computeEmbedding(samples.subarray(s, e));
-      // 4 decimals is plenty for cosine math and halves the stored JSON size
-      if (emb) t.embedding = emb.map((v) => Math.round(v * 1e4) / 1e4);
+    // Auto-detection, decided by the audio and nothing else. Two channels that
+    // genuinely differ AND a call channel that actually carries sound means an
+    // online meeting recorded as mic-left/call-right.
+    //
+    // The second condition matters: someone using meeting mode for an in-person
+    // meeting, or picking a surface that shares no audio, leaves the call
+    // channel empty. Treating that as dual would collapse a roomful of people
+    // into one speaker, so it falls back to the ordinary path instead.
+    if (channelsAreDistinct(left, right) && rms(right) >= DUAL_MIN_RMS) {
+      const dual = await analyzeDual(diarizer, left, right);
+      if (dual) return dual;
     }
 
-    // Concatenate each speaker's speech (longest turns first, capped) and embed it
-    const bySpeaker = new Map<number, Array<{ start: number; end: number }>>();
-    for (const t of turns) {
-      if (!bySpeaker.has(t.speaker)) bySpeaker.set(t.speaker, []);
-      bySpeaker.get(t.speaker)!.push({ start: t.start, end: t.end });
-    }
-
-    const speakers: VoiceSpeaker[] = [];
-    for (const [speaker, spans] of bySpeaker) {
-      const sorted = [...spans].sort((a, b) => (b.end - b.start) - (a.end - a.start));
-      const pieces: Float32Array[] = [];
-      let secs = 0;
-      let totalSecs = 0;
-      for (const span of sorted) {
-        totalSecs += span.end - span.start;
-        if (secs >= MAX_EMBED_SECONDS) continue;
-        const s = Math.max(0, Math.floor(span.start * SAMPLE_RATE));
-        const e = Math.min(samples.length, Math.floor(span.end * SAMPLE_RATE));
-        if (e <= s) continue;
-        pieces.push(samples.subarray(s, e));
-        secs += (e - s) / SAMPLE_RATE;
-      }
-      if (secs < 1) continue; // too little speech for a reliable voiceprint
-      const joined = new Float32Array(pieces.reduce((n, p) => n + p.length, 0));
-      let off = 0;
-      for (const p of pieces) { joined.set(p, off); off += p.length; }
-      const embedding = await computeEmbedding(joined);
-      if (embedding) speakers.push({ speaker, embedding, durationS: Math.round(totalSecs * 10) / 10 });
-    }
-
-    if (!speakers.length) return null;
-    return { turns, speakers, modelVersion: EMB_MODEL_VERSION };
+    return analyzeMono(diarizer, downmix(left, right));
   } catch (err) {
     console.warn('[voice-id] chunk analysis failed:', err instanceof Error ? err.message : err);
     return null;
@@ -438,7 +737,11 @@ export async function embedAudioSample(
 
 export interface ChunkForAlignment {
   offset: number;
-  segments: Array<{ start: number; end: number; text: string; speaker?: number | string }>;
+  // `channel` is set when the segment was transcribed from one side of a
+  // dual-channel meeting. It confines labelling to that side's turns, so a
+  // remote sentence overlapping your speech cannot take your label on overlap
+  // alone — which is the whole point of capturing the two separately.
+  segments: Array<{ start: number; end: number; text: string; speaker?: number | string; channel?: 'mic' | 'system' }>;
   voiceData: ChunkVoiceData | null;
 }
 
@@ -524,6 +827,7 @@ interface GlobalTurn {
   embedding: number[] | null;
   cluster: number;        // mutable: current global cluster id
   supervised?: boolean;   // hard-assigned by an enrolled-profile match
+  channel?: 'mic' | 'system'; // dual-channel meetings only
 }
 
 function normalizeVec(v: number[]): number[] {
@@ -628,14 +932,36 @@ export function resolveGlobalSpeakers(
         localSpeaker: t.speaker,
         embedding: t.embedding ?? null,
         cluster: -1,
+        channel: t.channel,
       });
     }
   });
   globalTurns.sort((x, y) => x.start - y.start);
 
+  // Dual-channel meetings: turns captured on the local microphone are one known
+  // person, so they are withheld from clustering entirely rather than merely
+  // guarded at each step. Their embeddings are set aside and their cluster is
+  // fixed here, which means no clustering, absorption, merge or smoothing pass
+  // can split the local speaker into fragments or fold a remote voice into
+  // them — every one of those passes skips turns without an embedding. Making
+  // the guarantee structural beats adding eight separate guards and hoping a
+  // future edit never misses one.
+  const pinnedEmbeddings: number[][] = [];
+  let isDual = false;
+  for (const t of globalTurns) {
+    if (t.channel !== 'mic') continue;
+    isDual = true;
+    if (t.embedding) pinnedEmbeddings.push(t.embedding);
+    t.embedding = null;
+    t.cluster = PINNED_CLUSTER;
+    t.supervised = true;
+  }
+
   const embeddedCount = globalTurns.filter((t) => t.embedding).length;
-  // Legacy recordings (no per-turn embeddings) use the original resolver
-  if (embeddedCount < 2) return resolveGlobalSpeakersLegacy(chunks);
+  // Legacy recordings (no per-turn embeddings) use the original resolver.
+  // A dual-channel recording is exempt: even with no remote speech to cluster,
+  // the pinned local speaker still has to be labelled.
+  if (embeddedCount < 2 && !isDual) return resolveGlobalSpeakersLegacy(chunks);
 
   // 1. Global clustering over turn voiceprints
   clusterTurns(globalTurns, TURN_CLUSTER_THRESHOLD);
@@ -932,7 +1258,10 @@ export function resolveGlobalSpeakers(
       const dom = localDominant.get(`${t.chunkIdx}:${t.localSpeaker}`);
       t.cluster = dom !== undefined ? dom : prevCluster;
     }
-    if (t.cluster >= 0) prevCluster = t.cluster;
+    // Temporal continuity must not carry the local speaker's identity across to
+    // the call channel: a remote turn following one of yours would otherwise
+    // inherit your label purely because it came next.
+    if (t.cluster >= 0 && t.cluster !== PINNED_CLUSTER) prevCluster = t.cluster;
   }
   // Anything still unassigned (e.g. leading turns before any evidence)
   for (const t of globalTurns) if (t.cluster < 0) t.cluster = prevCluster >= 0 ? prevCluster : 0;
@@ -945,6 +1274,10 @@ export function resolveGlobalSpeakers(
     const t = globalTurns[i];
     const prev = globalTurns[i - 1], next = globalTurns[i + 1];
     if (t.end - t.start >= MIN_ISLAND_S) continue;
+    // Never flip into or out of the pinned local speaker. A short remote turn
+    // between two of yours is genuine crosstalk, not diarizer flicker, and it
+    // is the exact case dual-channel capture exists to get right.
+    if (t.cluster === PINNED_CLUSTER || prev.cluster === PINNED_CLUSTER) continue;
     if (prev.cluster !== next.cluster || prev.cluster === t.cluster) continue;
     const contiguous = (t.start - prev.end) < 0.25 && (next.start - t.end) < 0.25;
     if (!contiguous) continue;
@@ -955,6 +1288,20 @@ export function resolveGlobalSpeakers(
       if (own && neighbour && cosineSim(norm, own) - cosineSim(norm, neighbour) > ISLAND_KEEP_MARGIN) continue;
     }
     t.cluster = prev.cluster;
+  }
+
+  // 4c. Give the pinned local speaker a centroid, now that every pass that
+  // could have merged it away has finished. Without this it would have no
+  // voiceprint to persist and no way for profile matching to put a name to it,
+  // since its turns were deliberately held out of clustering.
+  if (isDual && pinnedEmbeddings.length) {
+    const dim = pinnedEmbeddings[0].length;
+    const acc = new Array<number>(dim).fill(0);
+    for (const e of pinnedEmbeddings) {
+      const n = normalizeVec(e);
+      for (let i = 0; i < dim; i++) acc[i] += n[i];
+    }
+    centroids.set(PINNED_CLUSTER, normalizeVec(acc.map((v) => v / pinnedEmbeddings.length)));
   }
 
   // 5. Order labels by first appearance, then label transcript segments from
@@ -988,6 +1335,10 @@ export function resolveGlobalSpeakers(
       for (const t of globalTurns) {
         if (t.end <= gStart) continue;
         if (t.start >= gEnd) break;
+        // Dual-channel: label a segment only from the channel it was
+        // transcribed from. Crosstalk is then two clean overlapping lines
+        // rather than one line awarded to whoever happened to overlap most.
+        if (seg.channel && t.channel && t.channel !== seg.channel) continue;
         const s = Math.max(gStart, t.start);
         const e = Math.min(gEnd, t.end);
         if (e - s <= 0) continue;

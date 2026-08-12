@@ -28,6 +28,11 @@ model Recording {
   status             String    @default("uploading")
   source             String    @default("web")
   meetingType        String    @default("general")
+  // What the client believed it captured: "mic-sys" = your mic on the left,
+  // the call on the right; "mono" = a single blended track. Diagnostics only.
+  // Finalize detects the real layout from the audio itself, so an old client
+  // or a wrong value here can never misroute diarisation.
+  channelLayout      String?
   folderId           String?
   userId             String?
   // Soft delete: hidden from all lists immediately, hard-purged by cron after 30 days

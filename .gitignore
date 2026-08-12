@@ -15,6 +15,9 @@ prisma/migrations/
 .env
 .env.local
 .env*.local
+# `.env*.local` does NOT match this one, so it needs its own line: it is what
+# `vercel env pull` writes and it holds production secrets.
+.env.pulled
 
 # Uploads
 uploads/
@@ -64,3 +67,7 @@ tmp-export/
 # Backups and incremental build state
 *.bak
 tsconfig.tsbuildinfo
+
+# Playwright output
+test-results/
+playwright-report/

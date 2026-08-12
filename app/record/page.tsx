@@ -4,12 +4,25 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { getAudioConstraint } from '@/lib/mic-select';
+import { KeepAwake, preloadKeepAwake } from '@/lib/keep-awake';
+import {
+  detectCaptureSupport,
+  detectMeetingContext,
+  detectPlatform,
+  validateDisplaySurface,
+  type CaptureSupport,
+} from '@/lib/capture-support';
 
 type State = 'idle' | 'recording' | 'uploading' | 'queued' | 'error';
 type Source = 'web' | 'teams';
 export type MeetingType = 'general' | 'standup' | 'sales' | 'interview' | 'review';
 
-const CHUNK_MS = 2 * 60 * 1000;
+// A chunk only reaches the server when it rotates, so a freeze costs everything
+// buffered since the last rotation. Phones are where freezes happen, so they
+// rotate far more often: worst-case loss drops from two minutes to 45 seconds,
+// paid for with more, smaller uploads.
+const CHUNK_MS_DESKTOP = 2 * 60 * 1000;
+const CHUNK_MS_MOBILE  = 45 * 1000;
 const SILENCE_RMS = 0.01;
 const SKIP_SPEECH_RATIO = 0.04; // skip upload if < 4% of chunk is speech
 // MediaRecorder is asked for data every 500 ms. If nothing arrives for this
@@ -19,13 +32,6 @@ const SKIP_SPEECH_RATIO = 0.04; // skip upload if < 4% of chunk is speech
 // showing a running timer over a dead recorder.
 const STALL_MS = 12_000;
 const STALL_POLL_MS = 3_000;
-
-// Minimal shape of the Screen Wake Lock sentinel — the DOM lib in this
-// TypeScript version does not declare it.
-interface WakeSentinel {
-  release(): Promise<void>;
-  addEventListener?(type: 'release', listener: () => void): void;
-}
 
 const MEETING_TYPES: { id: MeetingType; label: string; icon: string }[] = [
   { id: 'general',   label: 'General',   icon: '💬' },
@@ -67,6 +73,13 @@ export default function RecordPage() {
   // a locked screen suspends the page and loses audio.
   const [wakeLockHeld,  setWakeLockHeld]  = useState<boolean | null>(null);
   const [stalled,       setStalled]       = useState(false);
+  // What this browser/OS can actually capture, and whether a meeting app looks
+  // to be installed. Resolved on mount because both need `navigator`.
+  const [capture,       setCapture]       = useState<CaptureSupport | null>(null);
+  const [isMobile,      setIsMobile]      = useState(false);
+  // Pre-flight answer to "can this device stay awake at all", probed on mount
+  // so the warning lands before the meeting instead of during it.
+  const [wakeLockPossible, setWakeLockPossible] = useState<boolean | null>(null);
 
   const router = useRouter();
 
@@ -92,14 +105,18 @@ export default function RecordPage() {
   const isPausingRef    = useRef(false);                    // onstop is flushing a pause, not a final stop
   const pauseOffsetRef  = useRef(0);                        // frozen upload offset for the flushed tail
   const pauseHeaderRef  = useRef<ArrayBuffer | null>(null); // frozen WebM header for the flushed tail
-  const noSleepRef      = useRef<{ enable(): Promise<boolean>; disable(): void } | null>(null);
-  const wakeSentinelRef = useRef<WakeSentinel | null>(null);
+  const keepAwakeRef    = useRef<KeepAwake | null>(null);
+  // Rotation interval for this device — see CHUNK_MS_* above.
+  const chunkMsRef      = useRef(CHUNK_MS_DESKTOP);
   const webmHeaderRef   = useRef<ArrayBuffer | null>(null);
   // Watchdog: when MediaRecorder last handed us audio, and a ref-held recovery
   // fn so the visibilitychange listener can call it without depending on
   // callbacks declared further down.
   const lastDataAtRef   = useRef(Date.now());
   const recoverRef      = useRef<(() => Promise<void>) | null>(null);
+  // Same trick for the chunk flush, so the backgrounding listeners can force an
+  // upload without depending on callbacks declared further down.
+  const flushRef        = useRef<(() => Promise<void>) | null>(null);
   const isRecoveringRef = useRef(false);
   // Wall-clock timing. A per-second counter under-reports badly when the OS
   // freezes the page (the very case this screen has to survive), so the
@@ -193,8 +210,10 @@ export default function RecordPage() {
   // Works in desktop Chrome/Edge; the installable desktop app will cover the
   // rest. Returns the mixed stream; sources are stashed for cleanup.
   const getMeetingStream = useCallback(async (): Promise<MediaStream> => {
-    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getDisplayMedia) {
-      throw new Error('Meeting-audio capture needs desktop Chrome or Edge. On mobile, use In Person or the desktop app.');
+    const support = capture ?? detectCaptureSupport();
+    if (support.level === 'none' || typeof navigator === 'undefined' || !navigator.mediaDevices?.getDisplayMedia) {
+      throw new Error(support.blockedReason
+        ?? 'This browser cannot capture call audio. Use Chrome or Edge on a computer.');
     }
     // Video is requested only because getDisplayMedia requires it; we immediately
     // drop the video track and keep just the audio.
@@ -202,17 +221,40 @@ export default function RecordPage() {
       video: true,
       audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
     });
+
+    // Reject a doomed pick straight away rather than recording an hour of
+    // silence. On macOS only a browser tab carries audio, so a whole-screen or
+    // window share is known-bad before a single sample arrives.
+    const surface = (display.getVideoTracks()[0]?.getSettings() as
+      MediaTrackSettings & { displaySurface?: string } | undefined)?.displaySurface;
+    const surfaceError = validateDisplaySurface(surface, support);
+    if (surfaceError) {
+      display.getTracks().forEach((t) => t.stop());
+      throw new Error(surfaceError);
+    }
+
     display.getVideoTracks().forEach((t) => t.stop());
     const sysAudio = display.getAudioTracks();
     if (sysAudio.length === 0) {
       display.getTracks().forEach((t) => t.stop());
-      throw new Error('No meeting audio was shared. In the picker, choose the meeting tab or your whole screen and tick “Share tab audio / system audio”.');
+      throw new Error(`No call audio was shared. ${support.instruction}`);
     }
 
     let mic: MediaStream;
     try {
+      const base = await getAudioConstraint();
       mic = await navigator.mediaDevices.getUserMedia({
-        audio: await getAudioConstraint(),
+        audio: {
+          ...(typeof base === 'object' ? base : {}),
+          // The browser's echo canceller uses what is playing (the call) as its
+          // reference and subtracts it from the mic. First line of defence
+          // against remote voices coming out of the speakers, back into the
+          // mic, and being labelled as you. The server-side leakage gate in
+          // lib/voice-id.ts is the second.
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
       });
     } catch (e) {
       display.getTracks().forEach((t) => t.stop()); // don't leak the display capture
@@ -221,13 +263,26 @@ export default function RecordPage() {
 
     extraStreamsRef.current = [display, mic];
 
+    // Two channels, not a blend: your mic on the left, the call on the right.
+    //
+    // Blending them into one mono track threw away the one piece of information
+    // that makes meeting diarisation tractable — which audio is yours. Kept
+    // apart, your channel is provably a single speaker, and the remote channel
+    // is diarised on its own without your voice or your room in it. Each merger
+    // input is mono by spec, so a stereo tab source is downmixed per side,
+    // which is what we want.
     const ctx = new AudioContext();
     mixCtxRef.current = ctx;
     const dest = ctx.createMediaStreamDestination();
-    ctx.createMediaStreamSource(new MediaStream(sysAudio)).connect(dest);
-    ctx.createMediaStreamSource(mic).connect(dest);
+    dest.channelCount = 2;
+    dest.channelCountMode = 'explicit';
+    dest.channelInterpretation = 'discrete';
+    const merger = ctx.createChannelMerger(2);
+    ctx.createMediaStreamSource(mic).connect(merger, 0, 0);
+    ctx.createMediaStreamSource(new MediaStream(sysAudio)).connect(merger, 0, 1);
+    merger.connect(dest);
     return dest.stream;
-  }, []);
+  }, [capture]);
 
   const startLiveCaptions = useCallback(async (recordingId: string) => {
     try {
@@ -276,52 +331,97 @@ export default function RecordPage() {
     }
   }, []);
 
-  const releaseWakeLock = useCallback(() => {
-    wakeSentinelRef.current?.release().catch(() => {});
-    wakeSentinelRef.current = null;
-    noSleepRef.current?.disable();
+  // Layering, ordering and the honest limits all live in lib/keep-awake.ts.
+  const ensureKeepAwake = useCallback((): KeepAwake => {
+    if (!keepAwakeRef.current) keepAwakeRef.current = new KeepAwake(setWakeLockHeld);
+    return keepAwakeRef.current;
   }, []);
 
-  // Two-tier: the native Screen Wake Lock API first (iOS Safari 16.4+, Chrome
-  // 84+ — a real OS-level lock), falling back to the nosleep.js hidden-video
-  // hack on older browsers. Neither can override the OS: iOS Low Power Mode
-  // refuses the lock outright, and nothing on the web can stop a user pressing
-  // the power button. So we also record WHETHER we got it, and warn if not.
+  const releaseWakeLock = useCallback(() => {
+    keepAwakeRef.current?.release();
+    keepAwakeRef.current = null;
+  }, []);
+
+  // Upgrade to the native OS lock. The gesture-sensitive layers (the nosleep
+  // video, the silent audio session) are already running by this point —
+  // primeFromGesture() fires synchronously from the tap in handleClick, because
+  // iOS only honours them inside a live user-gesture token and every await
+  // before them spends it.
   const requestWakeLock = useCallback(async () => {
     if (typeof window === 'undefined') return;
-    try {
-      const nav = navigator as Navigator & {
-        wakeLock?: { request(type: 'screen'): Promise<WakeSentinel> };
-      };
-      if (nav.wakeLock && !wakeSentinelRef.current) {
-        const sentinel = await nav.wakeLock.request('screen');
-        // The browser drops the lock whenever the page is hidden; the
-        // visibilitychange handler below re-requests it on return.
-        sentinel.addEventListener?.('release', () => { wakeSentinelRef.current = null; });
-        wakeSentinelRef.current = sentinel;
-        setWakeLockHeld(true);
-        return;
-      }
-      if (wakeSentinelRef.current) return;
-    } catch {
-      // Native refused (Low Power Mode, permissions policy) — try the shim.
-    }
-    try {
-      if (!noSleepRef.current) {
-        const { default: NoSleep } = await import('nosleep.js');
-        noSleepRef.current = new NoSleep();
-      }
-      await noSleepRef.current.enable();
-      setWakeLockHeld(true);
-    } catch {
-      setWakeLockHeld(false);
-    }
+    await ensureKeepAwake().engage();
+  }, [ensureKeepAwake]);
+
+  // Detect what this device can capture, and warm the keep-awake fallback so a
+  // tap can start it without awaiting an import.
+  useEffect(() => {
+    setCapture(detectCaptureSupport());
+    setIsMobile(detectPlatform().isMobile);
+    chunkMsRef.current = detectPlatform().isMobile ? CHUNK_MS_MOBILE : CHUNK_MS_DESKTOP;
+    void preloadKeepAwake();
   }, []);
 
+  // Probe the wake lock now rather than discovering it failed mid-meeting.
+  // The API needs only a visible document, not a user gesture, so taking it and
+  // immediately releasing it is a free and honest capability test. iOS refuses
+  // outright in Low Power Mode, which is the case actually worth catching.
   useEffect(() => {
+    if (typeof navigator === 'undefined') return;
+    const nav = navigator as Navigator & {
+      wakeLock?: { request(type: 'screen'): Promise<{ release(): Promise<void> }> };
+    };
+    if (!nav.wakeLock) { setWakeLockPossible(false); return; }
+    let cancelled = false;
+    nav.wakeLock.request('screen')
+      .then((sentinel) => {
+        void sentinel.release().catch(() => {});
+        if (!cancelled) setWakeLockPossible(true);
+      })
+      .catch(() => { if (!cancelled) setWakeLockPossible(false); });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Default to Online Meeting when a conferencing app's audio device is present
+  // and this platform can actually capture it. Only a default: a page cannot
+  // see other tabs or running apps, so anything stronger would be a guess
+  // dressed up as a fact.
+  useEffect(() => {
+    if (!capture || capture.level === 'none') return;
+    let cancelled = false;
+    void detectMeetingContext().then((ctx) => {
+      if (!cancelled && ctx === 'likely') setSource('teams');
+    });
+    return () => { cancelled = true; };
+  }, [capture]);
+
+  // The lock can lapse while the page is still visible, so polling backs up the
+  // visibilitychange handler below.
+  useEffect(() => {
+    if (state !== 'recording' || isPaused) return;
+    const id = setInterval(() => { void keepAwakeRef.current?.reacquire(); }, 15_000);
+    return () => clearInterval(id);
+  }, [state, isPaused]);
+
+  useEffect(() => {
+    // The page is about to be backgrounded or frozen (screen lock, app switch).
+    // Everything buffered since the last rotation only exists in this tab, so
+    // push it to the server NOW, while the page is still alive. Waiting for
+    // `pagehide` is too late on iOS, and a keepalive fetch cannot carry a chunk
+    // this size anyway, so an ordinary upload issued a moment earlier is the
+    // one thing that reliably saves the audio.
+    const flushNow = () => {
+      if (!isActiveRef.current || isPausingRef.current) return;
+      // Nudge MediaRecorder to hand over anything held internally (it emits
+      // every 500 ms, so this is a sub-second gain) before the buffer is taken.
+      try { recorderRef.current?.requestData(); } catch { /* wedged; rotate anyway */ }
+      if (chunkTimerRef.current) { clearTimeout(chunkTimerRef.current); chunkTimerRef.current = null; }
+      void flushRef.current?.();
+    };
+
     const onVisibility = () => {
-      if (document.visibilityState !== 'visible' || state !== 'recording') return;
-      void requestWakeLock();
+      if (state !== 'recording') return;
+      if (document.visibilityState === 'hidden') { flushNow(); return; }
+      void keepAwakeRef.current?.reacquire();
       // The page may have been frozen while hidden (screen lock, app switch),
       // in which case MediaRecorder stopped producing data and the audio for
       // that window is simply gone. We cannot prevent it, but we can notice it
@@ -330,12 +430,30 @@ export default function RecordPage() {
       // are declared further down, and a ref keeps this listener stable.
       if (Date.now() - lastDataAtRef.current > STALL_MS) void recoverRef.current?.();
     };
+
+    const onPageHide = () => { if (state === 'recording') flushNow(); };
+
     document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', onPageHide);
+    // Chromium freezes backgrounded tabs; this fires just before it happens.
+    document.addEventListener('freeze', onPageHide);
     return () => {
       document.removeEventListener('visibilitychange', onVisibility);
-      releaseWakeLock();
+      window.removeEventListener('pagehide', onPageHide);
+      document.removeEventListener('freeze', onPageHide);
     };
-  }, [state, requestWakeLock, releaseWakeLock]);
+  }, [state]);
+
+  // Release the lock only when the page actually goes away.
+  //
+  // This used to sit in the cleanup of the visibilitychange effect above, whose
+  // dependencies include `state`. So the idle → recording transition ran that
+  // cleanup and dropped the wake lock milliseconds after start() had acquired
+  // it, leaving the screen free to sleep on its normal timer and take the
+  // recorder with it. Nothing re-took the lock unless the user happened to
+  // switch away and back. Its own effect with a stable callback keeps the lock
+  // alive for the whole session.
+  useEffect(() => releaseWakeLock, [releaseWakeLock]);
 
   useEffect(() => {
     return () => {
@@ -417,7 +535,7 @@ export default function RecordPage() {
     timeOffsetRef.current += duration;
     chunkStartRef.current = Date.now();
 
-    chunkTimerRef.current = setTimeout(rotateChunk, CHUNK_MS);
+    chunkTimerRef.current = setTimeout(rotateChunk, chunkMsRef.current);
 
     let blobsForUpload = blobs;
     if (!webmHeaderRef.current) {
@@ -532,12 +650,18 @@ export default function RecordPage() {
   // recover it — so the goal is to flush what we DID capture, restart cleanly,
   // and keep the timeline offsets truthful so later chunks still line up.
   //
-  // Meeting-capture mode is excluded: re-acquiring it means a fresh
-  // getDisplayMedia picker, and silently reopening a screen-share prompt is
-  // worse than the stall. Desktop rarely freezes anyway.
+  // Meeting-capture mode can be healed too, but only while its source tracks
+  // are still live: the recorder is then restarted on the existing mixed
+  // stream, needing no picker. Once the user has stopped sharing there is no
+  // way back without silently reopening a screen-share prompt, which is worse
+  // than the stall, so that case still bails out.
   const recoverRecorder = useCallback(async () => {
     if (!isActiveRef.current || isPausingRef.current || isRecoveringRef.current) return;
-    if (source === 'teams') return;
+    const meetingSourcesLive =
+      extraStreamsRef.current.length > 0 &&
+      extraStreamsRef.current.every((s) =>
+        s.getAudioTracks().some((t) => t.readyState === 'live'));
+    if (source === 'teams' && (!meetingSourcesLive || !streamRef.current)) return;
     isRecoveringRef.current = true;
     try {
       // Flush the existing segment through the pause path so onstop uploads it
@@ -567,14 +691,21 @@ export default function RecordPage() {
       timeOffsetRef.current += (Date.now() - chunkStartRef.current) / 1000;
 
       if (chunkTimerRef.current) { clearTimeout(chunkTimerRef.current); chunkTimerRef.current = null; }
-      streamRef.current?.getTracks().forEach((t) => t.stop());
-      stopVAD();
 
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: await getAudioConstraint() });
-      streamRef.current = stream;
-      startVAD(stream);
+      let stream: MediaStream;
+      if (source === 'teams') {
+        // Sources are still live (checked above), so the mixed stream and its
+        // VAD stay exactly as they are and only the recorder is restarted.
+        stream = streamRef.current!;
+      } else {
+        streamRef.current?.getTracks().forEach((t) => t.stop());
+        stopVAD();
+        stream = await navigator.mediaDevices.getUserMedia({ audio: await getAudioConstraint() });
+        streamRef.current = stream;
+        startVAD(stream);
+      }
       startRecorder(stream, mimeRef.current);
-      chunkTimerRef.current = setTimeout(rotateChunk, CHUNK_MS);
+      chunkTimerRef.current = setTimeout(rotateChunk, chunkMsRef.current);
       setStalled(false);
     } catch (err) {
       console.warn('[recover] could not restart recorder:', err instanceof Error ? err.message : err);
@@ -585,6 +716,7 @@ export default function RecordPage() {
   }, [source, startVAD, stopVAD, startRecorder, rotateChunk]);
 
   useEffect(() => { recoverRef.current = recoverRecorder; }, [recoverRecorder]);
+  useEffect(() => { flushRef.current = rotateChunk; }, [rotateChunk]);
 
   const start = useCallback(async () => {
     if (isStartingRef.current) return;
@@ -596,10 +728,21 @@ export default function RecordPage() {
     setChunksFailed(0);
 
     try {
+      // Take the OS lock first. It used to be requested after the create call
+      // and the mic prompt, which on a slow connection left a window where the
+      // screen could sleep before anything was holding it awake.
+      void requestWakeLock();
+
       const createRes = await fetch('/api/recordings/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source, meetingType }),
+        body: JSON.stringify({
+          source,
+          meetingType,
+          // Debug metadata only. The server detects the real layout from the
+          // audio itself, so a stale or lying client cannot misroute anything.
+          channelLayout: source === 'teams' ? 'mic-sys' : 'mono',
+        }),
       });
       const createData = await createRes.json() as { id?: string; error?: string };
       if (!createRes.ok || !createData.id) throw new Error(createData.error ?? 'Could not create recording');
@@ -610,7 +753,6 @@ export default function RecordPage() {
         ? await getMeetingStream()
         : await navigator.mediaDevices.getUserMedia({ audio: await getAudioConstraint() });
       streamRef.current = stream;
-      await requestWakeLock();
 
       const mime = getBestMime();
       mimeRef.current = mime;
@@ -619,7 +761,7 @@ export default function RecordPage() {
 
       startVAD(stream);
       startRecorder(stream, mime);
-      chunkTimerRef.current = setTimeout(rotateChunk, CHUNK_MS);
+      chunkTimerRef.current = setTimeout(rotateChunk, chunkMsRef.current);
       bankedSecsRef.current = 0;
       runStartedAtRef.current = Date.now();
       setState('recording');
@@ -677,7 +819,7 @@ export default function RecordPage() {
 
       startVAD(stream);
       startRecorder(stream, mimeRef.current);          // fresh segment; timeOffsetRef carries over
-      chunkTimerRef.current = setTimeout(rotateChunk, CHUNK_MS);
+      chunkTimerRef.current = setTimeout(rotateChunk, chunkMsRef.current);
       if (recordingIdRef.current) void startLiveCaptions(recordingIdRef.current);
 
       runStartedAtRef.current = Date.now();
@@ -728,8 +870,14 @@ export default function RecordPage() {
   }, [state, isPaused, stopVAD, stopLiveCaptions, releaseWakeLock, router, flushFailedChunks, stopMeetingCapture]);
 
   const handleClick = () => {
-    if (state === 'recording') stop();
-    else if (state === 'idle') start();
+    if (state === 'recording') { stop(); return; }
+    if (state !== 'idle') return;
+    // Synchronously, before anything async: iOS only lets the nosleep video and
+    // the silent audio session start inside a live user-gesture token, and the
+    // first await in start() spends it. This one line is the difference between
+    // the fallback working on a phone and failing silently on it.
+    ensureKeepAwake().primeFromGesture();
+    void start();
   };
 
   const btnClass =
@@ -946,7 +1094,9 @@ export default function RecordPage() {
               </div>
             </div>
 
-            {/* Source toggle */}
+            {/* Source toggle. Online Meeting is disabled outright where the
+                platform cannot deliver call audio, with the reason shown below,
+                rather than letting someone record an hour of silence. */}
             <div className="flex rounded-xl border border-surface-border overflow-hidden">
               <button
                 type="button"
@@ -965,8 +1115,12 @@ export default function RecordPage() {
               <button
                 type="button"
                 onClick={() => setSource('teams')}
+                disabled={capture?.level === 'none'}
+                title={capture?.blockedReason}
                 className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium transition-colors touch-manipulation border-l border-surface-border ${
-                  source === 'teams'
+                  capture?.level === 'none'
+                    ? 'text-surface-muted cursor-not-allowed opacity-60'
+                    : source === 'teams'
                     ? 'bg-brand text-white'
                     : 'text-ftc-mid hover:text-ftc-gray hover:bg-surface-raised'
                 }`}
@@ -974,14 +1128,33 @@ export default function RecordPage() {
                 <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
                   <path d="M12.5 2C11.1 2 10 3.1 10 4.5S11.1 7 12.5 7 15 5.9 15 4.5 13.9 2 12.5 2zm5 3c-.8 0-1.5.7-1.5 1.5S16.7 8 17.5 8 19 7.3 19 6.5 18.3 5 17.5 5zM3 9v10h2v-4h1.5c.3 1.2 1.3 2 2.5 2s2.2-.8 2.5-2H13v4h2V9H3zm8 4H5v-2h6v2z"/>
                 </svg>
-                Meeting Audio
+                Online Meeting
               </button>
             </div>
+
+            {/* Guidance comes from the detected platform, never a fixed string.
+                The old copy told everyone to share their whole screen, which on
+                a Mac captures no audio at all. */}
             <p className="text-xs text-center max-w-xs text-surface-muted">
               {source === 'teams'
-                ? 'Captures the call audio (Teams, Zoom, Meet — anyone) plus your mic. When you tap start, pick the meeting tab or your whole screen and tick “Share tab / system audio”. Desktop Chrome or Edge.'
-                : 'Records your microphone. Keep the screen on while recording — once you stop, audio is saved on our servers and transcription completes automatically even if you lock your phone.'}
+                ? `Records the call (Teams, Zoom, Meet, anyone) and your mic as separate tracks, so everyone is labelled correctly. ${capture?.instruction ?? ''}`
+                : 'Records your microphone. Keep the screen on while recording. Once you stop, audio is saved on our servers and transcription completes automatically even if you lock your phone.'}
             </p>
+
+            {capture?.blockedReason && (
+              <p className="text-xs text-center max-w-xs text-amber-500">
+                {capture.blockedReason}
+              </p>
+            )}
+
+            {/* Warn BEFORE the meeting, not after it. This used to appear only
+                once recording was under way, by which point the useful advice
+                had arrived too late to act on. */}
+            {isMobile && wakeLockPossible === false && (
+              <p className="text-xs text-center max-w-xs text-amber-500">
+                Your phone refused to stay awake, usually because Low Power Mode is on. Turn it off, or set Auto-Lock to Never, before you start. A locked screen stops the recording.
+              </p>
+            )}
           </div>
         )}
 
