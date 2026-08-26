@@ -789,13 +789,21 @@ export default function RecordPage() {
         recordingIdRef.current = null;
       }
       stopMeetingCapture(); // release any display/mic streams acquired before failure
+      // Audio is now acquired BEFORE the recording row exists, so a failed
+      // create leaves a live microphone that stopMeetingCapture does not know
+      // about (it only tracks the meeting-mode display/mic pair). Releasing it
+      // here is what stops the browser's recording indicator staying lit after
+      // an error.
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+      stopVAD();
       releaseWakeLock();
       setErrorMsg(err instanceof Error ? err.message : 'Microphone access denied. Allow mic access and try again.');
       setState('error');
     } finally {
       isStartingRef.current = false;
     }
-  }, [startRecorder, startVAD, startLiveCaptions, rotateChunk, requestWakeLock, releaseWakeLock, source, meetingType, getMeetingStream, stopMeetingCapture]);
+  }, [startRecorder, startVAD, stopVAD, startLiveCaptions, rotateChunk, requestWakeLock, releaseWakeLock, source, meetingType, getMeetingStream, stopMeetingCapture]);
 
   const pause = useCallback(() => {
     if (state !== 'recording' || isPaused) return;
