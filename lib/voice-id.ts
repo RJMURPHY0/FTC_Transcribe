@@ -1064,6 +1064,12 @@ function detectFarEndEcho(
     }
   }
 
+  if (process.env.VOICE_TRACE === '1') {
+    console.log(`[echo] micLines=${micSaid.length} candidateClusters=${byCluster.size}`);
+    for (const [c, b] of byCluster) {
+      console.log(`[echo]   cluster ${c}: lines=${b.lines} dup=${b.dup} rate=${(b.dup / Math.max(b.lines, 1)).toFixed(2)} (bar ${FARECHO_RATE}) segs=${b.segs.length} -> ${b.lines >= FARECHO_MIN_LINES && b.dup / b.lines >= FARECHO_RATE ? 'CONVICTED' : 'kept'}`);
+    }
+  }
   for (const [cluster, b] of byCluster) {
     if (b.lines < FARECHO_MIN_LINES) continue;
     if (b.dup / b.lines < FARECHO_RATE) continue;
@@ -1195,6 +1201,27 @@ function clusterCentroids(turns: GlobalTurn[]): Map<number, number[]> {
   return out;
 }
 
+// Per-pass diagnostics for the offline tuning loop (scripts/replay-voice-resolver.ts).
+// Gated on VOICE_TRACE so production never pays for it, and it mutates nothing:
+// it only reads the turn array. Prints the cluster count and per-cluster speech
+// after each pass, so a speaker that disappears is pinned to the pass that
+// removed it instead of being guessed at from the final count.
+function traceClusters(pass: string, turns: GlobalTurn[]): void {
+  if (process.env.VOICE_TRACE !== '1') return;
+  const dur = new Map<number, number>();
+  const embedded = new Set<number>();
+  for (const t of turns) {
+    dur.set(t.cluster, (dur.get(t.cluster) ?? 0) + (t.end - t.start));
+    if (t.embedding) embedded.add(t.cluster);
+  }
+  const real = [...dur.entries()].filter(([c]) => c >= 0).sort((a, b) => b[1] - a[1]);
+  const shown = real
+    .map(([c, d]) => `${c === PINNED_CLUSTER ? 'PIN' : c}=${d.toFixed(0)}s${embedded.has(c) ? '' : '*'}`)
+    .join(' ');
+  const loose = dur.get(-1);
+  console.log(`[trace] ${pass.padEnd(30)} clusters=${String(real.length).padStart(2)}  ${shown}${loose ? `  unassigned=${loose.toFixed(0)}s` : ''}`);
+}
+
 export function resolveGlobalSpeakers(
   chunks: ChunkForAlignment[],
   rawProfiles: ProfileRow[] = [],
@@ -1248,6 +1275,7 @@ export function resolveGlobalSpeakers(
   // passes below is a remote one — local turns were just pinned out of
   // clustering — so the mono path is untouched by this.
   const mergeThreshold = isDual ? DUAL_CENTROID_MERGE : CENTROID_MERGE_THRESHOLD;
+  traceClusters('0 mic pinning', globalTurns);
 
   const embeddedCount = globalTurns.filter((t) => t.embedding).length;
   // Legacy recordings (no per-turn embeddings) use the original resolver.
@@ -1257,6 +1285,7 @@ export function resolveGlobalSpeakers(
 
   // 1. Global clustering over turn voiceprints
   clusterTurns(globalTurns, TURN_CLUSTER_THRESHOLD);
+  traceClusters('1 raw clustering', globalTurns);
 
   // 2. Re-segmentation: a turn that clearly prefers another cluster moves there
   let centroids = clusterCentroids(globalTurns);
@@ -1274,6 +1303,7 @@ export function resolveGlobalSpeakers(
     }
     centroids = clusterCentroids(globalTurns);
   }
+  traceClusters('2 resegmentation', globalTurns);
 
   // 3. Profile supervision: every embedded turn is checked directly against
   // enrolled voiceprints. Confident matches are HARD-assigned to that person's
@@ -1315,6 +1345,7 @@ export function resolveGlobalSpeakers(
     }
     if (assigned) centroids = clusterCentroids(globalTurns);
   }
+  traceClusters('3 profile supervision', globalTurns);
 
   // 3.5. Junk-cluster absorption. A participant is a cluster with a real amount
   // of embedded speech; everything smaller is a fragment of an existing voice
@@ -1375,6 +1406,7 @@ export function resolveGlobalSpeakers(
       if (bestC < 0) break;
       reassign(smallest[0], bestC);
     }
+    traceClusters('3.5a junk absorption', globalTurns);
 
     // Centroid merge: reunite one voice that average linkage left split.
     // Two profile-supervised clusters are two verified identities — never
@@ -1397,6 +1429,7 @@ export function resolveGlobalSpeakers(
       reassign(keep === bestA ? bestB : bestA, keep);
     }
     centroids = clusterCentroids(globalTurns);
+    traceClusters('3.5b centroid merge', globalTurns);
 
     // Identity merge: two surviving clusters whose centroids both confidently
     // match the SAME enrolled person are one voice split by recording
@@ -1432,6 +1465,7 @@ export function resolveGlobalSpeakers(
       }
       centroids = clusterCentroids(globalTurns);
     }
+    traceClusters('3.5c identity merge', globalTurns);
 
     // Post-absorption resegmentation: with the junk gone, some turns sit closer
     // to another surviving centroid than the one they inherited — same margin
@@ -1450,6 +1484,7 @@ export function resolveGlobalSpeakers(
       }
       centroids = clusterCentroids(globalTurns);
     }
+    traceClusters('3.5d post-absorb reseg', globalTurns);
   }
 
   // 3.6. Temporal smoothing: Viterbi over the time-ordered embedded turns.
@@ -1494,6 +1529,7 @@ export function resolveGlobalSpeakers(
       centroids = clusterCentroids(globalTurns);
     }
   }
+  traceClusters('3.6 viterbi smoothing', globalTurns);
 
   // 3.7. Final centroid merge, after smoothing has finished moving turns.
   // Same rule and same threshold as the merge in 3.5 — this only closes the
@@ -1525,6 +1561,7 @@ export function resolveGlobalSpeakers(
     }
     centroids = clusterCentroids(globalTurns);
   }
+  traceClusters('3.7 final merge', globalTurns);
 
   // 3.8. Far-end echo: a call-channel cluster that keeps repeating what the
   // local microphone already recorded is the local speaker returning through
@@ -1550,6 +1587,7 @@ export function resolveGlobalSpeakers(
       centroids = clusterCentroids(globalTurns);
     }
   }
+  traceClusters('3.8 far-end echo drop', globalTurns);
 
   // 4a. Non-embedded turns inherit the dominant cluster of their chunk-local
   // speaker; failing that, temporal continuity fills them in.
@@ -1582,6 +1620,7 @@ export function resolveGlobalSpeakers(
   }
   // Anything still unassigned (e.g. leading turns before any evidence)
   for (const t of globalTurns) if (t.cluster < 0) t.cluster = prevCluster >= 0 ? prevCluster : 0;
+  traceClusters('4a inherit non-embedded', globalTurns);
 
   // 4b. Island smoothing: a short turn sandwiched inside CONTINUOUS speech of
   // one other speaker is a diarizer flicker → flip it, unless its voiceprint
@@ -1606,6 +1645,7 @@ export function resolveGlobalSpeakers(
     }
     t.cluster = prev.cluster;
   }
+  traceClusters('4b island smoothing', globalTurns);
 
   // 4c. Give the pinned local speaker a centroid, now that every pass that
   // could have merged it away has finished. Without this it would have no
