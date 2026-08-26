@@ -105,7 +105,7 @@ export default async function RecordingPage({ params }: { params: { id: string }
   const sourceBadge = providerBadge(recording.source, recording.meetingProvider);
 
   return (
-    <div className="min-h-screen flex flex-col bg-surface">
+    <div className="detail-shell min-h-screen flex flex-col bg-surface">
       {/* Sticky header */}
       <header className="sticky top-0 z-20 border-b border-surface-border bg-surface/80 backdrop-blur-md">
         <div className="max-w-[1800px] mx-auto px-4 py-3 flex items-center gap-3">
@@ -148,7 +148,7 @@ export default async function RecordingPage({ params }: { params: { id: string }
         </div>
       </header>
 
-      <main className={`max-w-[1800px] mx-auto w-full px-4 py-6 flex-1${showAudio ? ' pb-28' : ''}`}>
+      <main className="detail-main max-w-[1800px] mx-auto w-full px-4 py-6 flex-1">
         {/* Auto-retry + auto-refresh when queued or processing */}
         {(isUploading || isProcessing) && <ProcessingPoller id={recording.id} />}
 

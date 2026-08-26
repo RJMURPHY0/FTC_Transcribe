@@ -302,6 +302,11 @@
 .chat-fullscreen-panel    { z-index: 9999; }
 
 /* ── Three-column layout: chat | notes | transcript ── */
+/* Bottom padding clears the fixed playback bar exactly — the bar publishes its
+   own live height as --playback-bar-h. This replaces a hardcoded pb-28 that was
+   simultaneously too large when the bar was collapsed and too small when it was
+   expanded, and which left the page holding scroll it did not need. */
+.detail-main { padding-bottom: calc(1.5rem + var(--playback-bar-h, 0px)); }
 .detail-grid {
   display: grid;
   grid-template-columns: 1fr;
@@ -380,40 +385,51 @@
   .detail-resize-handle.dragging::after {
     opacity: 0;
   }
-  /* Wrapper (grid child) is sticky so the resize handle stays pinned and
-     unclipped; the inner panel does the scrolling. */
-  .transcript-col {
-    position: sticky;
-    top: 5rem;
-    align-self: start;
+  /* One viewport-tall shell: the three columns are the ONLY scrollers.
+     Each column used to be capped with its own calc(100vh - Xrem) while the
+     document kept a ~85px sliver of scroll of its own. Chrome latches a wheel
+     gesture to the container it started in, so reaching a column's end stopped
+     the scroll dead; the next gesture spent itself on the page's sliver, and only
+     the third moved the next column — the "stops, scroll again, stops" stutter.
+     Flexing to the real remaining height removes the sliver and the magic
+     numbers, so a taller header cannot reintroduce it. */
+  .detail-shell { height: 100dvh; overflow: hidden; }
+  .detail-main {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
   }
+  .detail-grid { flex: 1 1 auto; min-height: 0; }
+  .detail-grid > .chat-panel-col,
+  .detail-grid > .notes-panel-col,
+  .detail-grid > .transcript-col {
+    align-self: stretch;
+    height: 100%;
+    min-height: 0;
+  }
+  /* Wrapper (grid child) holds the width handle; the inner panel scrolls. */
   .transcript-panel {
-    max-height: calc(100vh - 6rem);
+    height: 100%;
+    max-height: none;
     overflow-y: auto;
   }
-  /* No scrollbar on this column: the chat card scrolls its own message list,
-     so a second outer scrollbar was redundant and sat right on the resize
-     rail. The card is capped to the viewport instead, so nothing is clipped. */
-  .chat-panel-col {
-    position: sticky;
-    top: 5rem;
-  }
+  /* AI Notes scrolls independently like the other two columns. Extra right
+     padding keeps its scrollbar off the resize rail in the gutter. */
+  .notes-panel-col { overflow-y: auto; }
+  /* No scrollbar on the chat column itself: the chat card scrolls its own
+     message list. The column is a flex box so the card can shrink to fit
+     alongside the label rather than pushing the grid row taller than the
+     viewport. flex-shrink only (0 1 auto) preserves the user's dragged height. */
+  .detail-grid > .chat-panel-col { display: flex; flex-direction: column; }
   /* Right edge stays welded to the resize rail: narrowing the card opens space
      on its left, so the divider is always the thing you grab to rebalance the
      columns — never a strip of dead page between the card and the rail. */
   .chat-panel-card {
-    max-height: calc(100vh - 8rem);
+    flex: 0 1 auto;
+    min-height: 0;
+    max-height: none;
     margin-left: auto;
-  }
-
-  /* AI Notes scrolls independently like the other two columns. Extra right
-     padding keeps its scrollbar off the resize rail in the gutter. */
-  .notes-panel-col {
-    position: sticky;
-    top: 5rem;
-    align-self: start;
-    max-height: calc(100vh - 6rem);
-    overflow-y: auto;
   }
   /* Right-edge width handle sits fully outside the panel in the page margin,
      so it can never overlap the transcript scrollbar */

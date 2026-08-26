@@ -1,6 +1,6 @@
 'use client';
 
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import AudioPlayer, { type AudioPlayerHandle } from './AudioPlayer';
@@ -72,20 +72,43 @@ const PlaybackBar = forwardRef<PlaybackBarHandle, Props>(function PlaybackBar(
   // hydration mismatch, then the effect promotes it to the portal.
   useEffect(() => { setMounted(true); }, []);
 
-  // Publish the bar's live height so fixed bottom-right UI (the global chat
-  // bubble) can sit above it instead of covering the player controls.
-  useEffect(() => {
-    const bar = barRef.current;
-    if (!bar) return;
+  // Publish the bar's live height. The page layout consumes it: the detail shell
+  // reserves exactly this much space, so the columns (and the resize rails that
+  // stretch alongside them) stop above the bar instead of running behind it.
+  // A CALLBACK ref, not an effect: promoting the bar into the portal destroys the
+  // original node and builds a new one, and an effect keyed on mount order kept
+  // the observer bound to the old detached node — the variable then froze at the
+  // collapsed height and the rails overlapped the expanded player. A callback ref
+  // fires on every attach/detach, so the observer always tracks the live node.
+  const roRef = useRef<ResizeObserver | null>(null);
+  const setBarRef = useCallback((node: HTMLDivElement | null) => {
+    barRef.current = node;
+    roRef.current?.disconnect();
+    roRef.current = null;
     const root = document.documentElement;
-    const publish = () => root.style.setProperty('--playback-bar-h', `${bar.offsetHeight}px`);
+    if (!node) return;
+    const publish = () => root.style.setProperty('--playback-bar-h', `${node.offsetHeight}px`);
     publish();
     const ro = new ResizeObserver(publish);
-    ro.observe(bar);
-    return () => {
-      ro.disconnect();
-      root.style.removeProperty('--playback-bar-h');
-    };
+    ro.observe(node);
+    roRef.current = ro;
+  }, []);
+
+  // Republish on every state that changes the bar's own height. The observer
+  // above catches viewport-driven reflow, but it is not the primary signal:
+  // expanding the player is a React state change, so publish it directly rather
+  // than waiting on a resize callback that a background/throttled tab may never
+  // deliver. Without this the columns kept the collapsed height reserved and the
+  // resize rails ran 30-odd pixels into the open player.
+  useEffect(() => {
+    const node = barRef.current;
+    if (!node) return;
+    document.documentElement.style.setProperty('--playback-bar-h', `${node.offsetHeight}px`);
+  }, [open, mounted, confirmDelete, deleting]);
+
+  useEffect(() => () => {
+    roRef.current?.disconnect();
+    document.documentElement.style.removeProperty('--playback-bar-h');
   }, []);
 
   const openAndPlay = () => {
@@ -121,7 +144,7 @@ const PlaybackBar = forwardRef<PlaybackBarHandle, Props>(function PlaybackBar(
     : '';
 
   const bar = (
-    <div ref={barRef} className="fixed bottom-0 inset-x-0 z-30 border-t border-surface-border bg-surface/95 backdrop-blur-md">
+    <div ref={setBarRef} className="fixed bottom-0 inset-x-0 z-30 border-t border-surface-border bg-surface/95 backdrop-blur-md">
       <div className="max-w-[1800px] mx-auto px-4 py-2.5">
         {/* Player stays mounted while collapsed so opening it is instant */}
         <div className={open ? 'flex items-start gap-3' : 'hidden'}>

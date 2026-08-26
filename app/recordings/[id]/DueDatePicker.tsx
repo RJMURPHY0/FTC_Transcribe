@@ -41,7 +41,15 @@ function CalendarPopover({
   onClose: () => void;
 }) {
   const popRef = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  // Seeded synchronously from the trigger so the popover is on-screen from its
+  // very first paint. It used to start at null/visibility:hidden and wait for the
+  // layout effect to place it — if that effect ever failed to land the popover
+  // stayed parked off-screen and the control looked dead. The effect below only
+  // refines this (flip up / clamp to the viewport).
+  const [pos, setPos] = useState<{ top: number; left: number }>(() => {
+    const r = anchor.getBoundingClientRect();
+    return { top: r.bottom + 6, left: r.left };
+  });
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -110,9 +118,8 @@ function CalendarPopover({
       ref={popRef}
       role="dialog"
       aria-label="Choose a due date"
-      style={{ position: 'fixed', top: pos?.top ?? -9999, left: pos?.left ?? -9999, visibility: pos ? 'visible' : 'hidden' }}
-      className="z-[80] w-[300px] rounded-2xl border border-surface-border bg-surface-card shadow-xl p-3
-                 animate-in fade-in-0 zoom-in-95 duration-150"
+      style={{ position: 'fixed', top: pos.top, left: pos.left }}
+      className="z-[80] w-[300px] rounded-2xl border border-surface-border bg-surface-card shadow-xl p-3"
     >
       {/* Quick presets */}
       <div className="flex flex-wrap gap-1.5 pb-3 mb-2 border-b border-surface-border">
