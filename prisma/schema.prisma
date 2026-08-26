@@ -199,6 +199,12 @@ model VoiceProfile {
   // Reserved for storage-bucket clip paths once SUPABASE_SERVICE_ROLE_KEY is set
   audioPath   String   @default("")
   createdAt   DateTime @default(now())
+  // Which embedding model produced `embedding`. Matching NEVER crosses spaces,
+  // so this is a correctness guard, not metadata: comparing a campplus vector to
+  // a titanet-large-v1 one yields meaningless similarity. The column was added by
+  // raw DDL in lib/ensure-schema.ts and was missing here, which meant a
+  // `prisma db push` would read it as drift and drop it. Declared so it cannot.
+  modelVersion String  @default("campplus")
 
   @@index([userId])
   @@index([personName])
@@ -213,6 +219,8 @@ model SpeakerEmbedding {
   embedding    String
   durationS    Float     @default(0)
   createdAt    DateTime  @default(now())
+  // See VoiceProfile.modelVersion — same guard, same reason it was missing.
+  modelVersion String    @default("campplus")
 
   @@index([recordingId])
 }
