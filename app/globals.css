@@ -167,6 +167,20 @@
   border-radius: 9999px;
 }
 
+/* ── Transcript "jump-to" flash ──
+   When a key point / action item / decision / topic is clicked, the transcript
+   scrolls to its source block and this brief pulse marks it. Holds the brand
+   ring + tint, then fades back to the block's own speaker colour. */
+@keyframes transcript-hit {
+  0%   { box-shadow: 0 0 0 2px rgb(var(--c-brand)); background-color: rgb(var(--c-brand) / 0.16); }
+  75%  { box-shadow: 0 0 0 2px rgb(var(--c-brand)); background-color: rgb(var(--c-brand) / 0.16); }
+  100% { box-shadow: 0 0 0 0 rgb(var(--c-brand) / 0); background-color: rgb(var(--c-brand) / 0); }
+}
+.transcript-hit { animation: transcript-hit 2.4s ease-out forwards; }
+@media (prefers-reduced-motion: reduce) {
+  .transcript-hit { animation-duration: 0.01ms; box-shadow: 0 0 0 2px rgb(var(--c-brand)); }
+}
+
 /* ── Safe area bottom ── */
 .pb-safe { padding-bottom: max(1.5rem, env(safe-area-inset-bottom)); }
 

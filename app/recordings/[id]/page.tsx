@@ -9,6 +9,7 @@ import EditableTitle from './EditableTitle';
 import ChatPanel from './ChatPanel';
 import EditableAINotes from './EditableAINotes';
 import { ActionItemsProvider } from './ActionItemsContext';
+import { TranscriptFocusProvider } from './TranscriptFocusContext';
 import SpeakerPanel from './SpeakerPanel';
 import TranscriptPlayer from './TranscriptPlayer';
 import PlaybackBar from './PlaybackBar';
@@ -184,6 +185,10 @@ export default async function RecordingPage({ params }: { params: { id: string }
           initialDue={actionDue}
           initialChecked={checkedIndices}
         >
+        {/* Click a key point / action item / decision / topic → jump the
+            transcript to the block it came from. Only meaningful when there's a
+            segmented transcript to scroll. */}
+        <TranscriptFocusProvider enabled={hasSpeakers}>
         <ResizableColumns
           userId={authUser?.id ?? null}
           chat={
@@ -263,6 +268,7 @@ export default async function RecordingPage({ params }: { params: { id: string }
             </ResizableWidth>
           }
         />
+        </TranscriptFocusProvider>
         </ActionItemsProvider>
       </main>
     </div>

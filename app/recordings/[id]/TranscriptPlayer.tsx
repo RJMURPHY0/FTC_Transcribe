@@ -4,6 +4,8 @@ import { useEffect, useRef, useState, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import PlaybackBar, { type PlaybackBarHandle, type PlaybackMeta } from './PlaybackBar';
+import { useTranscriptFocus } from './TranscriptFocusContext';
+import { createSegmentMatcher } from '@/lib/transcript-match';
 
 interface RawSegment {
   speaker: string;
@@ -59,8 +61,12 @@ function mergeSegments(segs: RawSegment[]): MergedGroup[] {
 
 export default function TranscriptPlayer({ recordingId, rawSegments, speakerOrder, hasAudio, playbackMeta }: Props) {
   const router       = useRouter();
+  const focus        = useTranscriptFocus();
   const playerRef    = useRef<PlaybackBarHandle>(null);
+  const groupRefs    = useRef<(HTMLDivElement | null)[]>([]);
+  const flashTimer   = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [activeIdx,  setActiveIdx]  = useState<number>(-1);
+  const [focusedIdx, setFocusedIdx] = useState<number>(-1); // block flashed from a notes click
   const [menuOpen,   setMenuOpen]   = useState<number | null>(null); // group index
   // Menu renders in a body portal (the transcript panel's overflow clips
   // anything absolutely positioned near its bottom edge), anchored to the
@@ -81,6 +87,36 @@ export default function TranscriptPlayer({ recordingId, rawSegments, speakerOrde
   }, [menuOpen]);
 
   const groups = useMemo(() => mergeSegments(rawSegments), [rawSegments]);
+
+  // Text matcher over the merged blocks — rebuilt only when the blocks change,
+  // then reused for every notes click.
+  const matcher = useMemo(() => createSegmentMatcher(groups.map(g => g.text)), [groups]);
+
+  // A focus request from a notes/chat line → find its block, scroll it into
+  // view and flash it. Time requests (topics) use the real timestamp; text
+  // requests (key points / action items / decisions) fall back to word match.
+  useEffect(() => {
+    const req = focus.request;
+    if (!req || groups.length === 0) return;
+
+    let idx = -1;
+    if (req.kind === 'time') {
+      idx = groups.findLastIndex(g => g.start <= req.value);
+      if (idx < 0) idx = 0;
+    } else {
+      idx = matcher.match(req.value);
+    }
+    if (idx < 0) return;
+
+    groupRefs.current[idx]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setFocusedIdx(idx);
+    if (flashTimer.current) clearTimeout(flashTimer.current);
+    flashTimer.current = setTimeout(() => setFocusedIdx(-1), 2400);
+  // Fire on each new request (nonce guarantees a fresh object per click).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus.request]);
+
+  useEffect(() => () => { if (flashTimer.current) clearTimeout(flashTimer.current); }, []);
 
   const handleTimeUpdate = (t: number) => {
     const idx = groups.findLastIndex(g => g.start <= t);
@@ -123,15 +159,18 @@ export default function TranscriptPlayer({ recordingId, rawSegments, speakerOrde
           const cidx   = speakerOrder.indexOf(group.speaker);
           const c      = SPEAKER_COLOURS[(cidx >= 0 ? cidx : 0) % SPEAKER_COLOURS.length];
           const active = i === activeIdx;
+          const focused = i === focusedIdx;
           const isMenuOpen = menuOpen === i;
           const otherSpeakers = speakerOrder.filter(s => s !== group.speaker);
 
           return (
             <div
               key={i}
+              ref={el => { groupRefs.current[i] = el; }}
               className={`relative rounded-xl border px-4 py-3 transition-all duration-150
                 ${c.border} ${c.bg}
-                ${active ? 'ring-2 ring-brand/60' : ''}`}
+                ${active ? 'ring-2 ring-brand/60' : ''}
+                ${focused ? 'transcript-hit z-10' : ''}`}
             >
               <div className="flex items-center gap-2 mb-1.5">
                 <span className={`w-2 h-2 rounded-full flex-shrink-0 ${c.dot}`} />

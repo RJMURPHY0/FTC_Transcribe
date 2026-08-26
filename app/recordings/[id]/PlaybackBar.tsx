@@ -1,6 +1,7 @@
 'use client';
 
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import AudioPlayer, { type AudioPlayerHandle } from './AudioPlayer';
 
@@ -59,8 +60,17 @@ const PlaybackBar = forwardRef<PlaybackBarHandle, Props>(function PlaybackBar(
   const [open, setOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [mounted, setMounted] = useState(false);
   const playerRef = useRef<AudioPlayerHandle>(null);
   const barRef = useRef<HTMLDivElement>(null);
+
+  // Portal the bar to <body> once mounted. It renders inside the sticky, resizable
+  // transcript column, which forms a stacking context — so a fixed bar left in
+  // place gets painted *under* the column's resize rails (z-index only orders
+  // within a context). Portalling to body puts it back in the root context where
+  // its z-index wins. First client render matches the server (in-tree) to avoid a
+  // hydration mismatch, then the effect promotes it to the portal.
+  useEffect(() => { setMounted(true); }, []);
 
   // Publish the bar's live height so fixed bottom-right UI (the global chat
   // bubble) can sit above it instead of covering the player controls.
@@ -110,7 +120,7 @@ const PlaybackBar = forwardRef<PlaybackBarHandle, Props>(function PlaybackBar(
     ? meta.language.charAt(0).toUpperCase() + meta.language.slice(1).toLowerCase()
     : '';
 
-  return (
+  const bar = (
     <div ref={barRef} className="fixed bottom-0 inset-x-0 z-30 border-t border-surface-border bg-surface/95 backdrop-blur-md">
       <div className="max-w-[1800px] mx-auto px-4 py-2.5">
         {/* Player stays mounted while collapsed so opening it is instant */}
@@ -217,6 +227,8 @@ const PlaybackBar = forwardRef<PlaybackBarHandle, Props>(function PlaybackBar(
       </div>
     </div>
   );
+
+  return mounted ? createPortal(bar, document.body) : bar;
 });
 
 export default PlaybackBar;

@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { formatDue, dueStatus } from '@/lib/action-items';
 import { useActionItems } from './ActionItemsContext';
+import { useTranscriptFocus } from './TranscriptFocusContext';
 
 const DEFAULT_HEIGHT = 520;
 const MIN_HEIGHT = 300;
@@ -43,6 +44,7 @@ function stripMarkdown(text: string): string {
 // as the Action Items panel, so ticking here updates there instantly too.
 function ChatChecklist({ filter }: { filter: 'open' | 'done' | 'all' }) {
   const { items, due, checked, toggleChecked } = useActionItems();
+  const focus = useTranscriptFocus();
 
   const indices = items
     .map((_, i) => i)
@@ -84,7 +86,18 @@ function ChatChecklist({ filter }: { filter: 'open' | 'done' | 'all' }) {
               </svg>
             </button>
             <div className="min-w-0">
-              <p className={`text-sm leading-snug ${done ? 'line-through text-ftc-mid' : 'text-ftc-gray'}`}>{items[i]}</p>
+              <p
+                {...(focus.enabled ? {
+                  onClick: () => focus.focusText(items[i]),
+                  role: 'button' as const,
+                  tabIndex: 0,
+                  title: 'Jump to this in the transcript',
+                  onKeyDown: (e: React.KeyboardEvent) => {
+                    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); focus.focusText(items[i]); }
+                  },
+                } : {})}
+                className={`text-sm leading-snug ${done ? 'line-through text-ftc-mid' : 'text-ftc-gray'} ${focus.enabled ? 'cursor-pointer hover:text-brand transition-colors' : ''}`}
+              >{items[i]}</p>
               <p className={`text-xs mt-0.5 ${dueColour} ${done ? 'line-through' : ''}`}>
                 {label ? `Due ${label}${status === 'overdue' && !done ? ' · overdue' : ''}` : 'No date set'}
               </p>

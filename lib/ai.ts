@@ -445,7 +445,7 @@ Format:
 Rules:
 - overview: 2-3 sentences covering the meeting purpose and main outcomes
 - keyPoints: 3-7 items — important context, background info, or notable discussion points only. Do NOT include tasks or decisions here
-- actionItems: specific tasks assigned to a person. Format as "Name to do X". Empty array if none. Do NOT repeat anything already in keyPoints or decisions
+- actionItems: every distinct task, commitment, or request made in the meeting. Format as "Name to do X". Capture ALL of them — do not silently drop any that someone agreed to do. But keep each task listed ONCE: do not split a single instruction into several near-identical items, and when several statements are steps toward the SAME goal (e.g. contacting several possible suppliers for one purchase), combine them into one action item that names the options rather than one item per option. Empty array if none. Do NOT repeat anything already in keyPoints or decisions
 - actionItemDates: MUST be the same length as actionItems and in the same order. For each action item, if a deadline or due date was stated in the meeting (including relative ones like "by Friday", "tomorrow", "next week", "end of month"), resolve it to an absolute date in YYYY-MM-DD form. If NO deadline was mentioned for that item, use null. Never invent a date that was not discussed.
 - decisions: firm agreements or resolutions reached in the meeting. Empty array if none. Do NOT repeat anything already in keyPoints or actionItems
 - Each piece of information belongs in exactly ONE section — no duplicates across sections`;
@@ -497,7 +497,7 @@ Return ONLY valid JSON in this exact format:
 
 Rules:
 - Each item belongs in exactly ONE section — no duplicates across sections
-- actionItems: format as "Name to do X" where possible
+- actionItems: format as "Name to do X" where possible. Capture every distinct task or commitment, but list each one only once — never split a single instruction into several items, and merge statements that serve one goal (e.g. trying several suppliers for one purchase) into a single action item
 - actionItemDates: same length and order as actionItems. Use a YYYY-MM-DD date only if a deadline was stated for that item (relative deadlines too); otherwise null. Never invent dates.
 - Empty arrays are fine if no items found`}
 ${dateAnchor}

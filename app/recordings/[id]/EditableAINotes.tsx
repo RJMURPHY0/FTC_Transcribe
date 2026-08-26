@@ -2,8 +2,9 @@
 
 import { useState } from 'react';
 import type { TopicSection } from '@/lib/ai';
-import { formatDue, dueStatus } from '@/lib/action-items';
 import { useActionItems } from './ActionItemsContext';
+import DueDatePicker from './DueDatePicker';
+import { useTranscriptFocus } from './TranscriptFocusContext';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -24,55 +25,22 @@ function formatTimestamp(seconds: number): string {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-// Inline due-date control for a single action item. Shows the date (or
-// "No date set") and opens a native date picker via an invisible overlay.
-function DueDateControl({
-  iso, done, onChange,
-}: {
-  iso:      string | null;
-  done:     boolean;
-  onChange: (next: string | null) => void;
-}) {
-  const label = formatDue(iso);
-  const status = dueStatus(iso);
-  const colour =
-    done                  ? 'text-ftc-mid' :
-    status === 'overdue'  ? 'text-red-400' :
-    status === 'today'    ? 'text-amber-400' :
-    label                 ? 'text-ftc-gray' :
-                            'text-ftc-mid';
-
-  return (
-    <div className="flex items-center gap-1.5 mt-1">
-      <span className={`relative inline-flex items-center gap-1.5 text-xs ${colour} ${done ? 'line-through' : ''} cursor-pointer hover:text-brand transition-colors`}>
-        <svg className="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-        </svg>
-        {label ? `Due ${label}` : 'No date set'}
-        {status === 'overdue' && !done && <span className="font-medium">· overdue</span>}
-        <input
-          type="date"
-          aria-label="Set due date"
-          value={iso ?? ''}
-          onChange={(e) => onChange(e.target.value || null)}
-          className="absolute inset-0 opacity-0 cursor-pointer w-full"
-        />
-      </span>
-      {iso && (
-        <button
-          type="button"
-          onClick={() => onChange(null)}
-          title="Clear date"
-          className="text-surface-muted hover:text-red-400 transition-colors"
-        >
-          <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-          </svg>
-        </button>
-      )}
-    </div>
-  );
+// Turns any summary line into a "jump to the transcript" trigger. Returns the
+// handlers only when a transcript is present, so the line stays inert (and
+// unstyled as clickable) on recordings with no segments to scroll to.
+function jumpProps(enabled: boolean, onJump: () => void) {
+  if (!enabled) return {};
+  return {
+    onClick: onJump,
+    role: 'button' as const,
+    tabIndex: 0,
+    title: 'Jump to this in the transcript',
+    onKeyDown: (e: React.KeyboardEvent) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onJump(); }
+    },
+  };
 }
+const JUMP_CLS = 'cursor-pointer hover:text-brand transition-colors';
 
 // ─── Section card with edit/save/cancel header ────────────────────────────────
 
@@ -225,6 +193,7 @@ export default function EditableAINotes({
   initialSummary: AISummary;
 }) {
   const actionItems = useActionItems();
+  const focus       = useTranscriptFocus();
   const [data,         setData]        = useState<AISummary>(initialSummary);
   const [editing,      setEditing]     = useState<Section | null>(null);
   const [draftText,    setDraftText]   = useState('');
@@ -387,11 +356,16 @@ export default function EditableAINotes({
           ) : (
             <ol className="space-y-0">
               {data.topics.map((t, i) => (
-                <li key={i} className="flex items-center gap-3 py-2 border-b border-surface-border last:border-0">
-                  <span className="tabular-nums text-xs font-mono text-ftc-mid w-10 flex-shrink-0">
-                    {formatTimestamp(t.time)}
-                  </span>
-                  <span className="text-sm text-ftc-gray">{t.title}</span>
+                <li key={i} className="border-b border-surface-border last:border-0">
+                  <div
+                    {...jumpProps(focus.enabled, () => focus.focusTime(t.time))}
+                    className={`group flex items-center gap-3 py-2 w-full text-left ${focus.enabled ? 'cursor-pointer' : ''}`}
+                  >
+                    <span className="tabular-nums text-xs font-mono text-ftc-mid w-10 flex-shrink-0 group-hover:text-brand transition-colors">
+                      {formatTimestamp(t.time)}
+                    </span>
+                    <span className="text-sm text-ftc-gray group-hover:text-brand transition-colors">{t.title}</span>
+                  </div>
                 </li>
               ))}
             </ol>
@@ -440,10 +414,13 @@ export default function EditableAINotes({
                     </svg>
                   </button>
                   <div className="flex-1 min-w-0">
-                    <span className={`text-sm leading-relaxed transition-colors ${done ? 'line-through text-ftc-mid' : 'text-ftc-gray'}`}>
+                    <span
+                      {...jumpProps(focus.enabled, () => focus.focusText(item))}
+                      className={`text-sm leading-relaxed transition-colors ${done ? 'line-through text-ftc-mid' : 'text-ftc-gray'} ${focus.enabled ? JUMP_CLS : ''}`}
+                    >
                       {item}
                     </span>
-                    <DueDateControl
+                    <DueDatePicker
                       iso={actionItems.due[i] ?? null}
                       done={done}
                       onChange={(next) => actionItems.setDue(i, next)}
@@ -467,7 +444,12 @@ export default function EditableAINotes({
             {data.keyPoints.map((p, i) => (
               <li key={i} className="flex items-start gap-2.5">
                 <span className="mt-2 w-1.5 h-1.5 rounded-full bg-brand flex-shrink-0" />
-                <span className="text-sm text-ftc-gray leading-relaxed">{p}</span>
+                <span
+                  {...jumpProps(focus.enabled, () => focus.focusText(p))}
+                  className={`text-sm text-ftc-gray leading-relaxed ${focus.enabled ? JUMP_CLS : ''}`}
+                >
+                  {p}
+                </span>
               </li>
             ))}
           </ul>
@@ -487,7 +469,12 @@ export default function EditableAINotes({
                 <svg className="w-4 h-4 mt-0.5 text-emerald-500 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                 </svg>
-                <span className="text-sm text-ftc-gray leading-relaxed">{d}</span>
+                <span
+                  {...jumpProps(focus.enabled, () => focus.focusText(d))}
+                  className={`text-sm text-ftc-gray leading-relaxed ${focus.enabled ? JUMP_CLS : ''}`}
+                >
+                  {d}
+                </span>
               </li>
             ))}
           </ul>
