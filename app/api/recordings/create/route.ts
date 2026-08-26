@@ -8,14 +8,22 @@ export const dynamic = 'force-dynamic';
 
 const VALID_MEETING_TYPES = new Set(['general', 'standup', 'sales', 'interview', 'review']);
 const VALID_CHANNEL_LAYOUTS = new Set(['mic-sys', 'mono']);
+// Which conferencing service, so a Google Meet call is not filed as Teams.
+// `source` stays a two-value field ('web' | 'teams') for the existing list
+// filter and search; this sits alongside it and carries the detail.
+const VALID_PROVIDERS = new Set(['teams', 'meet', 'zoom', 'webex', 'slack', 'generic']);
 
 export async function POST(req: NextRequest) {
   let source = 'web';
   let meetingType = 'general';
   let channelLayout: string | null = null;
+  let meetingProvider: string | null = null;
   try {
-    const body = await req.json() as { source?: string; meetingType?: string; channelLayout?: string };
+    const body = await req.json() as {
+      source?: string; meetingType?: string; channelLayout?: string; meetingProvider?: string;
+    };
     if (body.source === 'teams') source = 'teams';
+    if (body.meetingProvider && VALID_PROVIDERS.has(body.meetingProvider)) meetingProvider = body.meetingProvider;
     if (body.meetingType && VALID_MEETING_TYPES.has(body.meetingType)) meetingType = body.meetingType;
     // Recorded for diagnostics only. Finalize reads the real layout off the
     // audio, so nothing downstream trusts this field.
@@ -46,6 +54,7 @@ export async function POST(req: NextRequest) {
       source,
       meetingType,
       channelLayout,
+      meetingProvider,
       userId: user.id,
     },
   });
@@ -57,7 +66,7 @@ export async function POST(req: NextRequest) {
     targetType: 'recording',
     targetId: recording.id,
     ip: requestIp(req),
-    metadata: { source, meetingType },
+    metadata: { source, meetingType, meetingProvider },
   });
 
   return NextResponse.json({ id: recording.id });

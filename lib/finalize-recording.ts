@@ -154,6 +154,22 @@ async function autoLearnVoiceProfiles(
   }
 }
 
+// Display name for the account that made the recording, used to label the
+// microphone channel of an online meeting. Falls back to "You" rather than
+// leaving a bare "Speaker 3": on a meeting we know for certain this is the
+// person reading the transcript, and saying so beats saying nothing.
+async function localSpeakerName(userId: string | null): Promise<string> {
+  if (!userId) return 'You';
+  try {
+    const { getMemberNames } = await import('@/lib/contacts-db');
+    const names = await getMemberNames([userId]);
+    return names[userId] || 'You';
+  } catch (err) {
+    console.warn('[finalize] local speaker name lookup failed:', err instanceof Error ? err.message : err);
+    return 'You';
+  }
+}
+
 // Cluster this recording's per-chunk voiceprints into global speakers, match
 // them against the LATEST enrolled voice profiles, persist the per-speaker
 // voiceprints, and opportunistically learn new samples from confident matches.
@@ -185,6 +201,20 @@ export async function resolveAndPersistVoiceSpeakers(
     const detailedMatches = matchProfilesDetailed(resolved.speakerEmbeddings, profiles);
     const matches: Record<string, string> = {};
     for (const [label, m] of Object.entries(detailedMatches)) matches[label] = m.name;
+
+    // Online meetings: the microphone channel is the account holder by
+    // construction, so name them from the account instead of hoping a
+    // voiceprint matches. This is the one speaker in any meeting whose
+    // identity is not a guess, and it holds even with no enrolled profiles at
+    // all — which is the normal state after an embedding-model change retires
+    // everyone's enrolments.
+    // An enrolled match still wins: the user may have named themselves
+    // something other than their account name, and their own choice governs.
+    if (resolved.localLabel && !matches[resolved.localLabel]) {
+      const localName = await localSpeakerName(owner?.userId ?? null);
+      if (localName) matches[resolved.localLabel] = localName;
+    }
+
     const outSegments = resolved.segments.map(s => ({
       ...s,
       speaker: matches[s.speaker] ?? s.speaker,
@@ -590,12 +620,28 @@ async function acquireJobLock(recordingId: string): Promise<{ id: string; token:
       status: 'running',
       attempts: { increment: 1 },
       lastError: '',
+      // Start of THIS run's processing window. Reset per attempt so a retry
+      // after a crash reports its own elapsed time rather than the first
+      // attempt's, which is what the user is actually waiting on.
+      startedAt: new Date(),
+      completedAt: null,
+      stage: 'transcribing',
     },
   });
 
   if (claim.count === 0) return null;
   await prisma.recording.update({ where: { id: recordingId }, data: { status: 'processing' } }).catch(() => {});
   return { id: job.id, token };
+}
+
+// Record which phase the worker is in. Best-effort by design: a status write
+// must never be the thing that fails a finalize, and a missed stage only costs
+// a slightly stale progress bar.
+async function setJobStage(jobId: string, token: string, stage: string): Promise<void> {
+  await prisma.finalizeJob.updateMany({
+    where: { id: jobId, lockToken: token },
+    data: { stage },
+  }).catch(() => {});
 }
 
 async function refreshJobLock(jobId: string, token: string): Promise<void> {
@@ -740,6 +786,7 @@ async function finalizeWithJobs(recordingId: string): Promise<FinalizeResult> {
     // speakers, then match against enrolled voice profiles. When it succeeds it
     // replaces both the naive Deepgram cross-chunk alignment and (downstream)
     // the LLM text diarization. Shared with the "Re-analyse" button.
+    await setJobStage(lock.id, lock.token, 'diarising');
     const vr = await resolveAndPersistVoiceSpeakers(recordingId, voiceChunks);
     const voiceResolved = vr.resolved;
     if (voiceResolved && vr.segments) {
@@ -774,13 +821,17 @@ async function finalizeWithJobs(recordingId: string): Promise<FinalizeResult> {
     // Refresh lock before analysis — diarization + AI calls can take several minutes
     // and the last refreshJobLock was called during chunk processing above.
     await refreshJobLock(lock.id, lock.token);
+    await setJobStage(lock.id, lock.token, 'analysing');
     const completed = await analyzeAndCompleteRecording(recordingId);
     if (!completed.ok) {
       await prisma.finalizeJob.update({ where: { id: lock.id }, data: { status: 'failed', lastError: completed.reason } });
       return completed;
     }
 
-    await prisma.finalizeJob.update({ where: { id: lock.id }, data: { status: 'completed', lastError: '' } });
+    await prisma.finalizeJob.update({
+      where: { id: lock.id },
+      data: { status: 'completed', lastError: '', stage: 'done', completedAt: new Date() },
+    });
     if (await archiveRecordingAudio(recordingId)) {
       await prisma.chunkBlob.deleteMany({ where: { recordingId } });
     }

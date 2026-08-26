@@ -27,6 +27,22 @@ export async function GET() {
     orderBy: { createdAt: 'desc' },
   });
 
+  // A voiceprint is only comparable to others made by the same embedding model,
+  // so profiles recorded before a model change are silently ignored by every
+  // match rather than producing wrong names. Silently is the problem: on
+  // 2026-07-23 the switch to TitaNet retired every existing enrolment, and the
+  // only visible symptom was meetings quietly going back to "Speaker 1".
+  // Counting them here lets the page say so and ask for a re-record, which is
+  // the only fix — embeddings cannot be converted between model spaces.
+  let staleProfiles = 0;
+  try {
+    const [row] = await prisma.$queryRaw<Array<{ n: bigint }>>`
+      SELECT COUNT(*)::bigint AS n FROM "VoiceProfile"
+       WHERE "modelVersion" <> ${EMB_MODEL_VERSION}
+         AND (${user.canSeeAll}::boolean OR "userId" = ${user.id}::text OR "userId" IS NULL)`;
+    staleProfiles = Number(row?.n ?? 0);
+  } catch { /* column missing in this env — nothing to warn about */ }
+
   const people = new Map<string, {
     name: string; samples: number; totalDurationS: number; lastAdded: string; enrolledSamples: number;
   }>();
@@ -42,7 +58,7 @@ export async function GET() {
   // "learned" = never explicitly enrolled — built only from self-introductions
   // or manual renames. Surface it so the user can strengthen it if they want.
   const result = [...people.values()].map(p => ({ ...p, learned: p.enrolledSamples === 0 }));
-  return NextResponse.json({ people: result });
+  return NextResponse.json({ people: result, staleProfiles });
 }
 
 // Enroll: multipart form with `name` + one or more `samples` audio files

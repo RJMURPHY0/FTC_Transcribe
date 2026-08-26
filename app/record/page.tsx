@@ -8,9 +8,11 @@ import { KeepAwake, preloadKeepAwake } from '@/lib/keep-awake';
 import {
   detectCaptureSupport,
   detectMeetingContext,
+  detectMeetingProvider,
   detectPlatform,
   validateDisplaySurface,
   type CaptureSupport,
+  type MeetingProvider,
 } from '@/lib/capture-support';
 
 type State = 'idle' | 'recording' | 'uploading' | 'queued' | 'error';
@@ -93,6 +95,9 @@ export default function RecordPage() {
   // Meeting-capture mode ('teams'): the source display + mic streams being mixed,
   // plus the mixing AudioContext — tracked so we can fully release them on stop.
   const extraStreamsRef = useRef<MediaStream[]>([]);
+  // Which conferencing service the shared surface turned out to be. Read once
+  // at capture time, because a tab title changes as the meeting goes on.
+  const providerRef     = useRef<MeetingProvider>('generic');
   const mixCtxRef       = useRef<AudioContext | null>(null);
   const timerRef        = useRef<ReturnType<typeof setInterval> | null>(null);
   const chunkTimerRef   = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -232,6 +237,10 @@ export default function RecordPage() {
       display.getTracks().forEach((t) => t.stop());
       throw new Error(surfaceError);
     }
+
+    // Read the service off the surface BEFORE dropping the video track — the
+    // title lives on that track and disappears with it.
+    providerRef.current = await detectMeetingProvider(display);
 
     display.getVideoTracks().forEach((t) => t.stop());
     const sysAudio = display.getAudioTracks();
@@ -733,12 +742,25 @@ export default function RecordPage() {
       // screen could sleep before anything was holding it awake.
       void requestWakeLock();
 
+      // Audio is acquired BEFORE the row is created, for two reasons: the
+      // display picker wants the user gesture that is still live at this
+      // point, and it is what tells us which conferencing service this is, so
+      // the recording can be created already knowing. A cancelled picker or a
+      // denied microphone now also leaves no orphan recording behind.
+      // 'teams' = capture the meeting's system audio (+ mic); 'web' = mic only.
+      const stream = source === 'teams'
+        ? await getMeetingStream()
+        : await navigator.mediaDevices.getUserMedia({ audio: await getAudioConstraint() });
+      streamRef.current = stream;
+
       const createRes = await fetch('/api/recordings/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           source,
           meetingType,
+          // Which conferencing service, read off the shared surface itself.
+          meetingProvider: source === 'teams' ? providerRef.current : undefined,
           // Debug metadata only. The server detects the real layout from the
           // audio itself, so a stale or lying client cannot misroute anything.
           channelLayout: source === 'teams' ? 'mic-sys' : 'mono',
@@ -747,12 +769,6 @@ export default function RecordPage() {
       const createData = await createRes.json() as { id?: string; error?: string };
       if (!createRes.ok || !createData.id) throw new Error(createData.error ?? 'Could not create recording');
       recordingIdRef.current = createData.id;
-
-      // 'teams' = capture the meeting's system audio (+ mic); 'web' = mic only.
-      const stream = source === 'teams'
-        ? await getMeetingStream()
-        : await navigator.mediaDevices.getUserMedia({ audio: await getAudioConstraint() });
-      streamRef.current = stream;
 
       const mime = getBestMime();
       mimeRef.current = mime;

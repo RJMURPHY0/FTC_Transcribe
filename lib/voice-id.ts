@@ -122,6 +122,36 @@ const DUAL_MIN_RMS = parseFloat(process.env.VOICE_DUAL_MIN_RMS ?? '0.002');
 const LEAK_CORRELATION = parseFloat(process.env.VOICE_LEAK_CORR ?? '0.7');
 const LEAK_MAX_LAG_MS = parseFloat(process.env.VOICE_LEAK_MAX_LAG_MS ?? '400');
 const LEAK_FRAME_MS = 10;
+// Far-end echo: the MIRROR of the leak above, and the case that actually
+// happens when you wear a headset. Your voice comes out of the REMOTE party's
+// speakers, back into their microphone, and returns down the call leg as
+// perfectly legitimate call audio. Nothing at this end can prevent it — the
+// browser's echo canceller only knows about what this machine is playing.
+//
+// It cannot be caught acoustically either. Measured on a real Google Meet call
+// (recording cmt9xwh4t, 26 Aug 2026), the same person's mic voiceprint and
+// their returning echo sat at 0.439 cosine: far below the 0.55 clustering
+// threshold and the 0.80 merge threshold, because the far room, the far codec
+// and a re-encode between them leave a genuinely different-sounding voice. No
+// threshold that reunites those two survives contact with real strangers.
+//
+// The words, though, are identical. So this gate is textual: a call-channel
+// cluster that keeps repeating what the local microphone already recorded is
+// the local speaker coming back, not a participant.
+const FARECHO_JACCARD = parseFloat(process.env.VOICE_FARECHO_JACCARD ?? '0.5');
+const FARECHO_RATE = parseFloat(process.env.VOICE_FARECHO_RATE ?? '0.3');
+const FARECHO_WINDOW_S = parseFloat(process.env.VOICE_FARECHO_WINDOW_S ?? '25');
+// Short utterances are worthless evidence: "yeah", "okay, thank you" are said
+// by both sides of every call and would convict an innocent participant.
+const FARECHO_MIN_WORDS = parseInt(process.env.VOICE_FARECHO_MIN_WORDS ?? '4', 10);
+// Below this many eligible lines a cluster has too little text to judge.
+const FARECHO_MIN_LINES = parseInt(process.env.VOICE_FARECHO_MIN_LINES ?? '3', 10);
+// The call channel carries no local voice and no local room, so it is a
+// strictly easier clustering problem than a blended in-person recording and
+// can take a lower merge bar. Local turns are pinned out of clustering
+// entirely, so this can only ever affect remote clusters, and the mono path
+// keeps CENTROID_MERGE_THRESHOLD untouched.
+const DUAL_CENTROID_MERGE = parseFloat(process.env.VOICE_DUAL_MERGE ?? '0.75');
 // Reserved cluster id for the local speaker on a dual-channel recording. Far
 // above anything clustering can produce, so it can never collide.
 const PINNED_CLUSTER = 1_000_000;
@@ -478,6 +508,141 @@ export function cosineSim(a: number[] | Float32Array, b: number[] | Float32Array
   return dot / (Math.sqrt(na) * Math.sqrt(nb));
 }
 
+// Embedding hook for scripts/bench-denoise.ts, which has to compare voiceprints
+// of the same audio with and without noise suppression. Not part of the app's
+// surface: nothing in app/ or lib/ should call this.
+export const __embedForBench = computeEmbedding;
+
+// ── Noise suppression for voiceprints ────────────────────────────────────────
+//
+// Spectral subtraction: estimate the steady background per frequency bin, then
+// take it back out. Steady is the operative word — a fan, a hard drive, street
+// hum and room tone are all roughly constant across a chunk, while speech is
+// not, so a low percentile of each bin's magnitude over time is a decent noise
+// estimate that costs nothing to compute.
+//
+// Applied ONLY to the copy that gets embedded, never to the copy the diarizer
+// segments: VAD wants the signal as recorded, and a voiceprint wants the voice
+// without the room.
+//
+// Measured before being switched on, because a speaker-embedding model can be
+// hurt as easily as helped by processing it never saw in training. On the
+// 26 Aug 2026 Google Meet recording (scripts/bench-denoise.ts, 95 turns),
+// same-speaker similarity rose 0.341 → 0.348 while cross-speaker similarity
+// fell 0.085 → 0.060: separation margin 0.256 → 0.288, and both halves moved
+// the right way, which is what distinguishes real noise removal from a
+// coincidence. That is one recording, so the kill switch stays.
+//
+// Dual-channel only, since that is where it was measured and where the
+// microphone channel carries a whole room's worth of tone behind one voice.
+const DENOISE = process.env.VOICE_DENOISE !== 'false';
+const DENOISE_OVERSUB = parseFloat(process.env.VOICE_DENOISE_OVERSUB ?? '1.5');
+// Never subtract a bin to silence: musical-noise artefacts are worse for an
+// embedding than the hum they replace.
+const DENOISE_FLOOR = parseFloat(process.env.VOICE_DENOISE_FLOOR ?? '0.1');
+const FFT_SIZE = 512;
+
+/** In-place radix-2 FFT. `re`/`im` must be FFT_SIZE long and power-of-two. */
+function fft(re: Float64Array, im: Float64Array, inverse = false): void {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) {
+      [re[i], re[j]] = [re[j], re[i]];
+      [im[i], im[j]] = [im[j], im[i]];
+    }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = (inverse ? 2 : -2) * Math.PI / len;
+    const wRe = Math.cos(ang), wIm = Math.sin(ang);
+    for (let i = 0; i < n; i += len) {
+      let curRe = 1, curIm = 0;
+      for (let j = 0; j < len / 2; j++) {
+        const uRe = re[i + j], uIm = im[i + j];
+        const vRe = re[i + j + len / 2] * curRe - im[i + j + len / 2] * curIm;
+        const vIm = re[i + j + len / 2] * curIm + im[i + j + len / 2] * curRe;
+        re[i + j] = uRe + vRe; im[i + j] = uIm + vIm;
+        re[i + j + len / 2] = uRe - vRe; im[i + j + len / 2] = uIm - vIm;
+        const nextRe = curRe * wRe - curIm * wIm;
+        curIm = curRe * wIm + curIm * wRe;
+        curRe = nextRe;
+      }
+    }
+  }
+  if (inverse) for (let i = 0; i < n; i++) { re[i] /= n; im[i] /= n; }
+}
+
+/**
+ * Strip steady background noise from a channel, for embedding only.
+ *
+ * Exported so the offline experiment in scripts/bench-denoise.ts can measure
+ * whether it actually separates voices better before it is ever switched on.
+ */
+export function denoiseForEmbedding(samples: Float32Array): Float32Array {
+  const hop = FFT_SIZE / 2;
+  const frames = Math.floor((samples.length - FFT_SIZE) / hop) + 1;
+  if (frames < 8) return samples; // too short to estimate a noise floor
+
+  const window = new Float64Array(FFT_SIZE);
+  for (let i = 0; i < FFT_SIZE; i++) window[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (FFT_SIZE - 1));
+
+  const bins = FFT_SIZE / 2 + 1;
+  const mag = new Float64Array(frames * bins);
+  const phRe = new Float64Array(frames * bins);
+  const phIm = new Float64Array(frames * bins);
+
+  const re = new Float64Array(FFT_SIZE);
+  const im = new Float64Array(FFT_SIZE);
+  for (let f = 0; f < frames; f++) {
+    const off = f * hop;
+    for (let i = 0; i < FFT_SIZE; i++) { re[i] = samples[off + i] * window[i]; im[i] = 0; }
+    fft(re, im);
+    for (let b = 0; b < bins; b++) {
+      mag[f * bins + b] = Math.hypot(re[b], im[b]);
+      phRe[f * bins + b] = re[b];
+      phIm[f * bins + b] = im[b];
+    }
+  }
+
+  // Noise floor per bin: the 20th percentile across frames. Speech occupies the
+  // upper part of each bin's distribution, background the lower.
+  const noise = new Float64Array(bins);
+  const column = new Float64Array(frames);
+  for (let b = 0; b < bins; b++) {
+    for (let f = 0; f < frames; f++) column[f] = mag[f * bins + b];
+    const sorted = Float64Array.from(column).sort();
+    noise[b] = sorted[Math.floor(frames * 0.2)];
+  }
+
+  const out = new Float32Array(samples.length);
+  const norm = new Float32Array(samples.length);
+  for (let f = 0; f < frames; f++) {
+    for (let b = 0; b < bins; b++) {
+      const m = mag[f * bins + b];
+      const cleaned = Math.max(m - DENOISE_OVERSUB * noise[b], DENOISE_FLOOR * m);
+      const gain = m > 0 ? cleaned / m : 0;
+      re[b] = phRe[f * bins + b] * gain;
+      im[b] = phIm[f * bins + b] * gain;
+      if (b > 0 && b < FFT_SIZE / 2) {
+        re[FFT_SIZE - b] = re[b];
+        im[FFT_SIZE - b] = -im[b];
+      }
+    }
+    fft(re, im, true);
+    const off = f * hop;
+    for (let i = 0; i < FFT_SIZE; i++) {
+      out[off + i] += re[i] * window[i];
+      norm[off + i] += window[i] * window[i];
+    }
+  }
+  for (let i = 0; i < out.length; i++) if (norm[i] > 1e-6) out[i] /= norm[i];
+  // Frames never covered by the overlap-add tail keep the original signal.
+  for (let i = (frames - 1) * hop + FFT_SIZE; i < out.length; i++) out[i] = samples[i];
+  return out;
+}
+
 // ── Per-chunk analysis: diarize + one embedding per local speaker ─────────────
 
 // Reserved chunk-local speaker id for the device owner on a dual-channel
@@ -671,12 +836,17 @@ async function analyzeDual(diarizer: any, mic: Float32Array, sys: Float32Array):
 
   if (!micTurns.length && !sysTurns.length) return null;
 
-  await embedTurnsInPlace(micTurns, mic);
-  await embedTurnsInPlace(sysTurns, sys);
+  // Voiceprints are taken from a de-noised copy; the diarizer above segmented
+  // the signal as recorded, which is what its VAD expects.
+  const micVoice = DENOISE ? denoiseForEmbedding(mic) : mic;
+  const sysVoice = DENOISE ? denoiseForEmbedding(sys) : sys;
+
+  await embedTurnsInPlace(micTurns, micVoice);
+  await embedTurnsInPlace(sysTurns, sysVoice);
 
   const speakers = [
-    ...(await speakerEmbeddingsFor(micTurns, mic)),
-    ...(await speakerEmbeddingsFor(sysTurns, sys)),
+    ...(await speakerEmbeddingsFor(micTurns, micVoice)),
+    ...(await speakerEmbeddingsFor(sysTurns, sysVoice)),
   ];
   if (!speakers.length) return null;
 
@@ -749,6 +919,14 @@ export interface ResolvedSpeakers {
   segments: Array<{ start: number; end: number; text: string; speaker: string }>;
   // One entry per global speaker label, for persistence + profile matching
   speakerEmbeddings: Array<{ label: string; embedding: number[]; durationS: number }>;
+  /**
+   * On an online meeting, the label belonging to whoever was holding the
+   * device. Their audio arrived on its own microphone channel, so this is
+   * known by construction rather than guessed acoustically, and the caller can
+   * put the account holder's name to it without any enrolled voiceprint.
+   * Null on in-person recordings, where no channel identifies anyone.
+   */
+  localLabel: string | null;
 }
 
 // Average-linkage agglomerative clustering over duration-weighted embeddings.
@@ -794,6 +972,114 @@ function clusterEmbeddings(
     for (const m of clusters[i]) assignment[m] = i;
   }
   return assignment.map((c) => clusterLabel.get(c)!);
+}
+
+// ── Far-end echo detection ───────────────────────────────────────────────────
+
+type EchoSegment = ChunkForAlignment['segments'][number];
+
+function wordBag(text: string): Set<string> {
+  return new Set(
+    text.toLowerCase().replace(/[^a-z0-9\s]+/g, ' ').split(/\s+/).filter(Boolean),
+  );
+}
+
+function jaccard(a: Set<string>, b: Set<string>): number {
+  let inter = 0;
+  for (const w of a) if (b.has(w)) inter++;
+  const union = a.size + b.size - inter;
+  return union ? inter / union : 0;
+}
+
+// Which cluster owns a span, counting only turns from the same channel.
+function dominantCluster(
+  start: number,
+  end: number,
+  turns: GlobalTurn[],
+  channel: 'mic' | 'system',
+): number | null {
+  let best: number | null = null;
+  let bestOverlap = 0;
+  for (const t of turns) {
+    if (t.channel && t.channel !== channel) continue;
+    const overlap = Math.min(end, t.end) - Math.max(start, t.start);
+    if (overlap > bestOverlap) { bestOverlap = overlap; best = t.cluster; }
+  }
+  return bestOverlap > 0 ? best : null;
+}
+
+/**
+ * Find call-channel clusters that are really the local speaker returning
+ * through the far end's speakerphone (see FARECHO_* above for why this is
+ * textual rather than acoustic).
+ *
+ * Judged per cluster, not per line. One shared sentence proves nothing —
+ * people quote each other, and both sides say "that sounds good to me". A
+ * whole cluster that keeps repeating the local microphone is an echo.
+ *
+ * The time window is deliberately loose. Whisper collapses leading silence on
+ * a sparse channel, so mic timestamps can be seconds out (see
+ * anchorSegmentsToSpeech in lib/transcribe-chunk.ts, which narrows this); and
+ * the round trip through a far room adds its own lag on top.
+ */
+function detectFarEndEcho(
+  chunks: ChunkForAlignment[],
+  globalTurns: GlobalTurn[],
+): { clusters: Set<number>; segments: Set<EchoSegment> } {
+  const clusters = new Set<number>();
+  const segments = new Set<EchoSegment>();
+
+  // The mic channel is one person by construction, so it needs no clustering:
+  // everything on it is what the local speaker actually said.
+  const micSaid: Array<{ at: number; words: Set<string> }> = [];
+  for (const chunk of chunks) {
+    for (const seg of chunk.segments) {
+      if (seg.channel !== 'mic') continue;
+      const words = wordBag(seg.text);
+      if (words.size < FARECHO_MIN_WORDS) continue;
+      micSaid.push({ at: seg.start + chunk.offset, words });
+    }
+  }
+  if (!micSaid.length) return { clusters, segments };
+
+  const byCluster = new Map<number, { lines: number; dup: number; segs: EchoSegment[] }>();
+  for (const chunk of chunks) {
+    for (const seg of chunk.segments) {
+      if (seg.channel !== 'system') continue;
+      const gStart = seg.start + chunk.offset;
+      const cluster = dominantCluster(gStart, seg.end + chunk.offset, globalTurns, 'system');
+      if (cluster === null || cluster < 0 || cluster === PINNED_CLUSTER) continue;
+
+      let bucket = byCluster.get(cluster);
+      if (!bucket) { bucket = { lines: 0, dup: 0, segs: [] }; byCluster.set(cluster, bucket); }
+      // Every line of the cluster is a candidate for removal, but only
+      // substantial ones get a vote on whether the cluster IS an echo.
+      bucket.segs.push(seg);
+      const words = wordBag(seg.text);
+      if (words.size < FARECHO_MIN_WORDS) continue;
+      bucket.lines++;
+      const echoed = micSaid.some((m) =>
+        Math.abs(m.at - gStart) <= FARECHO_WINDOW_S && jaccard(words, m.words) >= FARECHO_JACCARD);
+      if (echoed) bucket.dup++;
+    }
+  }
+
+  for (const [cluster, b] of byCluster) {
+    if (b.lines < FARECHO_MIN_LINES) continue;
+    if (b.dup / b.lines < FARECHO_RATE) continue;
+    clusters.add(cluster);
+    // Once a cluster is convicted, ALL of its lines go, not just the verbatim
+    // twins. Echo arrives shredded — the far end's ASR splits and re-joins the
+    // sentence differently, so half the repeats land below the Jaccard bar and
+    // survive as garbled near-duplicates sitting next to the clean original.
+    //
+    // Nothing is lost by this. The gate only ever fires because the local
+    // microphone already holds the same speech, and a person's own mic is a
+    // strictly better record of them than a round trip through a stranger's
+    // speakerphone.
+    for (const s of b.segs) segments.add(s);
+  }
+  return { clusters, segments };
 }
 
 // Assign each transcript segment the diarized speaker with the largest time overlap.
@@ -957,6 +1243,12 @@ export function resolveGlobalSpeakers(
     t.supervised = true;
   }
 
+  // The call channel is a strictly easier problem than a blended in-person
+  // recording, so it merges on a lower bar. Every cluster reaching the merge
+  // passes below is a remote one — local turns were just pinned out of
+  // clustering — so the mono path is untouched by this.
+  const mergeThreshold = isDual ? DUAL_CENTROID_MERGE : CENTROID_MERGE_THRESHOLD;
+
   const embeddedCount = globalTurns.filter((t) => t.embedding).length;
   // Legacy recordings (no per-turn embeddings) use the original resolver.
   // A dual-channel recording is exempt: even with no remote speech to cluster,
@@ -1098,7 +1390,7 @@ export function resolveGlobalSpeakers(
           if (s > bestS) { bestS = s; bestA = ids[i]; bestB = ids[j]; }
         }
       }
-      if (bestS < CENTROID_MERGE_THRESHOLD || bestA < 0) break;
+      if (bestS < mergeThreshold || bestA < 0) break;
       const keep = protectedClusters.has(bestB) ? bestB
         : protectedClusters.has(bestA) ? bestA
         : (clusterDur.get(bestA) ?? 0) >= (clusterDur.get(bestB) ?? 0) ? bestA : bestB;
@@ -1223,7 +1515,7 @@ export function resolveGlobalSpeakers(
           if (s > bestS) { bestS = s; bestA = ids[i]; bestB = ids[j]; }
         }
       }
-      if (bestS < CENTROID_MERGE_THRESHOLD || bestA < 0) break;
+      if (bestS < mergeThreshold || bestA < 0) break;
       const keep = protectedClusters.has(bestB) ? bestB
         : protectedClusters.has(bestA) ? bestA
         : durOf(bestA) >= durOf(bestB) ? bestA : bestB;
@@ -1232,6 +1524,31 @@ export function resolveGlobalSpeakers(
       if (protectedClusters.has(drop)) protectedClusters.add(keep);
     }
     centroids = clusterCentroids(globalTurns);
+  }
+
+  // 3.8. Far-end echo: a call-channel cluster that keeps repeating what the
+  // local microphone already recorded is the local speaker returning through
+  // the remote party's speakerphone, not a participant. Folded into the pinned
+  // local speaker and stripped of its embeddings, exactly as the mic turns
+  // were in step 0 — so it cannot pollute the pinned centroid built in 4c, and
+  // no later pass can hand it back out as its own voice.
+  //
+  // Runs here, after every merge has settled, because it works on whole
+  // clusters: an echo that is still split in two would be judged twice on half
+  // the evidence each.
+  let echoSegments = new Set<EchoSegment>();
+  if (isDual) {
+    const echo = detectFarEndEcho(chunks, globalTurns);
+    if (echo.clusters.size) {
+      for (const t of globalTurns) {
+        if (!echo.clusters.has(t.cluster)) continue;
+        t.cluster = PINNED_CLUSTER;
+        t.embedding = null;
+        t.supervised = true;
+      }
+      echoSegments = echo.segments;
+      centroids = clusterCentroids(globalTurns);
+    }
   }
 
   // 4a. Non-embedded turns inherit the dominant cluster of their chunk-local
@@ -1313,6 +1630,8 @@ export function resolveGlobalSpeakers(
   const ordered = [...firstAppearance.entries()].sort((a, b) => a[1] - b[1]).map(([c]) => c);
   const labelOf = new Map<number, string>();
   ordered.forEach((c, i) => labelOf.set(c, `Speaker ${i + 1}`));
+  // Whoever held the device. Known from the microphone channel, not guessed.
+  const localLabel = isDual ? labelOf.get(PINNED_CLUSTER) ?? null : null;
 
   // A transcript segment that genuinely spans a speaker change (ASR bridged
   // the turn boundary) is SPLIT at the boundary, with its words apportioned by
@@ -1327,6 +1646,11 @@ export function resolveGlobalSpeakers(
   for (const chunk of chunks) {
     const sorted = [...chunk.segments].sort((a, b) => a.start - b.start);
     for (const seg of sorted) {
+      // Verbatim far-end echo of something the local mic already captured.
+      // Dropped rather than relabelled: attributing it correctly would still
+      // print the same sentence twice, once clean and once through a remote
+      // speakerphone.
+      if (echoSegments.has(seg)) continue;
       const gStart = seg.start + chunk.offset;
       const gEnd = seg.end + chunk.offset;
 
@@ -1410,7 +1734,7 @@ export function resolveGlobalSpeakers(
   // a label entry for downstream persistence — reuse the nearest centroid? No:
   // they have no voiceprint, so they are legitimately absent from matching.
 
-  return { segments: outSegments, speakerEmbeddings };
+  return { segments: outSegments, speakerEmbeddings, localLabel };
 }
 
 function resolveGlobalSpeakersLegacy(chunks: ChunkForAlignment[]): ResolvedSpeakers | null {
@@ -1497,7 +1821,9 @@ function resolveGlobalSpeakersLegacy(chunks: ChunkForAlignment[]): ResolvedSpeak
     speakerEmbeddings.push({ label, embedding: centroid, durationS: Math.round(dur * 10) / 10 });
   }
 
-  return { segments: outSegments, speakerEmbeddings };
+  // Legacy voiceData predates dual-channel capture, so nothing here can
+  // identify the device owner.
+  return { segments: outSegments, speakerEmbeddings, localLabel: null };
 }
 
 // ── Runtime probe (used by /api/health?voice=1) ───────────────────────────────

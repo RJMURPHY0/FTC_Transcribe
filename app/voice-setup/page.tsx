@@ -68,6 +68,10 @@ export default function VoiceSetupPage() {
   const [level, setLevel] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  // Enrolments made by a retired embedding model. They still exist, but no
+  // match will ever use them, so the user has to be told rather than left
+  // wondering why nobody gets named any more.
+  const [staleProfiles, setStaleProfiles] = useState(0);
 
   const mediaRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -82,7 +86,7 @@ export default function VoiceSetupPage() {
   const loadPeople = () => {
     fetch('/api/voice-profiles')
       .then(r => r.ok ? r.json() : { people: [] })
-      .then(d => setPeople(d.people ?? []))
+      .then(d => { setPeople(d.people ?? []); setStaleProfiles(d.staleProfiles ?? 0); })
       .catch(() => {});
   };
   useEffect(loadPeople, []);
@@ -337,6 +341,20 @@ export default function VoiceSetupPage() {
       </header>
 
       <main className="max-w-2xl mx-auto w-full px-4 py-8 space-y-8">
+
+        {staleProfiles > 0 && (
+          <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4 text-sm text-amber-300 space-y-1">
+            <p className="font-semibold">
+              {staleProfiles} saved {staleProfiles === 1 ? 'voice sample needs' : 'voice samples need'} re-recording
+            </p>
+            <p className="text-amber-300/80">
+              They were recorded with the previous voice model and cannot be compared against new
+              meetings, so nobody is being recognised from them. Re-record each person below and the
+              old samples stop mattering. Voiceprints cannot be converted between models, which is
+              why this needs a fresh recording rather than a migration.
+            </p>
+          </div>
+        )}
 
         {/* ── Enroll ── */}
         <section>

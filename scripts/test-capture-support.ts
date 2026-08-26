@@ -11,7 +11,13 @@
 //
 // Usage: npx tsx scripts/test-capture-support.ts
 
-import { detectCaptureSupport, detectPlatform, validateDisplaySurface } from '../lib/capture-support';
+import {
+  detectCaptureSupport,
+  detectPlatform,
+  providerFromDeviceLabels,
+  providerFromTitle,
+  validateDisplaySurface,
+} from '../lib/capture-support';
 
 const UA = {
   winChrome:  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
@@ -87,6 +93,48 @@ check(validateDisplaySurface('window', macSupport) !== null, 'macOS: app-window 
 check(validateDisplaySurface('browser', macSupport) === null, 'macOS: tab share is accepted');
 check(validateDisplaySurface('monitor', winSupport) === null, 'Windows: whole-screen share is accepted');
 check(validateDisplaySurface(undefined, macSupport) === null, 'unknown surface defers to the audio-track check');
+
+// Which conferencing service. The evidence is the title of the surface the
+// user shared, which is the same evidence FTC Whisper works from on the
+// desktop. A whole-screen share names nothing and must say so rather than
+// guessing, because a wrong logo is worse than an honest "Online meeting".
+const PROVIDER_CASES: Array<[string | undefined, string]> = [
+  ['Meet - abc-defg-hij', 'meet'],
+  ['Google Meet', 'meet'],
+  ['meet.google.com/abc-defg-hij', 'meet'],
+  ['Microsoft Teams', 'teams'],
+  ['Chat | Microsoft Teams', 'teams'],
+  ['Zoom Meeting', 'zoom'],
+  ['Zoom Workplace', 'zoom'],
+  ['Webex | Cisco', 'webex'],
+  ['Slack huddle', 'slack'],
+  // Named nothing: a monitor share, a blank tab, no label at all.
+  ['screen:0:0', 'generic'],
+  ['window:12345:0', 'generic'],
+  ['Entire Screen', 'generic'],
+  ['New Tab', 'generic'],
+  ['', 'generic'],
+  [undefined, 'generic'],
+];
+for (const [title, expected] of PROVIDER_CASES) {
+  const got = providerFromTitle(title);
+  check(got === expected, `title ${JSON.stringify(title)} -> ${expected}${got === expected ? '' : ` (got ${got})`}`);
+}
+
+// Device labels are the fallback when the surface named nothing. One installed
+// conferencing app is a usable hint; two cannot say which meeting you are in.
+check(
+  providerFromDeviceLabels(['Microphone (Realtek)', 'Zoom Audio Device']) === 'zoom',
+  'device labels: a single conferencing endpoint identifies the service',
+);
+check(
+  providerFromDeviceLabels(['Teams Audio Device', 'Zoom Audio Device']) === 'generic',
+  'device labels: two installed services stay generic',
+);
+check(
+  providerFromDeviceLabels(['Microphone (Realtek)', 'Speakers (Realtek)']) === 'generic',
+  'device labels: no conferencing endpoint stays generic',
+);
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECK(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);

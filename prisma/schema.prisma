@@ -33,6 +33,12 @@ model Recording {
   // Finalize detects the real layout from the audio itself, so an old client
   // or a wrong value here can never misroute diarisation.
   channelLayout      String?
+  // Which conferencing service the call was on: teams | meet | zoom | webex |
+  // slack | generic. Read from the shared surface's own title at capture time.
+  // `source` stays 'web' | 'teams' for the existing list filter and search;
+  // this carries the detail so a Google Meet call is not badged as Teams.
+  // Null on in-person recordings and on anything recorded before this existed.
+  meetingProvider    String?
   folderId           String?
   userId             String?
   // Soft delete: hidden from all lists immediately, hard-purged by cron after 30 days
@@ -109,6 +115,15 @@ model FinalizeJob {
   lockToken   String?
   lockUntil   DateTime?
   lastError   String            @default("")
+  // Which phase the worker is in, so the page can show real progress instead
+  // of a spinner and a guess: transcribing | diarising | analysing | done.
+  stage       String            @default("")
+  // The current run's processing window. `createdAt` is when the job was
+  // ENQUEUED, which happens while the meeting is still being recorded, so it
+  // cannot be used to measure how long processing takes. These two can, and
+  // that measurement is what the ETA is built from.
+  startedAt   DateTime?
+  completedAt DateTime?
   createdAt   DateTime          @default(now())
   updatedAt   DateTime          @updatedAt
   chunks      ChunkTranscript[]

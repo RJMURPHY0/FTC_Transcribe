@@ -136,6 +136,101 @@ export function validateDisplaySurface(
   return 'On a Mac, only a browser tab carries audio. Open the meeting in a tab, then start again and choose that tab with “Also share tab audio” ticked.';
 }
 
+// ── Which conferencing service ───────────────────────────────────────────────
+//
+// `source: 'teams'` has always meant "some online meeting", so a Google Meet
+// call was filed and badged as Teams. This resolves the actual service.
+//
+// The signal is the title of the surface the user picked to share. Chrome puts
+// the tab title on a tab capture's video track and the window title on a window
+// capture, so "Meet - abc-defg-hij" and "Microsoft Teams" both arrive as a
+// plain string. That is the same evidence FTC Whisper works from on the desktop
+// (see app_icons.py `_BROWSER_SERVICES`, which maps a window title through a
+// substring table), so the two products agree on what a service is called.
+//
+// A whole-screen share reports something like "screen:0:0" and identifies
+// nothing. That resolves to 'generic', because a wrong logo is worse than an
+// honest "Online meeting".
+
+export type MeetingProvider = 'teams' | 'meet' | 'zoom' | 'webex' | 'slack' | 'generic';
+
+// Ordered: the first hit wins, so more specific strings come first. Matching is
+// on a lowercased title, and every needle must be distinctive enough that it
+// cannot appear in an unrelated tab title.
+const PROVIDER_TITLES: Array<[string, MeetingProvider]> = [
+  ['microsoft teams', 'teams'],
+  ['ms teams', 'teams'],
+  ['teams', 'teams'],
+  ['google meet', 'meet'],
+  ['meet.google.com', 'meet'],
+  ['meet -', 'meet'],
+  ['meet –', 'meet'],
+  ['zoom meeting', 'zoom'],
+  ['zoom workplace', 'zoom'],
+  ['zoom', 'zoom'],
+  ['webex', 'webex'],
+  ['slack huddle', 'slack'],
+  ['huddle', 'slack'],
+  ['slack', 'slack'],
+];
+
+export const PROVIDER_LABELS: Record<MeetingProvider, string> = {
+  teams: 'Teams',
+  meet: 'Google Meet',
+  zoom: 'Zoom',
+  webex: 'Webex',
+  slack: 'Slack',
+  generic: 'Online meeting',
+};
+
+/** Resolve a shared tab/window title to a conferencing service. */
+export function providerFromTitle(title: string | undefined | null): MeetingProvider {
+  if (!title) return 'generic';
+  const t = title.toLowerCase();
+  // A whole-screen or monitor share carries no application identity.
+  if (/^(screen|monitor|window):\d/.test(t) || t === 'entire screen') return 'generic';
+  for (const [needle, provider] of PROVIDER_TITLES) {
+    if (t.includes(needle)) return provider;
+  }
+  return 'generic';
+}
+
+/**
+ * Best guess at the service from the conferencing audio endpoints installed on
+ * this machine. Only consulted when the shared surface named nothing, and only
+ * trusted when exactly one service is present — two installed apps cannot say
+ * which one the user is actually in.
+ */
+export function providerFromDeviceLabels(labels: string[]): MeetingProvider {
+  const found = new Set<MeetingProvider>();
+  for (const raw of labels) {
+    const p = providerFromTitle(raw);
+    if (p !== 'generic') found.add(p);
+  }
+  return found.size === 1 ? [...found][0] : 'generic';
+}
+
+/**
+ * What service is this meeting on? Reads the display capture's own track
+ * labels, then falls back to installed audio endpoints. Never throws, and
+ * never guesses past the evidence.
+ */
+export async function detectMeetingProvider(display: MediaStream): Promise<MeetingProvider> {
+  try {
+    for (const track of display.getTracks()) {
+      const p = providerFromTitle(track.label);
+      if (p !== 'generic') return p;
+    }
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.enumerateDevices) return 'generic';
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    return providerFromDeviceLabels(
+      devices.filter((d) => d.kind === 'audioinput' || d.kind === 'audiooutput').map((d) => d.label),
+    );
+  } catch {
+    return 'generic';
+  }
+}
+
 // ── Meeting context ──────────────────────────────────────────────────────────
 
 export type MeetingContext = 'likely' | 'unlikely' | 'unknown';

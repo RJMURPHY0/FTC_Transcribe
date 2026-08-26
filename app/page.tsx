@@ -346,7 +346,7 @@ export default async function Home({
               <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
                 <path d="M12.5 2C11.1 2 10 3.1 10 4.5S11.1 7 12.5 7 15 5.9 15 4.5 13.9 2 12.5 2zm5 3c-.8 0-1.5.7-1.5 1.5S16.7 8 17.5 8 19 7.3 19 6.5 18.3 5 17.5 5zM3 9v10h2v-4h1.5c.3 1.2 1.3 2 2.5 2s2.2-.8 2.5-2H13v4h2V9H3zm8 4H5v-2h6v2z"/>
               </svg>
-              Teams
+              Online
               <span className="text-[10px] font-bold opacity-80">{teamsCount}</span>
             </Link>
           </div>
@@ -558,13 +558,14 @@ export default async function Home({
                 createdAt: rec.createdAt.toISOString(),
                 status: rec.status,
                 source: rec.source ?? 'web',
+                meetingProvider: rec.meetingProvider ?? null,
                 folderId: rec.folderId,
                 duration: rec.duration ?? 0,
                 summary: rec.summary
                   ? { overview: rec.summary.overview, keyPoints: rec.summary.keyPoints, actionItems: rec.summary.actionItems }
                   : null,
                 _count: rec._count,
-                eta: isQueued ? formatEta(estimateSeconds(rec._count.chunks)) : null,
+                eta: isQueued ? formatEta(estimateSeconds(rec._count.chunks, rec.duration ?? 0)) : null,
                 ownerName: showOwner
                   ? (rec.userId ? ownerNames[rec.userId] ?? 'Unknown' : 'Unassigned')
                   : null,

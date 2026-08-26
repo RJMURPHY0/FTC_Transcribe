@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import AssignFolderButton from './AssignFolderButton';
 import QuickDeleteButton from './QuickDeleteButton';
+import { providerBadge } from '@/lib/meeting-provider';
 import { SpotlightCard } from '@/components/ui/spotlight-card';
 import {
   DropdownMenu,
@@ -26,6 +27,7 @@ interface Recording {
   createdAt: string;
   status: string;
   source: string;
+  meetingProvider?: string | null;
   folderId: string | null;
   summary: RecordingSummary | null;
   _count: { chunks: number };
@@ -403,6 +405,7 @@ export default function RecordingsList({
           const selIdx  = selected.indexOf(rec.id);
           const selNum  = selIdx + 1;
           const isSelected = selIdx !== -1;
+          const badge   = providerBadge(rec.source, rec.meetingProvider);
 
           return (
             <li key={rec.id} className="relative group">
@@ -449,9 +452,9 @@ export default function RecordingsList({
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex items-center gap-3 min-w-0">
-                    <div className={`w-9 h-9 rounded-xl flex-shrink-0 flex items-center justify-center ${rec.source === 'teams' ? 'bg-[#4b53bc]/15' : 'bg-surface-raised'}`}>
-                      {rec.source === 'teams' ? (
-                        <svg className="w-5 h-5 text-[#6264A7]" fill="currentColor" viewBox="0 0 24 24">
+                    <div className={`w-9 h-9 rounded-xl flex-shrink-0 flex items-center justify-center ${badge ? badge.tileClassName : 'bg-surface-raised'}`}>
+                      {badge ? (
+                        <svg className={`w-5 h-5 ${badge.iconClassName}`} fill="currentColor" viewBox="0 0 24 24">
                           <path d="M12.5 2C11.1 2 10 3.1 10 4.5S11.1 7 12.5 7 15 5.9 15 4.5 13.9 2 12.5 2zm5 3c-.8 0-1.5.7-1.5 1.5S16.7 8 17.5 8 19 7.3 19 6.5 18.3 5 17.5 5zM3 9v10h2v-4h1.5c.3 1.2 1.3 2 2.5 2s2.2-.8 2.5-2H13v4h2V9H3zm8 4H5v-2h6v2z"/>
                         </svg>
                       ) : (
@@ -461,8 +464,8 @@ export default function RecordingsList({
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
                         <p className="font-semibold text-sm text-ftc-gray truncate">{rec.title}</p>
-                        {rec.source === 'teams' && (
-                          <span className="flex-shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-[#4b53bc]/15 text-[#6264A7]">Teams</span>
+                        {badge && (
+                          <span className={`flex-shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded-md ${badge.className}`}>{badge.label}</span>
                         )}
                       </div>
                       <p className="text-xs mt-0.5 text-ftc-mid flex items-center gap-1.5">
