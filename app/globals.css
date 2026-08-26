@@ -314,10 +314,6 @@
 }
 /* Resize handles are hidden until the desktop grid activates */
 .detail-resize-handle { display: none; }
-/* Width wrapper: positioning context for its edge handle; handle hidden until
-   the desktop grid activates (mobile stacks columns full-width) */
-.panel-width-wrap { position: relative; }
-.panel-width-handle { display: none; }
 @media (min-width: 1024px) {
   .detail-grid {
     /* var lets the client component override the ratios without breaking the
@@ -360,20 +356,20 @@
     background: rgb(var(--c-surface-border));
     transition: background 0.15s, width 0.15s;
   }
-  /* Centered grip dots that hint the handle is draggable */
+  /* Solid centered grip pill that reads clearly as a drag handle. Stays put on
+     hover (unlike the old dotted grip, which vanished exactly when reached for)
+     and brightens to brand green, matching the grips used elsewhere. */
   .detail-resize-handle::after {
     content: '';
     position: absolute;
     top: 50%;
     left: 50%;
     width: 4px;
-    height: 28px;
+    height: 44px;
     transform: translate(-50%, -50%);
     border-radius: 9999px;
-    background:
-      radial-gradient(circle, rgb(var(--c-ftc-mid)) 1.4px, transparent 1.6px) center / 4px 7px repeat-y;
-    opacity: 0.55;
-    transition: opacity 0.15s;
+    background: rgb(var(--c-surface-border));
+    transition: background 0.15s, height 0.15s;
     pointer-events: none;
   }
   .detail-resize-handle:hover::before,
@@ -383,7 +379,8 @@
   }
   .detail-resize-handle:hover::after,
   .detail-resize-handle.dragging::after {
-    opacity: 0;
+    background: rgb(var(--c-brand));
+    height: 72px;
   }
   /* One viewport-tall shell: the three columns are the ONLY scrollers.
      Each column used to be capped with its own calc(100vh - Xrem) while the
@@ -430,32 +427,5 @@
     min-height: 0;
     max-height: none;
     margin-left: auto;
-  }
-  /* Right-edge width handle sits fully outside the panel in the page margin,
-     so it can never overlap the transcript scrollbar */
-  .panel-width-handle {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    right: -16px;
-    width: 12px;
-    cursor: ew-resize;
-    touch-action: none;
-    z-index: 8;
-  }
-  .panel-width-grip {
-    width: 4px;
-    height: 48px;
-    border-radius: 9999px;
-    background: rgb(var(--c-surface-border));
-    transition: background 0.15s, height 0.15s;
-  }
-  .panel-width-handle:hover .panel-width-grip,
-  .panel-width-handle:active .panel-width-grip {
-    background: rgb(var(--c-brand));
-    height: 72px;
   }
 }
