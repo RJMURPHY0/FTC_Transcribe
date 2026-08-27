@@ -38,3 +38,37 @@ export async function setLiveFx(userId: string, isSuperAdmin: boolean, enabled: 
     update: { liveFx: enabled },
   });
 }
+
+// ── Voice-training consent ────────────────────────────────────────────────────
+//
+// Whether the dictation desktop app may send short voice snippets here to
+// train this person's voiceprint. Off until explicitly switched on: the desktop
+// app keeps every recording on the device by default, and that default is a
+// promise, not an oversight.
+//
+// Deliberately NOT a super-admin-defaultable setting like liveFx. Consent to
+// process biometric data is per person and cannot be granted on their behalf,
+// so there is no DEFAULT row fallback here.
+
+/** Has this user opted in to dictation-snippet voice training? */
+export async function resolveVoiceTraining(userId: string): Promise<boolean> {
+  try {
+    const own = await prisma.userSetting.findUnique({
+      where: { userId },
+      select: { voiceTraining: true },
+    });
+    return own?.voiceTraining === true;
+  } catch {
+    // Table or column missing (fresh/dev DB): fail closed.
+    return false;
+  }
+}
+
+/** Set this user's own consent. Never writes the DEFAULT row. */
+export async function setVoiceTraining(userId: string, enabled: boolean): Promise<void> {
+  await prisma.userSetting.upsert({
+    where: { userId },
+    create: { userId, voiceTraining: enabled },
+    update: { voiceTraining: enabled },
+  });
+}

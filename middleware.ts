@@ -49,6 +49,10 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith('/api/auto-fix') ||
     pathname.startsWith('/api/jobs/finalize') ||
     pathname.startsWith('/api/health') ||
+    // Desktop clients authenticate with a bearer token, not a cookie, so the
+    // redirect above would bounce them to /login before their route ran. Each
+    // of these verifies its own bearer via getBearerUser().
+    pathname.startsWith('/api/voice-training') ||
     pathname.startsWith('/_next') ||
     pathname.startsWith('/favicon') ||
     pathname.startsWith('/icon') ||

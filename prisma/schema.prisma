@@ -83,6 +83,11 @@ model TranscribePermission {
 model UserSetting {
   userId    String   @id @map("user_id")
   liveFx    Boolean? @map("live_fx")
+  // Consent to let the dictation app send short voice snippets here for
+  // voiceprint training. Null = never answered, which resolves to OFF: the
+  // desktop app keeps every recording on the device until this says otherwise.
+  // One row read and written by BOTH apps, so the two toggles cannot drift.
+  voiceTraining Boolean? @map("voice_training")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@map("user_settings")
@@ -198,6 +203,14 @@ model VoiceProfile {
   audioMime   String   @default("")
   // Reserved for storage-bucket clip paths once SUPABASE_SERVICE_ROLE_KEY is set
   audioPath   String   @default("")
+  // Which stretch of `recordingId` actually trained this sample, in
+  // recording-global seconds, plus the diarizer label it carried at learn
+  // time. Recorded here rather than re-derived later: the transcript stores
+  // "Speaker 2", never the person's name, so matching segments by personName
+  // finds nothing and the sample inspector cannot show or play the clip.
+  clipStartS   Float?
+  clipEndS     Float?
+  speakerLabel String  @default("")
   createdAt   DateTime @default(now())
   // Which embedding model produced `embedding`. Matching NEVER crosses spaces,
   // so this is a correctness guard, not metadata: comparing a campplus vector to

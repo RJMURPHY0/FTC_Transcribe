@@ -122,6 +122,9 @@ export default function TranscriptPlayer({ recordingId, rawSegments, speakerOrde
     if (req.kind === 'time') {
       idx = groups.findLastIndex(g => g.start <= req.value);
       if (idx < 0) idx = 0;
+      // A deep link asked for this moment specifically, so put the playhead
+      // there as well as the scroll position.
+      if (req.seek) playerRef.current?.openAndSeek(req.value);
     } else {
       const loc = matcher.locate(req.value);
       idx = loc.index;

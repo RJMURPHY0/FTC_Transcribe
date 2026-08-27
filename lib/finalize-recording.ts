@@ -14,7 +14,7 @@ import { notifyTeamsChannel } from '@/lib/integrations/teams-notify';
 import { indexTranscript } from '@/lib/embeddings';
 import { alignSpeakersAcrossChunks } from '@/lib/deepgram';
 import type { DeepgramRawSegment } from '@/lib/deepgram';
-import { resolveGlobalSpeakers, matchProfilesDetailed, cosineSim, LEGACY_MODEL_VERSION } from '@/lib/voice-id';
+import { resolveGlobalSpeakers, matchProfilesDetailed, cosineSim, bestSpan, isAnchorSource, LEGACY_MODEL_VERSION } from '@/lib/voice-id';
 import { createVoiceProfileTagged, loadProfilesForVersion } from '@/lib/voice-profile-store';
 import { archiveRecordingAudio } from '@/lib/audio-archive';
 import type { ChunkForAlignment, ChunkVoiceData } from '@/lib/voice-id';
@@ -78,7 +78,9 @@ async function autoLearnVoiceProfiles(
   recordingId: string,
   speakerNames: Record<string, string>,
   userId: string | null,
-  segments: Array<{ speaker: string; text: string }> = [],
+  // start/end are needed to record which stretch of the meeting trained a
+  // learned sample. Both callers already pass fully-timed segments.
+  segments: Array<{ start: number; end: number; speaker: string; text: string }> = [],
 ): Promise<void> {
   const namedGenerics = Object.entries(speakerNames).filter(
     ([label, name]) => /^Speaker \d+$/.test(label) && name && !/^Speaker \d+$/i.test(name),
@@ -120,7 +122,7 @@ async function autoLearnVoiceProfiles(
         where: { personName: name },
         select: { embedding: true, source: true },
       });
-      const verified = existing.filter(p => p.source === 'enrollment' || p.source === 'relabel');
+      const verified = existing.filter(p => isAnchorSource(p.source));
       const pool = verified.length ? verified : existing;
       const sims = pool
         .map(p => { try { return cosineSim(emb, JSON.parse(p.embedding) as number[]); } catch { return NaN; } })
@@ -136,13 +138,20 @@ async function autoLearnVoiceProfiles(
       } else {
         // Either corroborated (maxSim >= floor) or this is the person's first
         // sample (maxSim === null, nothing yet to contaminate).
-        const excerpt = segments
-          .filter(s => s.speaker === name || s.speaker === label)
-          .map(s => s.text)
-          .join(' ')
-          .slice(0, 300);
+        const own = segments.filter(s => s.speaker === name || s.speaker === label);
+        const excerpt = own.map(s => s.text).join(' ').slice(0, 300);
+        // No cluster turns reach this path, so the span comes from the
+        // transcript segments this speaker owns. Same units either way:
+        // seconds from the start of the recording.
+        const span = bestSpan(own.map(s => ({ start: s.start, end: s.end })));
         await createVoiceProfileTagged(
-          { userId, personName: name, embedding: row.embedding, durationS: row.durationS, source: 'auto', recordingId, excerpt },
+          {
+            userId, personName: name, embedding: row.embedding,
+            durationS: row.durationS, source: 'auto', recordingId, excerpt,
+            clipStartS: span?.start ?? null,
+            clipEndS: span?.end ?? null,
+            speakerLabel: label,
+          },
           dataVersion,
         );
       }
@@ -284,6 +293,13 @@ export async function resolveAndPersistVoiceSpeakers(
             source: 'match',
             recordingId,
             excerpt,
+            // Exactly which seconds of this meeting taught the sample, and the
+            // label it carried while doing so. Without both, the inspector has
+            // to guess later by matching the person's NAME against transcript
+            // speakers, which only ever hold "Speaker N".
+            clipStartS: se.span?.start ?? null,
+            clipEndS: se.span?.end ?? null,
+            speakerLabel: se.label,
           }, dataVersion);
           console.log(`[finalize] learned new voice sample for ${m.name} (sim ${m.sim.toFixed(2)}, ${se.durationS.toFixed(1)}s)`);
         }

@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { getAudioConstraint } from '@/lib/mic-select';
+import { DICTATION_APP, VOICE_SOURCE_LABEL, VOICE_SOURCE_LOGO } from '@/lib/branding';
+import ToggleSwitch from '@/components/ui/toggle-switch';
 
 // Longer, phonetically varied passages produce far stronger voiceprints than
 // short sentences — total enrollment speech should exceed ~60 seconds. The
@@ -24,7 +26,21 @@ const MAX_SECONDS = 20;
 const MIN_PHRASES = 1;
 const RECOMMENDED_PHRASES = 3;
 
-interface Person { name: string; samples: number; totalDurationS: number; learned?: boolean }
+interface Person {
+  name: string;
+  samples: number;
+  totalDurationS: number;
+  learned?: boolean;
+  /** Samples the current voice model can actually match against. */
+  currentSamples?: number;
+  /** Samples from a retired model: unusable, unconvertible, safe to clear. */
+  staleSamples?: number;
+}
+
+// How many usable samples a person needs before offering to clear their dead
+// ones. Below this, the old rows are all they have, and removing them would
+// leave nothing behind even though nothing can match them either.
+const RELEARNED_MIN = 3;
 
 type PhraseState = { blob: Blob | null; seconds: number };
 
@@ -51,12 +67,18 @@ function fmtClock(s: number): string {
   return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 }
 
-const SOURCE_LABEL: Record<string, string> = {
-  enrollment: 'Enrolled',
-  match: 'Auto-learned',
-  relabel: 'From rename',
-  auto: 'Self-intro',
-};
+// Labels live in lib/branding.ts so a product rename is one env var rather
+// than a hunt through JSX. Rows persist the stable source id only.
+const SOURCE_LABEL = VOICE_SOURCE_LABEL;
+
+// "3009s" reads as noise. Anything past a minute gets minutes.
+function fmtDuration(s: number): string {
+  const total = Math.round(s);
+  if (total < 60) return `${total}s`;
+  const m = Math.floor(total / 60);
+  const rem = total % 60;
+  return rem ? `${m}m ${rem}s` : `${m}m`;
+}
 
 export default function VoiceSetupPage() {
   const [people, setPeople] = useState<Person[]>([]);
@@ -112,6 +134,38 @@ export default function VoiceSetupPage() {
       setSamples([]);
     }
     setSamplesLoading(false);
+  }
+
+  // Dictation-app voice training consent. One row shared with the desktop app,
+  // so flipping it either side moves the same switch. null while loading, so
+  // the control never renders "off" before the real answer arrives.
+  const [voiceTraining, setVoiceTraining] = useState<boolean | null>(null);
+  const [consentSaving, setConsentSaving] = useState(false);
+  useEffect(() => {
+    fetch('/api/voice-training/consent')
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d && typeof d.enabled === 'boolean') setVoiceTraining(d.enabled); })
+      .catch(() => {});
+  }, []);
+
+  async function toggleVoiceTraining(next: boolean) {
+    setConsentSaving(true);
+    const previous = voiceTraining;
+    setVoiceTraining(next); // optimistic: the switch should not lag the finger
+    try {
+      const r = await fetch('/api/voice-training/consent', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: next }),
+      });
+      if (!r.ok) throw new Error('save failed');
+      const d = await r.json();
+      setVoiceTraining(!!d.enabled);
+    } catch {
+      setVoiceTraining(previous);
+      setMessage({ kind: 'err', text: 'Could not save that setting. Check your connection and try again.' });
+    }
+    setConsentSaving(false);
   }
 
   // Per-sample clip playback — one shared <audio>, seeks into meeting audio
@@ -323,6 +377,19 @@ export default function VoiceSetupPage() {
     loadPeople();
   }
 
+  async function removeStale(personName: string, count: number) {
+    if (!confirm(
+      `Remove ${count} old-model sample${count === 1 ? '' : 's'} for ${personName}? ` +
+      `They cannot be matched against any meeting, so nothing stops working.`,
+    )) return;
+    await fetch(
+      `/api/voice-profiles?name=${encodeURIComponent(personName)}&staleOnly=1`,
+      { method: 'DELETE' },
+    ).catch(() => {});
+    loadPeople();
+    if (expanded === personName) { setExpanded(null); void toggleSamples(personName); }
+  }
+
   return (
     <div className="min-h-screen flex flex-col bg-surface">
       <header className="sticky top-0 z-20 border-b border-surface-border bg-surface/80 backdrop-blur-md">
@@ -349,12 +416,58 @@ export default function VoiceSetupPage() {
             </p>
             <p className="text-amber-300/80">
               They were recorded with the previous voice model and cannot be compared against new
-              meetings, so nobody is being recognised from them. Re-record each person below and the
-              old samples stop mattering. Voiceprints cannot be converted between models, which is
-              why this needs a fresh recording rather than a migration.
+              meetings, so nobody is being recognised from them. Voiceprints cannot be converted
+              between models, so this needs fresh audio rather than a migration.
+            </p>
+            <p className="text-amber-300/80">
+              For yourself, the quickest fix is to switch on training below and let{' '}
+              {DICTATION_APP.name} import dictations you have already recorded. For anyone else,
+              re-record them below.
             </p>
           </div>
         )}
+
+        {/* ── Dictation-app training consent ── */}
+        <section>
+          <h2 className="text-xs font-semibold uppercase tracking-widest text-ftc-mid mb-3">
+            Learn from your dictation
+          </h2>
+          <div className="rounded-2xl border border-surface-border bg-surface-card p-5">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0 space-y-1.5">
+                <p className="text-sm text-ftc-gray font-medium flex items-center gap-2">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={DICTATION_APP.logo} alt="" className="w-4 h-4 rounded object-contain" />
+                  Train my voice from {DICTATION_APP.name}
+                </p>
+                <p className="text-xs text-ftc-mid leading-relaxed">
+                  Right now your dictation audio never leaves your computer, and it stays that way
+                  unless you switch this on. Turn it on and {DICTATION_APP.name} sends short snippets
+                  of your own speech here, so this app learns what you actually sound like and can
+                  name you in meetings without you recording anything.
+                </p>
+                <p className="text-xs text-ftc-mid leading-relaxed">
+                  It is the same switch in both apps: change it here and {DICTATION_APP.name}
+                  {' '}follows, change it there and this follows. Switch it off any time, and delete
+                  individual clips below.
+                </p>
+              </div>
+              <ToggleSwitch
+                checked={voiceTraining ?? false}
+                onChange={toggleVoiceTraining}
+                disabled={voiceTraining === null || consentSaving}
+                label={`Train my voice from ${DICTATION_APP.name}`}
+              />
+            </div>
+            {voiceTraining === true && (
+              <p className="text-[11px] text-emerald-400 mt-3 leading-relaxed">
+                On. Open {DICTATION_APP.name} and use &ldquo;Import my past dictations&rdquo; to
+                teach it from speech you have already recorded, or just carry on dictating and it
+                learns as you go.
+              </p>
+            )}
+          </div>
+        </section>
 
         {/* ── Enroll ── */}
         <section>
@@ -521,6 +634,15 @@ export default function VoiceSetupPage() {
                         Improve
                       </button>
                     )}
+                    {(p.staleSamples ?? 0) > 0 && (p.currentSamples ?? 0) >= RELEARNED_MIN && (
+                      <button
+                        onClick={() => void removeStale(p.name, p.staleSamples ?? 0)}
+                        title={`${p.name} has been relearned with the current voice model, so these ${p.staleSamples} old samples do nothing.`}
+                        className="text-xs px-3 py-1.5 rounded-xl border border-amber-500/30 text-amber-400 hover:border-amber-400/60 transition-colors touch-manipulation"
+                      >
+                        Clear {p.staleSamples} old
+                      </button>
+                    )}
                     <button
                       onClick={() => void removePerson(p.name)}
                       className="text-xs px-3 py-1.5 rounded-xl border border-surface-border text-red-400 hover:border-red-400/40 transition-colors touch-manipulation"
@@ -541,12 +663,22 @@ export default function VoiceSetupPage() {
                       <div key={s.id} className="rounded-xl bg-surface-raised border border-surface-border p-3">
                         <div className="flex items-center justify-between gap-2">
                           <div className="flex items-center gap-x-2 gap-y-1 flex-wrap min-w-0 text-xs text-ftc-gray">
-                            <span className="font-semibold px-1.5 py-0.5 rounded bg-brand/15 text-brand text-[11px]">
+                            <span className="font-semibold px-1.5 py-0.5 rounded bg-brand/15 text-brand text-[11px] inline-flex items-center gap-1">
+                              {VOICE_SOURCE_LOGO[s.source] && (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img
+                                  src={VOICE_SOURCE_LOGO[s.source]}
+                                  alt=""
+                                  className="w-3 h-3 rounded-[3px] object-contain"
+                                />
+                              )}
                               {SOURCE_LABEL[s.source] ?? s.source}
                             </span>
                             <span>{new Date(s.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
                             <span className="text-ftc-mid">·</span>
-                            <span>{Math.round(s.durationS)}s</span>
+                            <span title={`${Math.round(s.durationS)} seconds of speech trained this sample`}>
+                              {fmtDuration(s.durationS)}
+                            </span>
                             {s.deviceLabel && (
                               <>
                                 <span className="text-ftc-mid">·</span>
@@ -647,7 +779,11 @@ export default function VoiceSetupPage() {
                         )}
                         {s.recordingId && (
                           <Link
-                            href={`/recordings/${s.recordingId}`}
+                            href={
+                              s.clipStart !== null
+                                ? `/recordings/${s.recordingId}?t=${Math.floor(s.clipStart)}`
+                                : `/recordings/${s.recordingId}`
+                            }
                             className="inline-block mt-1.5 text-[11px] text-brand hover:underline"
                           >
                             From: {s.recordingTitle ?? 'meeting recording'}
@@ -656,7 +792,13 @@ export default function VoiceSetupPage() {
                         )}
                         {!s.recordingId && s.source === 'enrollment' && (
                           <p className="mt-1.5 text-[11px] text-ftc-mid">
-                            Recorded at enrollment{s.clipUrl ? ' — tap play to hear it.' : '.'}
+                            Recorded at enrollment{s.clipUrl ? ', tap play to hear it.' : '.'}
+                          </p>
+                        )}
+                        {s.source === DICTATION_APP.id && (
+                          <p className="mt-1.5 text-[11px] text-ftc-mid">
+                            Imported from {DICTATION_APP.name}
+                            {s.clipUrl ? ', tap play to hear it.' : '.'}
                           </p>
                         )}
                       </div>

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { getAuthUser } from '@/lib/auth';
 import { ensureSchema } from '@/lib/ensure-schema';
-import { cosineSim, EMB_MODEL_VERSION } from '@/lib/voice-id';
+import { cosineSim, bestSpan, isAnchorSource, EMB_MODEL_VERSION } from '@/lib/voice-id';
 import { profileVersions } from '@/lib/voice-profile-store';
 
 export const dynamic = 'force-dynamic';
@@ -30,6 +30,9 @@ export async function GET(request: NextRequest) {
     select: {
       id: true, source: true, durationS: true, deviceLabel: true,
       recordingId: true, excerpt: true, createdAt: true, embedding: true,
+      // Span recorded at learn time. Present on anything learned since spans
+      // shipped; older rows fall back to deriving one, below.
+      clipStartS: true, clipEndS: true, speakerLabel: true,
       // audioMime is set exactly when a playable enrollment clip was stored —
       // checking it avoids pulling the clip bytes on every list request.
       audioMime: true,
@@ -61,18 +64,21 @@ export async function GET(request: NextRequest) {
     try { segsOf.set(t.recordingId, JSON.parse(t.segments) as Seg[]); } catch { /* unparseable */ }
   }
 
-  // First contiguous run of this speaker's segments (≤2s gaps), capped at 20s.
-  function deriveClip(recordingId: string | null): { start: number; end: number } | null {
+  // Fallback for rows learned before spans were recorded. Matches on the
+  // diarizer label as well as the person's name: the transcript stores
+  // "Speaker 2" until someone is named, so a name-only match found nothing and
+  // left every historic sample with no clip and no timestamp.
+  function deriveClip(
+    recordingId: string | null,
+    speakerLabel: string,
+  ): { start: number; end: number } | null {
     if (!recordingId) return null;
-    const own = (segsOf.get(recordingId) ?? []).filter(s => String(s.speaker) === name && s.end > s.start);
-    if (!own.length) return null;
-    let end = own[0].end;
-    const start = own[0].start;
-    for (let i = 1; i < own.length; i++) {
-      if (own[i].start - end <= 2 && own[i].end - start <= 20) end = own[i].end;
-      else break;
-    }
-    return { start: Math.max(0, start), end: Math.min(end, start + 20) };
+    const own = (segsOf.get(recordingId) ?? []).filter(s => {
+      if (s.end <= s.start) return false;
+      const sp = String(s.speaker);
+      return sp === name || (!!speakerLabel && sp === speakerLabel);
+    });
+    return bestSpan(own);
   }
 
   // Confidence vs the person's ANCHOR centroid (enrolment + manual-rename
@@ -81,7 +87,7 @@ export async function GET(request: NextRequest) {
   // average and look consistent. Falls back to the all-sample centroid only
   // when no human-verified samples exist.
   const CONSISTENCY_MIN = parseFloat(process.env.VOICE_SAMPLE_CONSISTENCY_MIN ?? '0.6');
-  const isAnchor = (source: string) => source === 'enrollment' || source === 'relabel';
+  const isAnchor = isAnchorSource;
   // Confidence is only meaningful within one embedding-model space: current-
   // model samples score against the current-model anchor centroid; samples
   // from a retired model are flagged legacy and take no part in matching.
@@ -103,7 +109,10 @@ export async function GET(request: NextRequest) {
 
   return NextResponse.json({
     samples: rows.map((r, i) => {
-      const clip = deriveClip(r.recordingId);
+      // Recorded span wins; deriving is only for rows that predate it.
+      const clip = r.clipStartS !== null && r.clipEndS !== null
+        ? { start: r.clipStartS, end: r.clipEndS }
+        : deriveClip(r.recordingId, r.speakerLabel);
       const recordingHasAudio = r.recordingId ? audioOf.get(r.recordingId) ?? false : false;
       return {
         id: r.id,

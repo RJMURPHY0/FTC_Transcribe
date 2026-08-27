@@ -1,4 +1,5 @@
 import { cache } from 'react';
+import { createClient as createSupabaseClient } from '@supabase/supabase-js';
 import { createClient } from '@/lib/supabase/server';
 import { prisma } from '@/lib/db';
 
@@ -64,6 +65,52 @@ export const getAuthUser = cache(async (): Promise<AuthUser | null> => {
 
   return { id: user.id, email: user.email ?? '', canSeeAll, canPlayAudio, isSuperAdmin: false };
 });
+
+/**
+ * Verify a desktop/native client from an `Authorization: Bearer <token>`
+ * header instead of a cookie.
+ *
+ * Same boundary as getAuthUser(): the token is checked against the Supabase
+ * Auth server, never decoded and trusted. Separate function because desktop
+ * clients carry no cookies, so createClient()'s cookie jar has nothing to read.
+ * Routes using this must also be listed in middleware's public allowlist, or
+ * the cookie-less request is redirected to /login before it ever runs.
+ * Not wrapped in cache(): a request carries one token, and these routes are
+ * called once per request rather than from a render tree.
+ */
+export async function getBearerUser(request: Request): Promise<AuthUser | null> {
+  const header = request.headers.get('authorization') ?? '';
+  const token = header.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : '';
+  if (!token) return null;
+  if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) return null;
+
+  let user = null;
+  try {
+    const supabase = createSupabaseClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+      { auth: { persistSession: false, autoRefreshToken: false } },
+    );
+    const { data, error } = await supabase.auth.getUser(token);
+    if (!error) user = data.user;
+  } catch {
+    // Auth server unreachable: treat as unauthenticated rather than guessing.
+  }
+  if (!user) return null;
+
+  if (user.email === SUPER_ADMIN_EMAIL) {
+    return { id: user.id, email: user.email, canSeeAll: true, canPlayAudio: true, isSuperAdmin: true };
+  }
+  return { id: user.id, email: user.email ?? '', canSeeAll: false, canPlayAudio: true, isSuperAdmin: false };
+}
+
+/**
+ * Accept either transport: cookie session first (the web app), falling back to
+ * a bearer token (the desktop app). Routes shared by both call this.
+ */
+export async function getAnyUser(request: Request): Promise<AuthUser | null> {
+  return (await getAuthUser()) ?? (await getBearerUser(request));
+}
 
 /**
  * Row-level visibility rule for a recording, mirroring the recording page and

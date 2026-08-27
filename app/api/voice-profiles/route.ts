@@ -23,7 +23,7 @@ export async function GET() {
     // Same visibility rule as recordings (canAccessRecording): own rows plus
     // unclaimed legacy rows (null userId); can-see-all admins see everything.
     where: user.canSeeAll ? {} : { OR: [{ userId: user.id }, { userId: null }] },
-    select: { personName: true, durationS: true, source: true, createdAt: true },
+    select: { id: true, personName: true, durationS: true, source: true, createdAt: true },
     orderBy: { createdAt: 'desc' },
   });
 
@@ -43,16 +43,31 @@ export async function GET() {
     staleProfiles = Number(row?.n ?? 0);
   } catch { /* column missing in this env — nothing to warn about */ }
 
+  // Which of this user's rows are usable at all, so the page can offer to
+  // clear a person's dead samples rather than leaving a permanent warning
+  // beside a voice that has already been relearned.
+  const liveIds = new Set<string>();
+  try {
+    const live = await prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT "id" FROM "VoiceProfile" WHERE "modelVersion" = ${EMB_MODEL_VERSION}`;
+    for (const r of live) liveIds.add(r.id);
+  } catch { /* column missing — treat everything as current, as before */ }
+  const hasVersionColumn = liveIds.size > 0 || staleProfiles > 0;
+
   const people = new Map<string, {
-    name: string; samples: number; totalDurationS: number; lastAdded: string; enrolledSamples: number;
+    name: string; samples: number; totalDurationS: number; lastAdded: string;
+    enrolledSamples: number; currentSamples: number; staleSamples: number;
   }>();
   for (const r of rows) {
     const p = people.get(r.personName) ?? {
-      name: r.personName, samples: 0, totalDurationS: 0, lastAdded: r.createdAt.toISOString(), enrolledSamples: 0,
+      name: r.personName, samples: 0, totalDurationS: 0, lastAdded: r.createdAt.toISOString(),
+      enrolledSamples: 0, currentSamples: 0, staleSamples: 0,
     };
     p.samples += 1;
     p.totalDurationS += r.durationS;
     if (r.source === 'enrollment') p.enrolledSamples += 1;
+    if (!hasVersionColumn || liveIds.has(r.id)) p.currentSamples += 1;
+    else p.staleSamples += 1;
     people.set(r.personName, p);
   }
   // "learned" = never explicitly enrolled — built only from self-introductions
@@ -136,18 +151,44 @@ export async function DELETE(request: NextRequest) {
   const name = request.nextUrl.searchParams.get('name')?.trim();
   if (!name) return NextResponse.json({ error: 'name query param required.' }, { status: 400 });
 
+  // ?staleOnly=1 removes just the samples a retired embedding model produced.
+  // They cannot be matched against anything and cannot be converted, so once a
+  // person has been relearned in the current space these are pure noise in the
+  // list. Kept as an explicit opt-in rather than automatic cleanup: they are
+  // still the user's own voice data, and deleting it is their call.
+  const staleOnly = request.nextUrl.searchParams.get('staleOnly') === '1';
+
   // Scoped like the GET above: a user can only delete their own (or unclaimed
   // legacy) samples; can-see-all admins keep the previous global delete.
-  const deleted = await prisma.voiceProfile.deleteMany({
-    where: user.canSeeAll
-      ? { personName: name }
-      : { personName: name, OR: [{ userId: user.id }, { userId: null }] },
-  });
+  const scope = user.canSeeAll
+    ? { personName: name }
+    : { personName: name, OR: [{ userId: user.id }, { userId: null }] };
+
+  let deleted: { count: number };
+  if (staleOnly) {
+    // Two steps rather than a raw DELETE: the id list keeps the ownership
+    // scope in Prisma's hands instead of hand-rolling it into SQL.
+    let staleIds: string[] = [];
+    try {
+      const rows = await prisma.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "VoiceProfile" WHERE "modelVersion" <> ${EMB_MODEL_VERSION}`;
+      staleIds = rows.map(r => r.id);
+    } catch {
+      // No modelVersion column, so nothing in this DB is stale by definition.
+      return NextResponse.json({ ok: true, deleted: 0 });
+    }
+    if (!staleIds.length) return NextResponse.json({ ok: true, deleted: 0 });
+    deleted = await prisma.voiceProfile.deleteMany({
+      where: { ...scope, id: { in: staleIds } },
+    });
+  } else {
+    deleted = await prisma.voiceProfile.deleteMany({ where: scope });
+  }
 
   await logAudit({
     userId: user.id,
     userEmail: user.email,
-    action: 'voice.delete',
+    action: staleOnly ? 'voice.deleteStale' : 'voice.delete',
     targetType: 'voiceProfile',
     ip: requestIp(request),
     metadata: { personName: name, deleted: deleted.count },

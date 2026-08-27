@@ -917,8 +917,16 @@ export interface ChunkForAlignment {
 
 export interface ResolvedSpeakers {
   segments: Array<{ start: number; end: number; text: string; speaker: string }>;
-  // One entry per global speaker label, for persistence + profile matching
-  speakerEmbeddings: Array<{ label: string; embedding: number[]; durationS: number }>;
+  // One entry per global speaker label, for persistence + profile matching.
+  // `span` is the single best contiguous stretch this speaker held the floor,
+  // in recording-global seconds. Stored on the learned VoiceProfile so the
+  // sample inspector can play exactly the audio that trained it.
+  speakerEmbeddings: Array<{
+    label: string;
+    embedding: number[];
+    durationS: number;
+    span: { start: number; end: number } | null;
+  }>;
   /**
    * On an online meeting, the label belonging to whoever was holding the
    * device. Their audio arrived on its own microphone channel, so this is
@@ -1114,6 +1122,44 @@ interface GlobalTurn {
   cluster: number;        // mutable: current global cluster id
   supervised?: boolean;   // hard-assigned by an enrolled-profile match
   channel?: 'mic' | 'system'; // dual-channel meetings only
+}
+
+// Longest contiguous stretch across a set of turns, allowing short gaps and
+// capped so a sample links to a listenable excerpt rather than a whole meeting.
+export function bestSpan(
+  turns: Array<{ start: number; end: number }>,
+  maxGapS = 2,
+  maxLenS = 20,
+): { start: number; end: number } | null {
+  if (!turns.length) return null;
+  const sorted = [...turns].sort((a, b) => a.start - b.start);
+
+  // Collapse into runs first, then pick: keeping the two steps apart avoids a
+  // mutable "best so far" that TypeScript cannot narrow through a closure.
+  const runs: Array<{ start: number; end: number }> = [];
+  let runStart = sorted[0].start;
+  let runEnd = sorted[0].end;
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i].start - runEnd <= maxGapS) {
+      runEnd = Math.max(runEnd, sorted[i].end);
+    } else {
+      runs.push({ start: runStart, end: runEnd });
+      runStart = sorted[i].start;
+      runEnd = sorted[i].end;
+    }
+  }
+  runs.push({ start: runStart, end: runEnd });
+
+  const capped = runs
+    .map((r) => ({ start: r.start, end: Math.min(r.end, r.start + maxLenS) }))
+    .filter((r) => r.end > r.start);
+  if (!capped.length) return null;
+
+  const best = capped.reduce((a, b) => (b.end - b.start > a.end - a.start ? b : a));
+  return {
+    start: Math.round(best.start * 10) / 10,
+    end: Math.round(best.end * 10) / 10,
+  };
 }
 
 function normalizeVec(v: number[]): number[] {
@@ -1723,11 +1769,17 @@ export function resolveGlobalSpeakers(
     const label = labelOf.get(c);
     if (!label) continue;
     let dur = 0;
-    for (const t of globalTurns) if (t.cluster === c) dur += t.end - t.start;
+    const spanTurns: Array<{ start: number; end: number }> = [];
+    for (const t of globalTurns) {
+      if (t.cluster !== c) continue;
+      dur += t.end - t.start;
+      spanTurns.push({ start: t.start, end: t.end });
+    }
     speakerEmbeddings.push({
       label,
       embedding: cent.map((v) => Math.round(v * 1e5) / 1e5),
       durationS: Math.round(dur * 10) / 10,
+      span: bestSpan(spanTurns),
     });
   }
   // Clusters that ended up with no embedded turns (pure inheritance) still need
@@ -1742,12 +1794,21 @@ function resolveGlobalSpeakersLegacy(chunks: ChunkForAlignment[]): ResolvedSpeak
   if (!withVoice.length) return null;
 
   // Flatten (chunk, localSpeaker) → item index
-  const items: Array<{ embedding: number[]; durationS: number }> = [];
+  const items: Array<{
+    embedding: number[];
+    durationS: number;
+    turns: Array<{ start: number; end: number }>;
+  }> = [];
   const itemKey = new Map<string, number>(); // `${chunkIdx}:${localSpeaker}` → item idx
   withVoice.forEach((chunk, ci) => {
     for (const sp of chunk.voiceData!.speakers) {
       itemKey.set(`${ci}:${sp.speaker}`, items.length);
-      items.push({ embedding: sp.embedding, durationS: sp.durationS });
+      // Turn times are per-chunk; offset them so a span means the same thing
+      // here as on the modern path: seconds from the start of the recording.
+      const turns = chunk.voiceData!.turns
+        .filter((t) => t.speaker === sp.speaker)
+        .map((t) => ({ start: chunk.offset + t.start, end: chunk.offset + t.end }));
+      items.push({ embedding: sp.embedding, durationS: sp.durationS, turns });
     }
   });
 
@@ -1799,7 +1860,7 @@ function resolveGlobalSpeakersLegacy(chunks: ChunkForAlignment[]): ResolvedSpeak
   }
 
   // Duration-weighted centroid per global label, for matching + persistence
-  const byCluster = new Map<number, Array<{ embedding: number[]; durationS: number }>>();
+  const byCluster = new Map<number, typeof items>();
   clusterOf.forEach((cluster, idx) => {
     if (!byCluster.has(cluster)) byCluster.set(cluster, []);
     byCluster.get(cluster)!.push(items[idx]);
@@ -1818,7 +1879,12 @@ function resolveGlobalSpeakersLegacy(chunks: ChunkForAlignment[]): ResolvedSpeak
       dur += m.durationS;
     }
     for (let d = 0; d < dim; d++) centroid[d] = Math.round((centroid[d] / w) * 1e5) / 1e5;
-    speakerEmbeddings.push({ label, embedding: centroid, durationS: Math.round(dur * 10) / 10 });
+    speakerEmbeddings.push({
+      label,
+      embedding: centroid,
+      durationS: Math.round(dur * 10) / 10,
+      span: bestSpan(members.flatMap((m) => m.turns)),
+    });
   }
 
   // Legacy voiceData predates dual-channel capture, so nothing here can
@@ -1861,7 +1927,16 @@ export interface ProfileRow { personName: string; embedding: number[]; source?: 
 // matching but must never be trusted on their own — one misattributed meeting
 // once poisoned a profile with 19 minutes of someone else's voice, after which
 // every later meeting matched the impostor at 0.99.
-const ANCHOR_SOURCES = new Set(['enrollment', 'relabel']);
+// Sources trusted as ground truth for a person's voice. 'dictation' earns it
+// by construction: a push-to-talk clip from the desktop app is the signed-in
+// account holder alone, close-miced, with nobody else in the channel. That is
+// stronger evidence than a meeting match, which is only ever a similarity bet.
+const ANCHOR_SOURCES = new Set(['enrollment', 'relabel', 'dictation']);
+
+/** Is this sample human-verified (or verified-by-construction) ground truth? */
+export function isAnchorSource(source: string | undefined): boolean {
+  return source === undefined || ANCHOR_SOURCES.has(source);
+}
 // A learned sample is kept for matching only if it still resembles the
 // person's anchor centroid at least this much.
 const SAMPLE_CONSISTENCY_MIN = parseFloat(process.env.VOICE_SAMPLE_CONSISTENCY_MIN ?? '0.6');

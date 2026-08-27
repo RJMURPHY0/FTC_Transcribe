@@ -6,6 +6,7 @@ import { Mic, Palette, Fingerprint, Activity, Disc3, Info } from 'lucide-react';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
 import { setGlowEnabled } from '@/components/ui/spotlight-card';
 import { pickBestMic } from '@/lib/mic-select';
+import ToggleSwitch from '@/components/ui/toggle-switch';
 
 interface MicDevice { deviceId: string; label: string; }
 interface Health { db: boolean; openai: boolean; anthropic: boolean; groq: boolean; airtable: boolean; }
@@ -46,38 +47,6 @@ function SectionHeader({ icon: Icon, title }: { icon: React.ComponentType<{ clas
 }
 
 // Accessible on/off switch — orange when on, matching the brand.
-function ToggleSwitch({
-  checked,
-  onChange,
-  disabled,
-  label,
-}: {
-  checked: boolean;
-  onChange: (next: boolean) => void;
-  disabled?: boolean;
-  label: string;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-label={label}
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors touch-manipulation disabled:opacity-50 ${
-        checked ? 'bg-brand' : 'bg-surface-muted'
-      }`}
-    >
-      <span
-        className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-sm transition-transform ${
-          checked ? 'translate-x-5' : 'translate-x-0.5'
-        }`}
-      />
-    </button>
-  );
-}
-
 export default function SettingsPage() {
   const [mics, setMics]           = useState<MicDevice[]>([]);
   const [selectedMic, setSelected] = useState<string>('');
