@@ -56,6 +56,10 @@ export async function POST(req: NextRequest) {
       channelLayout,
       meetingProvider,
       userId: user.id,
+      // Stamped now rather than resolved on read: this freezes the tenant the
+      // meeting belongs to at the moment it was recorded, so someone changing
+      // employer cannot carry their previous employer's meetings across.
+      orgId: user.orgId,
     },
   });
 

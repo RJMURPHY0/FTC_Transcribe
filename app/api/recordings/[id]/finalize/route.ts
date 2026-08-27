@@ -21,14 +21,22 @@ export async function POST(
   const user = await getAuthUser();
   const recording = await prisma.recording.findUnique({
     where: { id: params.id },
-    select: { userId: true },
+    select: { userId: true, orgId: true },
   });
   if (!recording) {
     return NextResponse.json({ error: 'Recording not found.' }, { status: 404 });
   }
-  if (!canAccessRecording(recording.userId, user)) {
+  if (!canAccessRecording(recording, user)) {
     return NextResponse.json({ error: 'Not allowed.' }, { status: 403 });
   }
+
+  // An explicit Retry is the user overriding the worker's decision to give up,
+  // so clear the give-up state first. Without this a dead-lettered job would
+  // run once here and then drop straight back out of the automatic queue.
+  await prisma.finalizeJob.updateMany({
+    where: { recordingId: params.id },
+    data: { deadLettered: false, nextAttemptAt: null, attempts: 0, lastError: '' },
+  }).catch((err) => console.error('[finalize] could not clear give-up state:', err));
 
   const result = await finalizeRecording(params.id);
   if (!result.ok) {

@@ -26,6 +26,18 @@ export type MeetingType = 'general' | 'standup' | 'sales' | 'interview' | 'revie
 const CHUNK_MS_DESKTOP = 2 * 60 * 1000;
 const CHUNK_MS_MOBILE  = 45 * 1000;
 const SILENCE_RMS = 0.01;
+// Shortest tail worth uploading.
+//
+// Pause and stop both flush whatever has been buffered since the last
+// rotation. Press pause moments after one and that tail is a WebM header plus
+// a few milliseconds of sound — 25KB, comfortably past any byte-size guard,
+// and holding no transcribable audio at all. Every ASR provider rejects it
+// with a permanent 400, and until this was fixed one such tail failed a whole
+// 31-minute meeting (recording cmtbd1od3, 27 Aug 2026).
+//
+// The server skips these regardless; this simply avoids spending an upload, a
+// database row and a provider call on nothing.
+const MIN_SEGMENT_MS = 500;
 const SKIP_SPEECH_RATIO = 0.04; // skip upload if < 4% of chunk is speech
 // MediaRecorder is asked for data every 500 ms. If nothing arrives for this
 // long the recorder is wedged or the page was frozen by the OS (screen lock,
@@ -570,7 +582,7 @@ export default function RecordPage() {
     }
 
     const blob = new Blob(blobsForUpload, { type: mimeRef.current });
-    if (blob.size >= 1000) {
+    if (blob.size >= 1000 && duration * 1000 >= MIN_SEGMENT_MS) {
       // Skip silent chunks — saves Whisper/Deepgram API cost
       if (speechRatio < SKIP_SPEECH_RATIO) {
         return;
@@ -620,7 +632,8 @@ export default function RecordPage() {
           blobsForUpload = [new Blob([header], { type: mime }), ...blobs];
         }
         const blob = new Blob(blobsForUpload, { type: mime });
-        if (blob.size >= 1000) {
+        const segmentMs = Date.now() - chunkStartRef.current;
+        if (blob.size >= 1000 && segmentMs >= MIN_SEGMENT_MS) {
           await uploadChunk(blob, offset);
           setChunksSaved((n) => n + 1);
         }

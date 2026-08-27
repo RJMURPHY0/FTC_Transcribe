@@ -8,6 +8,7 @@ import LogoutButton from '@/components/LogoutButton';
 import AdminFilters from '@/components/AdminFilters';
 import SearchBar from '@/components/SearchBar';
 import { estimateSeconds } from '@/lib/estimate';
+import { measuredCost } from '@/lib/finalize-progress';
 import { getAuthUser } from '@/lib/auth';
 import { ensureSchema } from '@/lib/ensure-schema';
 import { SpotlightCard, GlowCard } from '@/components/ui/spotlight-card';
@@ -118,17 +119,27 @@ export default async function Home({
   const activeOrg = orgs?.find(o => o.id === activeOrgId) ?? null;
 
   // ── Recording scope ───────────────────────────────────────────────────────
+  // Every widened view is additionally bounded by the viewer's own
+  // organisation. `canSeeAll` grants sight of colleagues, not of other
+  // customers, and the super admin is the single deliberate exception. Without
+  // this, "assignee=all" in the URL would list every tenant's meetings.
+  const tenantScope: Record<string, unknown> = authUser?.isSuperAdmin
+    ? {}
+    : { orgId: authUser?.orgId ?? '__no_org__' };
+
   let userScope: Record<string, unknown> = {};
 
   if (scopedToSelf) {
     userScope = userId ? { userId } : {};
   } else if (assigneeUserId) {
-    userScope = { userId: assigneeUserId };
+    userScope = { userId: assigneeUserId, ...tenantScope };
   } else if (inTeamScope) {
     const ids = await getMemberUserIds(activeOrgId, activeTeamId);
-    userScope = ids.length > 0 ? { userId: { in: ids } } : { userId: '__no_match__' };
+    userScope = ids.length > 0 ? { userId: { in: ids }, ...tenantScope } : { userId: '__no_match__' };
+  } else {
+    // viewingEveryone → everyone in MY org, not everyone on the platform.
+    userScope = tenantScope;
   }
-  // else viewingEveryone → no userId scope → see everything
 
   // In org view (org set, no team), we show org_teams as folder cards —
   // so we skip personal Transcribe folders and show all org recordings below.
@@ -145,6 +156,9 @@ export default async function Home({
   // Stats scope mirrors the list scope, so the tiles always count what's shown.
   // null = unscoped (everyone / org / team views).
   const statsUserId = scopedToSelf ? userId : assigneeUserId;
+  // Tiles count what the list shows, tenant boundary included. Null means
+  // unscoped, which only the super admin ever reaches.
+  const statsOrgId = authUser?.isSuperAdmin || scopedToSelf ? null : (authUser?.orgId ?? '__no_org__');
   const folderScope = inOrgFolderView
     ? { userId: '__no_match__' }                            // don't load personal folders in org view
     : scopedToSelf   ? (userId ? { userId } : {})
@@ -190,6 +204,7 @@ export default async function Home({
       FROM "Recording"
       WHERE "deletedAt" IS NULL
         AND (${statsUserId}::text IS NULL OR "userId" = ${statsUserId}::text)
+        AND (${statsOrgId}::text IS NULL OR "orgId" = ${statsOrgId}::text)
     `).catch(() => []),
   ]);
   folders = folderResult;
@@ -199,6 +214,26 @@ export default async function Home({
   // Trim the sentinel extra row and decide whether to offer "Show more".
   const hasMore = recordings.length > limit;
   if (hasMore) recordings = recordings.slice(0, limit);
+
+  // ── How long is left, for the rows still working ──────────────────────────
+  // The wait is driven by chunks still to transcribe, not by meeting length, so
+  // count the ones already done rather than inferring anything from duration.
+  // One grouped query over the queued rows only; a settled list costs nothing.
+  const queuedIds = recordings
+    .filter(r => r.status === 'uploading' || r.status === 'queued' || r.status === 'processing')
+    .map(r => r.id);
+
+  const [finalizeCost, chunkProgress] = await Promise.all([
+    queuedIds.length ? measuredCost(userId) : Promise.resolve(undefined),
+    queuedIds.length
+      ? prisma.chunkTranscript.groupBy({
+          by: ['recordingId'],
+          where: { recordingId: { in: queuedIds }, status: { in: ['succeeded', 'skipped'] } },
+          _count: { _all: true },
+        }).catch(() => [])
+      : Promise.resolve([]),
+  ]);
+  const chunksDoneById = new Map(chunkProgress.map(r => [r.recordingId, r._count._all]));
 
   // ── Owner labels ──────────────────────────────────────────────────────────
   // Only looked up when the view spans more than one person — that's the only
@@ -565,7 +600,9 @@ export default async function Home({
                   ? { overview: rec.summary.overview, keyPoints: rec.summary.keyPoints, actionItems: rec.summary.actionItems }
                   : null,
                 _count: rec._count,
-                eta: isQueued ? formatEta(estimateSeconds(rec._count.chunks, rec.duration ?? 0)) : null,
+                eta: isQueued
+                  ? formatEta(estimateSeconds(rec._count.chunks, chunksDoneById.get(rec.id) ?? 0, finalizeCost))
+                  : null,
                 ownerName: showOwner
                   ? (rec.userId ? ownerNames[rec.userId] ?? 'Unknown' : 'Unassigned')
                   : null,

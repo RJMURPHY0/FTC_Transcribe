@@ -33,13 +33,13 @@ export async function GET(
 
   const recording = await prisma.recording.findUnique({
     where: { id: params.id },
-    select: { userId: true, audioPath: true, deletedAt: true, title: true },
+    select: { userId: true, orgId: true, audioPath: true, deletedAt: true, title: true },
   });
   if (!recording || recording.deletedAt) {
     return NextResponse.json({ error: 'Recording not found.' }, { status: 404 });
   }
   // Same visibility rule as the recording page: owner, unclaimed, or can-see-all.
-  if (!canAccessRecording(recording.userId, user)) {
+  if (!canAccessRecording(recording, user)) {
     return NextResponse.json({ error: 'Not allowed.' }, { status: 403 });
   }
 

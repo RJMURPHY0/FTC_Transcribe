@@ -41,6 +41,14 @@ model Recording {
   meetingProvider    String?
   folderId           String?
   userId             String?
+  // The owner's Contacts organisation, stamped at create from getUserOrgId().
+  // Denormalised deliberately: org membership is read over a raw SQL join into
+  // another app's tables, and a per-row lookup on every list render is not
+  // affordable. It also freezes the tenant a meeting belongs to at the moment
+  // it was recorded, which is the correct semantics — a person changing
+  // employer must not drag their old employer's meetings with them.
+  // Null on rows recorded before this existed and on users with no org.
+  orgId              String?
   // Soft delete: hidden from all lists immediately, hard-purged by cron after 30 days
   deletedAt          DateTime?
   // Idempotency stamps — each side effect fires at most once per recording
@@ -62,6 +70,8 @@ model Recording {
   @@index([userId, deletedAt, createdAt])
   @@index([folderId, deletedAt, createdAt])
   @@index([userId, source, deletedAt, createdAt])
+  // Tenant-scoped list: an admin viewing everyone sees their own org only.
+  @@index([orgId, deletedAt, createdAt])
 }
 
 // Mirrors auth.users — stores per-user Transcribe permission flags.
@@ -120,6 +130,17 @@ model FinalizeJob {
   lockToken   String?
   lockUntil   DateTime?
   lastError   String            @default("")
+  // Earliest time this job may be claimed again. Without it a job that always
+  // fails floats to the front of the `updatedAt asc` queue and consumes a
+  // worker slot every five minutes for ever — which is what one poison chunk
+  // did to recording cmtbd1od3 on 27 Aug 2026, nine runs deep, while other
+  // users' recordings queued behind it.
+  nextAttemptAt DateTime?
+  // Terminal give-up. A job that has exhausted its attempts stops being picked
+  // up at all, so one broken recording can never degrade throughput for
+  // everyone else. The recording is marked failed and the user can retry it by
+  // hand from the recording page.
+  deadLettered  Boolean         @default(false)
   // Which phase the worker is in, so the page can show real progress instead
   // of a spinner and a guess: transcribing | diarising | analysing | done.
   stage       String            @default("")
@@ -134,6 +155,8 @@ model FinalizeJob {
   chunks      ChunkTranscript[]
 
   @@index([status, updatedAt])
+  // The worker's claim query: eligible status, backoff elapsed, not dead.
+  @@index([status, deadLettered, nextAttemptAt])
 }
 
 model ChunkTranscript {

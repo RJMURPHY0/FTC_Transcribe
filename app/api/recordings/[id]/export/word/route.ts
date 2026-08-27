@@ -27,7 +27,7 @@ export async function GET(
     return NextResponse.json({ error: 'Recording not found.' }, { status: 404 });
   }
   // Same visibility rule as the recording page: owner, unclaimed, or can-see-all.
-  if (!canAccessRecording(recording.userId, user)) {
+  if (!canAccessRecording(recording, user)) {
     return NextResponse.json({ error: 'Not allowed.' }, { status: 403 });
   }
   if (!recording.summary) {

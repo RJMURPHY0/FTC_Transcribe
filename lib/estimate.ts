@@ -3,27 +3,104 @@
 // transcription/voice-id chain (sherpa-onnx, onnxruntime) into their render
 // tree — that chain crashes the Next.js render worker locally.
 
-/**
- * Fallback estimate for a recording with no measured history to learn from.
- *
- * Deliberately pessimistic. The previous constant (45s plus a small per-chunk
- * buffer, capped at 75s) told a user "about 1 min" for an 8-minute meeting
- * that then took ten, and a promise that is 10x short reads as a hang. The
- * ratio below is the conservative end of what real recordings actually cost,
- * and it is only ever used until this account has completed one recording,
- * after which measured throughput takes over.
- */
-export function estimateSeconds(chunkCount: number, audioSeconds = 0): number {
-  const audio = audioSeconds > 0 ? audioSeconds : chunkCount * CHUNK_AUDIO_S;
-  return Math.round(BASE_OVERHEAD_S + audio * FALLBACK_RATIO);
+// ── What the wait is actually made of ────────────────────────────────────────
+//
+// The old model was one number: processing-seconds per second of audio. It was
+// wrong in shape, not just in calibration, and it produced "about 88 min" for a
+// 31-minute meeting that needed about four.
+//
+// Measured over 398 real chunks and the completed jobs on 27 Aug 2026:
+//
+//   transcribing one ~45s chunk   median 38.6s   (p10 23.4, p90 73.1)
+//   analysis after the last chunk        ~13s    (11.5s and 12.9s)
+//
+// Chunks are transcribed in the background as they upload, so by the time
+// finalize runs there is usually nothing left to transcribe and the wait is a
+// near-constant tail. That is why the cost does NOT scale with meeting length:
+// a 51-minute recording finalised in 48s while a 27-minute one took 257s,
+// because the second still had chunks outstanding. What the wait scales with is
+// the number of chunks still OUTSTANDING, divided by how many are transcribed
+// at once.
+//
+//   wait = ceil(pending / parallel) x perChunk + analysis + overhead
+//
+// Every term is measured from this deployment's own history (lib/finalize-
+// progress.ts). The constants below are only the cold-start values used before
+// there is any history to read, and they are set to what was measured rather
+// than to a pessimistic guess.
+
+/** Transcribing one chunk, before this deployment has measurements. */
+export const FALLBACK_PER_CHUNK_S = 40;
+/** Diarisation, notes and the summary write, after the last chunk lands. */
+export const FALLBACK_ANALYSIS_S = 15;
+/** Lock, audio archive, DB writes. Present on every run whatever its size. */
+export const BASE_OVERHEAD_S = 20;
+/** Chunks transcribed concurrently. Mirrors FINALIZE_PARALLEL_CHUNKS. */
+export const DEFAULT_PARALLEL_CHUNKS = 8;
+
+export interface FinalizeCost {
+  perChunkS: number;
+  analysisS: number;
+  parallel: number;
 }
 
-/** A full chunk is ~2 minutes of audio, so chunk count estimates length. */
-const CHUNK_AUDIO_S = 120;
-/** Fixed cost per run: model load, the AI analysis pass, the summary write. */
-const BASE_OVERHEAD_S = 60;
-/** Processing seconds per second of audio, before we have measurements. */
-const FALLBACK_RATIO = 1.2;
+export const FALLBACK_COST: FinalizeCost = {
+  perChunkS: FALLBACK_PER_CHUNK_S,
+  analysisS: FALLBACK_ANALYSIS_S,
+  parallel: DEFAULT_PARALLEL_CHUNKS,
+};
+
+/**
+ * How long finalising will take, given how much is left to transcribe.
+ *
+ * `pendingChunks` is a count of real work, not an inference from meeting
+ * length. When background transcription has kept up it is zero and the answer
+ * is the fixed tail, which is the common case and the one the old estimate got
+ * most wrong.
+ */
+export function estimateFinalizeSeconds(pendingChunks: number, cost: FinalizeCost = FALLBACK_COST): number {
+  const parallel = Math.max(1, cost.parallel);
+  const batches = Math.ceil(Math.max(0, pendingChunks) / parallel);
+  return Math.round(batches * cost.perChunkS + cost.analysisS + BASE_OVERHEAD_S);
+}
+
+/**
+ * Estimate for a recording that has not been analysed yet, from chunk counts
+ * alone.
+ *
+ * Used by the recordings list, where a queued row knows how many chunks it has
+ * and how many are already transcribed but nothing about phase.
+ */
+export function estimateSeconds(chunkCount: number, chunksDone = 0, cost: FinalizeCost = FALLBACK_COST): number {
+  return estimateFinalizeSeconds(Math.max(0, chunkCount - chunksDone), cost);
+}
+
+/**
+ * True length of the captured audio, in seconds.
+ *
+ * `duration` is only written at finalize, so it is 0 for the entire time a user
+ * is actually waiting and watching. The chunk offsets carry the real timeline
+ * throughout, and the last chunk's own length is the one unknown — assume a
+ * full rotation rather than zero, so the figure never reads short.
+ *
+ * The previous fallback multiplied chunk count by a flat 120s. Real rotation is
+ * 45s on mobile and 120s on desktop, and measured spacing across the last ten
+ * recordings was 43 to 55s, so that overstated a phone recording by ~2.7x.
+ */
+export function audioSecondsFrom(
+  duration: number,
+  maxOffset: number | null,
+  chunkCount: number,
+): number {
+  if (duration > 0) return duration;
+  if (maxOffset !== null && maxOffset > 0 && chunkCount > 1) {
+    // Mean spacing across the chunks we have is the best available read of the
+    // rotation this particular client is using.
+    const spacing = maxOffset / (chunkCount - 1);
+    return Math.round(maxOffset + spacing);
+  }
+  return Math.max(0, chunkCount) * 45;
+}
 
 // ── Phases ───────────────────────────────────────────────────────────────────
 //
@@ -99,17 +176,16 @@ export function stageProgress(
 /**
  * Seconds still to go.
  *
- * `ratio` is this account's measured processing-seconds per audio-second. The
- * elapsed time of the current run is subtracted, and the result is floored at
- * a few seconds rather than zero so a slow run degrades to "nearly there"
- * instead of "0s" followed by more waiting.
+ * Built from the work that is actually outstanding, minus how long this run has
+ * already been going. Floored at a few seconds rather than zero so a slow run
+ * degrades to "nearly there" instead of "0s" followed by more waiting.
  */
 export function remainingSeconds(
-  audioSeconds: number,
-  ratio: number,
+  pendingChunks: number,
+  cost: FinalizeCost,
   elapsedSeconds: number,
 ): number {
-  const total = BASE_OVERHEAD_S + Math.max(0, audioSeconds) * ratio;
+  const total = estimateFinalizeSeconds(pendingChunks, cost);
   return Math.max(5, Math.round(total - Math.max(0, elapsedSeconds)));
 }
 
@@ -119,5 +195,3 @@ export function formatEta(seconds: number): string {
   const mins = Math.round(seconds / 60);
   return mins === 1 ? 'about 1 min' : `about ${mins} min`;
 }
-
-export { FALLBACK_RATIO, BASE_OVERHEAD_S, CHUNK_AUDIO_S };

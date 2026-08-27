@@ -7,6 +7,11 @@ import { isDeepgramReady, transcribeWithDeepgram } from '@/lib/deepgram';
 import type { DeepgramRawSegment } from '@/lib/deepgram';
 import { analyzeChunkVoices, isVoiceIdEnabled, splitChannelsToWav } from '@/lib/voice-id';
 import type { ChunkVoiceData } from '@/lib/voice-id';
+import { isUnusablyShort, extForMime } from '@/lib/audio-probe';
+import { PermanentAudioError, isPermanentAudioError, asPermanentAudioError } from '@/lib/audio-errors';
+
+// Re-exported so callers keep importing chunk concerns from one place.
+export { PermanentAudioError, isPermanentAudioError } from '@/lib/audio-errors';
 
 export const MAX_CHUNK_ATTEMPTS = 4;
 
@@ -22,15 +27,6 @@ const DUAL_TRANSCRIBE = process.env.MEETING_DUAL_TRANSCRIBE !== 'false';
 
 type Channel = 'mic' | 'system';
 type TaggedSegment = { start: number; end: number; text: string; speaker?: number | string; channel?: Channel };
-
-function extForMime(mimeType: string): string {
-  return mimeType.includes('mp4') ? '.mp4'
-    : mimeType.includes('ogg') ? '.ogg'
-    : mimeType.includes('wav') ? '.wav'
-    : mimeType.includes('mpeg') ? '.mp3'
-    : mimeType.includes('m4a') ? '.m4a'
-    : '.webm';
-}
 
 export async function withTempFile<T>(
   data: Buffer,
@@ -56,6 +52,13 @@ export async function transcribeChunkWithRetry(audioData: Buffer, ext: string) {
     try {
       return await withTempFile(audioData, ext, (filePath) => transcribeAudio(filePath));
     } catch (err) {
+      // The bytes themselves are unacceptable: another three attempts will get
+      // the same 400 and delay the recording by the backoff for nothing.
+      const permanent = asPermanentAudioError(err);
+      if (permanent) {
+        console.warn('[transcribe-chunk] permanently unprocessable, skipping:', permanent.message);
+        throw permanent;
+      }
       lastErr = err instanceof Error ? err : new Error('Transcription error');
       console.warn(`[transcribe-chunk] attempt ${attempt + 1}/${MAX_CHUNK_ATTEMPTS} failed:`, lastErr.message);
     }
@@ -75,6 +78,10 @@ export async function transcribeChunkWithDeepgramRetry(
     try {
       return await transcribeWithDeepgram(audioData, mimeType);
     } catch (err) {
+      // Unusable audio is unusable for Groq/OpenAI too, so stop here rather
+      // than retrying Deepgram three more times and then the fallback four.
+      const permanent = asPermanentAudioError(err);
+      if (permanent) throw permanent;
       lastErr = err instanceof Error ? err : new Error('Deepgram error');
       console.warn(`[transcribe-chunk] Deepgram attempt ${attempt + 1}/${MAX_CHUNK_ATTEMPTS} failed:`, lastErr.message);
     }
@@ -207,6 +214,15 @@ export async function transcribeChunk(
   audioData: Buffer,
   mimeType: string,
 ): Promise<{ text: string; segments: RawSegment[] | DeepgramRawSegment[]; voiceData: ChunkVoiceData | null; language: string }> {
+  // Ask how long this actually is before spending a provider call on it.
+  // Pause and stop both flush whatever was buffered since the last rotation,
+  // which can be a container header and a few milliseconds of sound; the
+  // provider answers that with a 400 and the old code failed the meeting over
+  // it. Fails open — an unmeasurable chunk is still sent.
+  if (await isUnusablyShort(audioData, mimeType)) {
+    throw new PermanentAudioError('Chunk holds less than the minimum transcribable audio.');
+  }
+
   // Acoustic voice analysis (diarization + voiceprints) runs in parallel with
   // transcription — it reads the waveform, not the text. Never blocks or fails the chunk.
   const voicePromise: Promise<ChunkVoiceData | null> = isVoiceIdEnabled

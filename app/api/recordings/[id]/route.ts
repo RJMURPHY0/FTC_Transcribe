@@ -24,7 +24,7 @@ export async function GET(
     if (!recording || recording.deletedAt) {
       return NextResponse.json({ error: 'Recording not found.' }, { status: 404 });
     }
-    if (!canAccessRecording(recording.userId, user)) {
+    if (!canAccessRecording(recording, user)) {
       return NextResponse.json({ error: 'Not allowed.' }, { status: 403 });
     }
     return NextResponse.json(recording);
@@ -61,12 +61,12 @@ export async function PATCH(
     const user = await getAuthUser();
     const existing = await prisma.recording.findUnique({
       where: { id: params.id },
-      select: { userId: true, deletedAt: true },
+      select: { userId: true, orgId: true, deletedAt: true },
     });
     if (!existing || existing.deletedAt) {
       return NextResponse.json({ error: 'Recording not found.' }, { status: 404 });
     }
-    if (!canAccessRecording(existing.userId, user)) {
+    if (!canAccessRecording(existing, user)) {
       return NextResponse.json({ error: 'Not allowed.' }, { status: 403 });
     }
 
@@ -100,12 +100,12 @@ export async function DELETE(
     const user = await getAuthUser();
     const existing = await prisma.recording.findUnique({
       where: { id: params.id },
-      select: { userId: true },
+      select: { userId: true, orgId: true },
     });
     if (!existing) {
       return NextResponse.json({ error: 'Recording not found.' }, { status: 404 });
     }
-    if (!canAccessRecording(existing.userId, user)) {
+    if (!canAccessRecording(existing, user)) {
       return NextResponse.json({ error: 'Not allowed.' }, { status: 403 });
     }
 

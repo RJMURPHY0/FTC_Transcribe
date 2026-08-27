@@ -17,7 +17,7 @@ import ResizableColumns from './ResizableColumns';
 import type { TranscriptSegment, TopicSection } from '@/lib/ai';
 import { peaksFromSegments } from '@/lib/audio-peaks';
 import { ensureSchema } from '@/lib/ensure-schema';
-import { getAuthUser } from '@/lib/auth';
+import { getAuthUser, canAccessRecording } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -51,6 +51,15 @@ export default async function RecordingPage({ params }: { params: { id: string }
   ]);
 
   if (!recording || recording.deletedAt) notFound();
+
+  // The page is as much a data boundary as the API routes are, and it was
+  // missing this entirely: any signed-in user who knew a recording id could
+  // read the whole meeting — transcript, notes and all — because Prisma
+  // bypasses RLS and nothing else stood in the way. scripts/check-recording-
+  // access.js only ever policed app/api/recordings/[id], so nothing caught it.
+  // notFound() rather than a 403: whether a meeting exists is itself something
+  // the wrong viewer should not learn.
+  if (!canAccessRecording(recording, authUser)) notFound();
 
   function safeJson<T>(value: string | null | undefined, fallback: T): T {
     if (!value) return fallback;

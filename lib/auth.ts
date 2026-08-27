@@ -2,6 +2,7 @@ import { cache } from 'react';
 import { createClient as createSupabaseClient } from '@supabase/supabase-js';
 import { createClient } from '@/lib/supabase/server';
 import { prisma } from '@/lib/db';
+import { getUserOrgId } from '@/lib/contacts-db';
 
 export interface AuthUser {
   id: string;
@@ -12,11 +13,15 @@ export interface AuthUser {
   // (which other admins may also hold): only the super-admin sets the global
   // default for app-wide preferences like card animations.
   isSuperAdmin: boolean;
+  // The viewer's Contacts organisation. Bounds what canSeeAll can reach, so an
+  // admin at one customer cannot list another customer's meetings. Null for a
+  // user in no org, which then only ever sees their own recordings.
+  orgId: string | null;
 }
 
 // In-process permission cache — avoids a DB round-trip on every server render.
 // TTL is 5 min; permissions change rarely (super-admin only writes them).
-const permCache = new Map<string, { canSeeAll: boolean; canPlayAudio: boolean; expires: number }>();
+const permCache = new Map<string, { canSeeAll: boolean; canPlayAudio: boolean; orgId: string | null; expires: number }>();
 const PERM_TTL_MS = 5 * 60 * 1000;
 
 // Overridable per environment; the literal fallback keeps existing deploys
@@ -42,12 +47,18 @@ export const getAuthUser = cache(async (): Promise<AuthUser | null> => {
   if (!user) return null;
 
   if (user.email === SUPER_ADMIN_EMAIL) {
-    return { id: user.id, email: user.email, canSeeAll: true, canPlayAudio: true, isSuperAdmin: true };
+    return {
+      id: user.id, email: user.email, canSeeAll: true, canPlayAudio: true,
+      isSuperAdmin: true, orgId: await getUserOrgId(user.id).catch(() => null),
+    };
   }
 
   const cached = permCache.get(user.id);
   if (cached && cached.expires > Date.now()) {
-    return { id: user.id, email: user.email ?? '', canSeeAll: cached.canSeeAll, canPlayAudio: cached.canPlayAudio, isSuperAdmin: false };
+    return {
+      id: user.id, email: user.email ?? '', canSeeAll: cached.canSeeAll,
+      canPlayAudio: cached.canPlayAudio, isSuperAdmin: false, orgId: cached.orgId,
+    };
   }
 
   let canSeeAll = false;
@@ -61,9 +72,13 @@ export const getAuthUser = cache(async (): Promise<AuthUser | null> => {
     canPlayAudio = perm?.canPlayAudio ?? true;
   } catch { /* table may not exist in dev */ }
 
-  permCache.set(user.id, { canSeeAll, canPlayAudio, expires: Date.now() + PERM_TTL_MS });
+  // Cached alongside the permission flags: both come from the same rarely
+  // changing source and both are needed on every render that lists recordings.
+  const orgId = await getUserOrgId(user.id).catch(() => null);
 
-  return { id: user.id, email: user.email ?? '', canSeeAll, canPlayAudio, isSuperAdmin: false };
+  permCache.set(user.id, { canSeeAll, canPlayAudio, orgId, expires: Date.now() + PERM_TTL_MS });
+
+  return { id: user.id, email: user.email ?? '', canSeeAll, canPlayAudio, isSuperAdmin: false, orgId };
 });
 
 /**
@@ -98,10 +113,11 @@ export async function getBearerUser(request: Request): Promise<AuthUser | null> 
   }
   if (!user) return null;
 
+  const orgId = await getUserOrgId(user.id).catch(() => null);
   if (user.email === SUPER_ADMIN_EMAIL) {
-    return { id: user.id, email: user.email, canSeeAll: true, canPlayAudio: true, isSuperAdmin: true };
+    return { id: user.id, email: user.email, canSeeAll: true, canPlayAudio: true, isSuperAdmin: true, orgId };
   }
-  return { id: user.id, email: user.email ?? '', canSeeAll: false, canPlayAudio: true, isSuperAdmin: false };
+  return { id: user.id, email: user.email ?? '', canSeeAll: false, canPlayAudio: true, isSuperAdmin: false, orgId };
 }
 
 /**
@@ -112,19 +128,8 @@ export async function getAnyUser(request: Request): Promise<AuthUser | null> {
   return (await getAuthUser()) ?? (await getBearerUser(request));
 }
 
-/**
- * Row-level visibility rule for a recording, mirroring the recording page and
- * the audio route: access is granted to the owner, to anyone for an unclaimed
- * (null-owner / legacy) recording, or to an admin with canSeeAll.
- *
- * Middleware only proves a user is logged in — it never checks WHICH user owns
- * WHICH row — so every per-recording route must call this itself. Pass the
- * recording's `userId` (most routes already fetch it, so no extra query).
- * scripts/check-recording-access.js fails the build if a route under
- * app/api/recordings/[id] forgets.
- */
-export function canAccessRecording(recordingUserId: string | null, user: AuthUser | null): boolean {
-  if (!user) return false;
-  if (recordingUserId && recordingUserId !== user.id && !user.canSeeAll) return false;
-  return true;
-}
+// The access rule lives in its own dependency-free module so it can be read and
+// tested without React/Supabase/Prisma in the way. Re-exported here because
+// every route already imports it alongside getAuthUser.
+export { canAccessRecording } from '@/lib/recording-access';
+export type { RecordingOwnership } from '@/lib/recording-access';

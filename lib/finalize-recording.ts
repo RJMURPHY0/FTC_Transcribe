@@ -23,6 +23,7 @@ import {
   transcribeChunkWithRetry,
   transcribeChunkWithDeepgramRetry,
   withTempFile,
+  isPermanentAudioError,
   MAX_CHUNK_ATTEMPTS,
 } from '@/lib/transcribe-chunk';
 
@@ -30,7 +31,28 @@ import {
 // lapses mid-analysis lets the poller/cron start a SECOND concurrent analysis,
 // which double-posted notes to Teams/Airtable.
 const LOCK_MS = 15 * 60 * 1000;
-const PARALLEL_CHUNKS = 5;
+// Chunk transcription is network-bound on the ASR provider, not CPU-bound here,
+// so the useful ceiling is the provider's rate limit rather than this machine.
+// Raised from a hardcoded 5; env-tunable so it can be dialled back without a
+// deploy if Groq starts 429-ing.
+const PARALLEL_CHUNKS = Math.max(1, parseInt(process.env.FINALIZE_PARALLEL_CHUNKS ?? '8', 10) || 8);
+
+/**
+ * How much of a recording may stay untranscribed and still be worth delivering.
+ *
+ * Above this the meeting is genuinely damaged and `failed` is the honest
+ * answer. Below it, refusing to produce notes punishes the user for a provider
+ * hiccup on a fraction of their audio.
+ */
+const MAX_LOST_CHUNK_FRACTION = parseFloat(process.env.FINALIZE_MAX_LOST_FRACTION ?? '0.05');
+
+/** Have all still-failing chunks used up their retries? */
+async function allFailedChunksExhausted(jobId: string): Promise<boolean> {
+  const retryable = await prisma.chunkTranscript.count({
+    where: { jobId, status: 'failed', attempts: { lt: MAX_CHUNK_ATTEMPTS } },
+  });
+  return retryable === 0;
+}
 // Safety cap: chunks are pre-transcribed in background so finalize normally skips them.
 // This limit only matters if background transcription failed for many chunks.
 const MAX_CHUNKS_PER_RUN = 100;
@@ -569,8 +591,14 @@ async function finalizeLegacy(recordingId: string): Promise<FinalizeResult> {
         }));
         allSegments.push(...shifted);
       } catch (err) {
-        failedChunks += 1;
-        console.error(`[finalize] chunk ${chunkMeta.id} failed after retries:`, err);
+        // Audio the provider will never accept contributes nothing and is not
+        // a failure — same rule as the job-mode path above.
+        if (isPermanentAudioError(err)) {
+          console.warn(`[finalize] skipped unusable chunk ${chunkMeta.id}`);
+        } else {
+          failedChunks += 1;
+          console.error(`[finalize] chunk ${chunkMeta.id} failed after retries:`, err);
+        }
       }
     }
 
@@ -591,7 +619,7 @@ async function finalizeLegacy(recordingId: string): Promise<FinalizeResult> {
       });
     }
 
-    if (failedChunks === 0) {
+    if (failedChunks / chunkMetas.length <= MAX_LOST_CHUNK_FRACTION) {
       // Purge chunks only after the merged audio is safely archived to storage.
       // Without SUPABASE_SERVICE_ROLE_KEY the chunks stay in the DB, which the
       // audio route still serves — playback survives either way.
@@ -688,10 +716,12 @@ async function finalizeWithJobs(recordingId: string): Promise<FinalizeResult> {
       select: { id: true, offset: true, mimeType: true },
     });
 
-    // Find chunks already successfully transcribed in a previous invocation
+    // Chunks that need no further work: transcribed already, or terminally
+    // unusable. `skipped` belongs here — re-probing 0.09s of silence on every
+    // retry costs a decode and returns the same answer for ever.
     const doneIds = new Set(
       (await prisma.chunkTranscript.findMany({
-        where: { jobId: lock.id, status: 'succeeded' },
+        where: { jobId: lock.id, status: { in: ['succeeded', 'skipped'] } },
         select: { chunkId: true },
       })).map(r => r.chunkId),
     );
@@ -744,10 +774,17 @@ async function finalizeWithJobs(recordingId: string): Promise<FinalizeResult> {
             });
           } catch (err) {
             const msg = err instanceof Error ? err.message : 'Chunk transcription failed';
+            // Terminal (the provider will never accept these bytes) vs
+            // transient (it might next time). Only the second is worth another
+            // cron pass, and only the second should hold up the recording.
+            const terminal = isPermanentAudioError(err);
             await prisma.chunkTranscript.update({
               where: { jobId_chunkId: { jobId: lock.id, chunkId: chunkMeta.id } },
-              data: { status: 'failed', lastError: msg.slice(0, 500), processedAt: null },
+              data: terminal
+                ? { status: 'skipped', transcript: '', segments: '[]', lastError: msg.slice(0, 500), processedAt: new Date() }
+                : { status: 'failed', lastError: msg.slice(0, 500), processedAt: null },
             }).catch(() => {});
+            if (terminal) console.warn(`[finalize] skipped unusable chunk ${chunkMeta.id}: ${msg}`);
           }
         } catch (outerErr) {
           console.error(`[finalize] chunk ${chunkMeta.id} task error:`, outerErr);
@@ -764,14 +801,21 @@ async function finalizeWithJobs(recordingId: string): Promise<FinalizeResult> {
     }
 
     // ── All chunks have been attempted ─────────────────────────────────────────
-    const [failedChunks, pendingChunks, rows] = await Promise.all([
+    // `skipped` is deliberately absent from both counts: it is a terminal,
+    // harmless outcome (audio too short to hold a word), not something to
+    // retry and not something to fail the recording over.
+    const [failedChunks, pendingChunks, skippedChunks, rows] = await Promise.all([
       prisma.chunkTranscript.count({ where: { jobId: lock.id, status: 'failed' } }),
       prisma.chunkTranscript.count({ where: { jobId: lock.id, status: { in: ['pending', 'processing'] } } }),
+      prisma.chunkTranscript.count({ where: { jobId: lock.id, status: 'skipped' } }),
       prisma.chunkTranscript.findMany({
         where: { jobId: lock.id, status: 'succeeded' },
         orderBy: [{ offset: 'asc' }, { createdAt: 'asc' }],
       }),
     ]);
+    if (skippedChunks > 0) {
+      console.warn(`[finalize] ${recordingId}: ${skippedChunks} chunk(s) held no transcribable audio`);
+    }
 
     let fullText = '';
     const allSegments: Array<RawSegment & { speaker?: string }> = [];
@@ -828,10 +872,31 @@ async function finalizeWithJobs(recordingId: string): Promise<FinalizeResult> {
       return { ok: true, completed: false, failedChunks, pendingChunks, reason: 'Chunks still pending — will retry next cron run.' };
     }
 
+    // A transient chunk failure is worth another cron pass, but only while
+    // enough of the meeting is still missing to be worth waiting for. One
+    // stubborn chunk out of forty-five must not cost the user the other
+    // forty-four: recording cmtbd1od3 (27 Aug 2026) lost a finished 31-minute
+    // transcript's summary exactly that way.
     if (failedChunks > 0) {
-      await prisma.finalizeJob.update({ where: { id: lock.id }, data: { status: 'failed', lastError: `failed=${failedChunks}` } });
-      await prisma.recording.update({ where: { id: recordingId }, data: { status: 'failed' } }).catch(() => {});
-      return { ok: true, completed: false, failedChunks, pendingChunks: 0, reason: 'Some chunks failed and were kept for retry.' };
+      const lostFraction = allChunkMeta.length > 0 ? failedChunks / allChunkMeta.length : 1;
+      const exhausted = await allFailedChunksExhausted(lock.id);
+
+      if (lostFraction > MAX_LOST_CHUNK_FRACTION) {
+        await prisma.finalizeJob.update({ where: { id: lock.id }, data: { status: 'failed', lastError: `failed=${failedChunks}` } });
+        await prisma.recording.update({ where: { id: recordingId }, data: { status: 'failed' } }).catch(() => {});
+        return { ok: true, completed: false, failedChunks, pendingChunks: 0, reason: 'Too much of the audio could not be transcribed.' };
+      }
+
+      if (!exhausted) {
+        // Still worth retrying: leave the job pending rather than failed, so
+        // the recording keeps its "processing" face instead of flashing an
+        // error the next cron run would have cleared.
+        await prisma.finalizeJob.update({ where: { id: lock.id }, data: { status: 'pending', lastError: `failed=${failedChunks}` } });
+        return { ok: true, completed: false, failedChunks, pendingChunks: 0, reason: 'Some chunks failed and were kept for retry.' };
+      }
+
+      // Out of retries on a small minority — finish with the audio we have.
+      console.warn(`[finalize] ${recordingId}: completing with ${failedChunks}/${allChunkMeta.length} chunk(s) untranscribed`);
     }
 
     // Refresh lock before analysis — diarization + AI calls can take several minutes

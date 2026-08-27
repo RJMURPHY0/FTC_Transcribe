@@ -55,7 +55,7 @@ export async function POST(request: NextRequest) {
 
   // Every source recording must be visible to this user — no merging (and thereby
   // reading) other people's meetings.
-  if (ordered.some((r) => !canAccessRecording(r.userId, user))) {
+  if (ordered.some((r) => !canAccessRecording(r, user))) {
     return NextResponse.json({ error: 'Not allowed.' }, { status: 403 });
   }
 

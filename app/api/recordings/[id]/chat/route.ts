@@ -64,7 +64,7 @@ export async function POST(
     if (!recording || recording.deletedAt) {
       return NextResponse.json({ error: 'Recording not found.' }, { status: 404 });
     }
-    if (!canAccessRecording(recording.userId, user)) {
+    if (!canAccessRecording(recording, user)) {
       return NextResponse.json({ error: 'Not allowed.' }, { status: 403 });
     }
 

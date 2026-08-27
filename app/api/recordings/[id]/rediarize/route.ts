@@ -23,12 +23,12 @@ export async function POST(
   const user = await getAuthUser();
   const rec = await prisma.recording.findUnique({
     where: { id: params.id },
-    select: { userId: true, deletedAt: true },
+    select: { userId: true, orgId: true, deletedAt: true },
   });
   if (!rec || rec.deletedAt) {
     return NextResponse.json({ error: 'Recording not found.' }, { status: 404 });
   }
-  if (!canAccessRecording(rec.userId, user)) {
+  if (!canAccessRecording(rec, user)) {
     return NextResponse.json({ error: 'Not allowed.' }, { status: 403 });
   }
 

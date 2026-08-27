@@ -1,78 +1,127 @@
 // How long will this take, really?
 //
-// The old answer was a constant: 45 seconds plus a small per-chunk buffer,
-// capped at 75. An 8m29s Google Meet call was promised "about 1 min" and took
-// ten. A number that wrong is worse than no number, because the user reads a
-// working job as a hung one.
+// The first answer was a constant: 45 seconds plus a small per-chunk buffer,
+// capped at 75. The second was a measured ratio of processing-seconds per
+// second of audio. Both were wrong, and the second was wrong in a way the
+// first was not: the wait does not scale with meeting length at all. A
+// 51-minute recording finalised in 48s while a 27-minute one took 257s, because
+// the second still had chunks left to transcribe and the first did not.
 //
-// This measures instead. Every finalize records the window it actually ran for
-// (FinalizeJob.startedAt → completedAt), so the cost of processing a second of
-// audio is a fact about this account's own recordings rather than a guess, and
-// it tracks whatever the machine, the providers and the meeting lengths are
-// actually doing.
+// So measure the two things the wait is genuinely made of, and measure them
+// separately. Both come out of rows the app already writes:
+//
+//   perChunkS   ChunkTranscript.createdAt -> processedAt
+//               (median 38.6s over 398 real chunks on 27 Aug 2026)
+//   analysisS   FinalizeJob.completedAt - MAX(chunk.processedAt)
+//               (11.5s and 12.9s on the two jobs that carry the timestamps)
+//
+// The old MIN_RATIO of 0.05 is gone with the ratio it guarded. It was actively
+// harmful: it discarded the single fastest real measurement on the account as
+// an "artefact", leaving zero usable samples and a permanent fall back to a
+// constant that was 20x high.
 import { prisma } from '@/lib/db';
-import { FALLBACK_RATIO } from '@/lib/estimate';
+import {
+  FALLBACK_PER_CHUNK_S,
+  FALLBACK_ANALYSIS_S,
+  DEFAULT_PARALLEL_CHUNKS,
+  type FinalizeCost,
+} from '@/lib/estimate';
 
-// Ratios outside this band are not measurements, they are artefacts: a job that
-// was retried hours later, or a clock skew. Excluded so one bad row cannot
-// drag the median.
-const MIN_RATIO = 0.05;
-const MAX_RATIO = 20;
-const SAMPLE_SIZE = 20;
-// Recordings this short are all fixed overhead and say nothing about throughput.
-const MIN_AUDIO_S = 60;
+// Bounds exist to reject clock skew and jobs resumed hours later, not to reject
+// fast work. They are set wide enough that a genuinely quick run still counts.
+const MIN_CHUNK_S = 0.5;
+const MAX_CHUNK_S = 600;
+const MIN_ANALYSIS_S = 1;
+const MAX_ANALYSIS_S = 1800;
+const CHUNK_SAMPLE = 200;
+const JOB_SAMPLE = 20;
+/** Below this many personal samples, borrow the deployment-wide figure. */
+const MIN_PERSONAL_SAMPLES = 5;
 
-const cache = new Map<string, { ratio: number; expires: number }>();
+const cache = new Map<string, { cost: FinalizeCost; expires: number }>();
 const TTL_MS = 5 * 60 * 1000;
 
+function median(values: number[]): number | null {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)];
+}
+
+function parallelism(): number {
+  const raw = parseInt(process.env.FINALIZE_PARALLEL_CHUNKS ?? '', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_PARALLEL_CHUNKS;
+}
+
 /**
- * Processing seconds per second of audio for this account, as a median over
- * recent completed recordings.
+ * Measured cost of finalising, for this user where there is enough of their own
+ * history and for the deployment as a whole otherwise.
  *
- * Median rather than mean: one recording that sat in a retry queue overnight
- * would otherwise poison the estimate for every recording after it.
- *
- * Falls back to the shared constant until the account has history, which for a
- * new user is the first recording only.
+ * A new customer inherits the platform's measured speed rather than a made-up
+ * constant, which matters because the very first recording is the one where a
+ * wrong number does the most damage to trust.
  */
-export async function measuredRatio(userId: string | null): Promise<number> {
+export async function measuredCost(userId: string | null): Promise<FinalizeCost> {
   const key = userId ?? '__all__';
   const hit = cache.get(key);
-  if (hit && hit.expires > Date.now()) return hit.ratio;
+  if (hit && hit.expires > Date.now()) return hit.cost;
 
-  let ratio = FALLBACK_RATIO;
+  const parallel = parallelism();
+  let perChunkS = FALLBACK_PER_CHUNK_S;
+  let analysisS = FALLBACK_ANALYSIS_S;
+
   try {
-    // COALESCE lets recordings finalized before these columns existed still
-    // contribute: their processing window is bracketed by the last chunk
-    // arriving and the job row's last write.
-    const rows = await prisma.$queryRaw<Array<{ audio: number; secs: number | null }>>`
-      SELECT r."duration"::float AS audio,
-             EXTRACT(EPOCH FROM (
-               COALESCE(j."completedAt", j."updatedAt") - COALESCE(j."startedAt", c.last_chunk)
-             ))::float AS secs
-        FROM "Recording" r
-        JOIN "FinalizeJob" j ON j."recordingId" = r."id"
-        LEFT JOIN (
-          SELECT "recordingId", MAX("createdAt") AS last_chunk
-            FROM "ChunkBlob" GROUP BY "recordingId"
-        ) c ON c."recordingId" = r."id"
-       WHERE j."status" = 'completed'
-         AND r."duration" > ${MIN_AUDIO_S}
-         AND (${userId}::text IS NULL OR r."userId" = ${userId}::text)
-       ORDER BY r."createdAt" DESC
-       LIMIT ${SAMPLE_SIZE}
+    // ── Per-chunk transcription ──────────────────────────────────────────────
+    // Prefer this user's own chunks; fall back to everyone's when they have too
+    // few to be meaningful.
+    const chunkRows = await prisma.$queryRaw<Array<{ secs: number | null; mine: boolean }>>`
+      SELECT EXTRACT(EPOCH FROM (ct."processedAt" - ct."createdAt"))::float AS secs,
+             (r."userId" IS NOT DISTINCT FROM ${userId}::text)              AS mine
+        FROM "ChunkTranscript" ct
+        JOIN "Recording" r ON r."id" = ct."recordingId"
+       WHERE ct."status" = 'succeeded' AND ct."processedAt" IS NOT NULL
+       ORDER BY ct."createdAt" DESC
+       LIMIT ${CHUNK_SAMPLE}
     `;
-    const ratios = rows
-      .filter((r) => r.secs != null && r.audio > 0)
-      .map((r) => (r.secs as number) / r.audio)
-      .filter((n) => Number.isFinite(n) && n >= MIN_RATIO && n <= MAX_RATIO)
-      .sort((a, b) => a - b);
-    if (ratios.length) ratio = ratios[Math.floor(ratios.length / 2)];
-  } catch {
-    // No history, or the columns are not there yet. The constant is correct
-    // enough to show, and the next completed recording starts the measurement.
+    const usable = (rows: Array<{ secs: number | null }>) => rows
+      .map((r) => r.secs)
+      .filter((n): n is number => n != null && Number.isFinite(n) && n >= MIN_CHUNK_S && n <= MAX_CHUNK_S);
+
+    const mine = usable(chunkRows.filter((r) => r.mine));
+    const all = usable(chunkRows);
+    const chunkMedian = mine.length >= MIN_PERSONAL_SAMPLES ? median(mine) : median(all);
+    if (chunkMedian != null) perChunkS = chunkMedian;
+
+    // ── Analysis tail ────────────────────────────────────────────────────────
+    // Time between the last chunk finishing and the job completing: diarisation,
+    // the notes call, and the summary write. Independent of meeting length,
+    // which is exactly why it must not be folded into a per-second ratio.
+    const jobRows = await prisma.$queryRaw<Array<{ secs: number | null }>>`
+      SELECT EXTRACT(EPOCH FROM (j."completedAt" - c.last_done))::float AS secs
+        FROM "FinalizeJob" j
+        JOIN "Recording" r ON r."id" = j."recordingId"
+        JOIN (
+          SELECT "jobId", MAX("processedAt") AS last_done
+            FROM "ChunkTranscript" WHERE "processedAt" IS NOT NULL GROUP BY "jobId"
+        ) c ON c."jobId" = j."id"
+       WHERE j."status" = 'completed'
+         AND j."completedAt" IS NOT NULL
+         AND (${userId}::text IS NULL OR r."userId" = ${userId}::text)
+       ORDER BY j."updatedAt" DESC
+       LIMIT ${JOB_SAMPLE}
+    `;
+    const analysisSamples = jobRows
+      .map((r) => r.secs)
+      .filter((n): n is number => n != null && Number.isFinite(n) && n >= MIN_ANALYSIS_S && n <= MAX_ANALYSIS_S);
+    const analysisMedian = median(analysisSamples);
+    if (analysisMedian != null) analysisS = analysisMedian;
+  } catch (err) {
+    // No history yet, or the timestamp columns are not there. The measured
+    // fallbacks are honest numbers, and the next completed recording refines
+    // them.
+    console.warn('[finalize-progress] falling back to default cost:', err instanceof Error ? err.message : err);
   }
 
-  cache.set(key, { ratio, expires: Date.now() + TTL_MS });
-  return ratio;
+  const cost: FinalizeCost = { perChunkS, analysisS, parallel };
+  cache.set(key, { cost, expires: Date.now() + TTL_MS });
+  return cost;
 }

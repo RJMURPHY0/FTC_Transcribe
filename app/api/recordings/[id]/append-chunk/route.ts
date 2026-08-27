@@ -4,7 +4,7 @@ import { waitUntil } from '@vercel/functions';
 import { prisma } from '@/lib/db';
 import { getAuthUser, canAccessRecording } from '@/lib/auth';
 import { enqueueFinalizeJob } from '@/lib/finalize-recording';
-import { transcribeChunk } from '@/lib/transcribe-chunk';
+import { transcribeChunk, isPermanentAudioError } from '@/lib/transcribe-chunk';
 
 export const dynamic = 'force-dynamic';
 // Extended to accommodate background transcription via waitUntil
@@ -51,7 +51,7 @@ export async function POST(
     if (!recording) {
       return NextResponse.json({ error: 'Recording not found.' }, { status: 404 });
     }
-    if (!canAccessRecording(recording.userId, user)) {
+    if (!canAccessRecording(recording, user)) {
       return NextResponse.json({ error: 'Not allowed.' }, { status: 403 });
     }
 
@@ -154,10 +154,18 @@ async function transcribeChunkBackground(
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Background transcription failed';
+    // A chunk the provider will never accept is terminal, not failed: retrying
+    // it cannot help, and treating it as a failure used to mark the entire
+    // recording failed over a fraction of a second of audio. `skipped` records
+    // that this slice contributes nothing without poisoning the meeting.
+    const terminal = isPermanentAudioError(err);
     await prisma.chunkTranscript.update({
       where: { jobId_chunkId: { jobId, chunkId } },
-      data: { status: 'failed', lastError: msg.slice(0, 500), processedAt: null },
+      data: terminal
+        ? { status: 'skipped', transcript: '', segments: '[]', lastError: msg.slice(0, 500), processedAt: new Date() }
+        : { status: 'failed', lastError: msg.slice(0, 500), processedAt: null },
     }).catch(() => {});
-    console.error('[append-chunk bg]', chunkId, msg);
+    if (terminal) console.warn('[append-chunk bg] skipped unusable chunk', chunkId, msg);
+    else console.error('[append-chunk bg]', chunkId, msg);
   }
 }

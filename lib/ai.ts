@@ -152,8 +152,15 @@ export async function transcribeAudio(filePath: string): Promise<{ text: string;
         if (e.status === 401) {
           throw new Error('Invalid API key. Check your key in .env.local.');
         }
-        // Any other error: skip to next candidate
-        lastErr = new Error(e.message ?? `${label} transcription failed`);
+        // Any other error: skip to next candidate. The HTTP status is carried
+        // onto the Error because callers use it to tell a permanently
+        // unprocessable chunk (400 "too short") from a transient provider
+        // failure — retrying the first can never succeed, and used to fail the
+        // whole recording.
+        lastErr = Object.assign(
+          new Error(e.message ?? `${label} transcription failed`),
+          { status: e.status, code: e.code },
+        );
         break;
       }
     }

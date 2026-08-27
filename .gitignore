@@ -71,3 +71,6 @@ tsconfig.tsbuildinfo
 # Playwright output
 test-results/
 playwright-report/
+
+# Stale Next.js build cache left behind by interrupted builds
+.next.stale-cache/
