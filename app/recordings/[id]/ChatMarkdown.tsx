@@ -13,7 +13,7 @@
 //   · numbered lists get a circular orange badge, not a bare "1."
 //   · bullets get a soft brand dot
 //   · a clickable line shows a jump affordance and highlights on hover
-//   · the transcript block it points at flashes (see .transcript-hit)
+//   · the exact phrase it points at is marked in the transcript (see .transcript-mark)
 
 import { Fragment, type ReactNode } from 'react';
 

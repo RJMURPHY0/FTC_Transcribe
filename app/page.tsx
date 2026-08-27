@@ -280,8 +280,9 @@ export default async function Home({
 
   return (
     <div className="min-h-screen flex flex-col bg-surface">
-      {/* Nav */}
-      <header className="sticky top-0 z-20 border-b border-surface-border bg-surface/80 backdrop-blur-md">
+      {/* Nav — z-30 so the sticky logo always sits above the list's selection
+          ticks (z-20), which scroll up through the same column underneath it. */}
+      <header className="sticky top-0 z-30 border-b border-surface-border bg-surface/80 backdrop-blur-md">
         <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center h-12">
             <img src="/logo.png" alt="FTC Transcribe" className="h-full object-contain" />

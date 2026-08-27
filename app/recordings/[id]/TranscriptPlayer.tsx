@@ -79,9 +79,8 @@ export default function TranscriptPlayer({ recordingId, rawSegments, speakerOrde
   const focus        = useTranscriptFocus();
   const playerRef    = useRef<PlaybackBarHandle>(null);
   const groupRefs    = useRef<(HTMLDivElement | null)[]>([]);
-  const flashTimer   = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [activeIdx,  setActiveIdx]  = useState<number>(-1);
-  const [focusedIdx, setFocusedIdx] = useState<number>(-1); // block flashed from a notes click
+  const [focusedIdx, setFocusedIdx] = useState<number>(-1); // block holding the marked phrase from a notes/chat jump
   const [focusSpan,  setFocusSpan]  = useState<[number, number] | null>(null); // exact phrase within it
   const [menuOpen,   setMenuOpen]   = useState<number | null>(null); // group index
   // Menu renders in a body portal (the transcript panel's overflow clips
@@ -110,9 +109,10 @@ export default function TranscriptPlayer({ recordingId, rawSegments, speakerOrde
   const matcher = useMemo(() => createSegmentMatcher(groups.map(g => g.text.trim())), [groups]);
 
   // A focus request from a notes/chat line → find its block, scroll it into
-  // view, flash the whole block and mark the exact phrase it came from. Time
-  // requests (topics) use the real timestamp and mark nothing; text requests
-  // (key points / action items / decisions / chat) word-match and highlight.
+  // view and mark the exact phrase it came from. The mark stays put until the
+  // next jump replaces it, so you can keep reading against it. Time requests
+  // (topics) use the real timestamp and mark nothing; text requests (key points
+  // / action items / decisions / chat) word-match and highlight the phrase.
   useEffect(() => {
     const req = focus.request;
     if (!req || groups.length === 0) return;
@@ -135,13 +135,9 @@ export default function TranscriptPlayer({ recordingId, rawSegments, speakerOrde
     groupRefs.current[idx]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     setFocusedIdx(idx);
     setFocusSpan(span);
-    if (flashTimer.current) clearTimeout(flashTimer.current);
-    flashTimer.current = setTimeout(() => { setFocusedIdx(-1); setFocusSpan(null); }, 3200);
   // Fire on each new request (nonce guarantees a fresh object per click).
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focus.request]);
-
-  useEffect(() => () => { if (flashTimer.current) clearTimeout(flashTimer.current); }, []);
 
   const handleTimeUpdate = (t: number) => {
     const idx = groups.findLastIndex(g => g.start <= t);
@@ -194,8 +190,7 @@ export default function TranscriptPlayer({ recordingId, rawSegments, speakerOrde
               ref={el => { groupRefs.current[i] = el; }}
               className={`relative rounded-xl border px-4 py-3 transition-all duration-150
                 ${c.border} ${c.bg}
-                ${active ? 'ring-2 ring-brand/60' : ''}
-                ${focused ? 'transcript-hit z-10' : ''}`}
+                ${active ? 'ring-2 ring-brand/60' : ''}`}
             >
               <div className="flex items-center gap-2 mb-1.5">
                 <span className={`w-2 h-2 rounded-full flex-shrink-0 ${c.dot}`} />

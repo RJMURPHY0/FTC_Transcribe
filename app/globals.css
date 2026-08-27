@@ -167,36 +167,24 @@
   border-radius: 9999px;
 }
 
-/* ── Transcript "jump-to" flash ──
-   When a key point / action item / decision / topic is clicked, the transcript
-   scrolls to its source block and this brief pulse marks it. Holds the brand
-   ring + tint, then fades back to the block's own speaker colour. */
-@keyframes transcript-hit {
-  0%   { box-shadow: 0 0 0 2px rgb(var(--c-brand)); background-color: rgb(var(--c-brand) / 0.16); }
-  75%  { box-shadow: 0 0 0 2px rgb(var(--c-brand)); background-color: rgb(var(--c-brand) / 0.16); }
-  100% { box-shadow: 0 0 0 0 rgb(var(--c-brand) / 0); background-color: rgb(var(--c-brand) / 0); }
-}
-.transcript-hit { animation: transcript-hit 3.2s ease-out forwards; }
-@media (prefers-reduced-motion: reduce) {
-  .transcript-hit { animation-duration: 0.01ms; box-shadow: 0 0 0 2px rgb(var(--c-brand)); }
-}
-
-/* The exact phrase a summary line came from, marked inside its block. Sits on
-   top of the whole-block flash, so it uses a stronger fill plus an underline
-   bar to stay legible against it and pull the eye to the precise words. */
+/* ── Transcript "jump-to" mark ──
+   When a key point / action item / decision / topic / chat citation is clicked,
+   the transcript scrolls to its source block and marks the exact phrase it came
+   from. The mark stays put until the next jump replaces it (no whole-block box,
+   just the precise words), so you can keep reading against it. It brightens
+   briefly on arrival, then settles to a steady fill plus a solid underline. */
 .transcript-mark {
-  background-color: rgb(var(--c-brand) / 0.34);
+  background-color: rgb(var(--c-brand) / 0.22);
   color: inherit;
   border-radius: 3px;
   padding: 0.5px 2px;
   margin: 0 -1px;
   box-shadow: inset 0 -2px 0 rgb(var(--c-brand));
-  animation: transcript-mark-in 3.2s ease-out forwards;
+  animation: transcript-mark-in 0.9s ease-out;
 }
 @keyframes transcript-mark-in {
-  0%   { background-color: rgb(var(--c-brand) / 0.5); }
-  80%  { background-color: rgb(var(--c-brand) / 0.34); }
-  100% { background-color: rgb(var(--c-brand) / 0.16); box-shadow: inset 0 -2px 0 rgb(var(--c-brand) / 0.4); }
+  0%   { background-color: rgb(var(--c-brand) / 0.55); }
+  100% { background-color: rgb(var(--c-brand) / 0.22); }
 }
 @media (prefers-reduced-motion: reduce) {
   .transcript-mark { animation: none; }
