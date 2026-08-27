@@ -176,10 +176,39 @@
   75%  { box-shadow: 0 0 0 2px rgb(var(--c-brand)); background-color: rgb(var(--c-brand) / 0.16); }
   100% { box-shadow: 0 0 0 0 rgb(var(--c-brand) / 0); background-color: rgb(var(--c-brand) / 0); }
 }
-.transcript-hit { animation: transcript-hit 2.4s ease-out forwards; }
+.transcript-hit { animation: transcript-hit 3.2s ease-out forwards; }
 @media (prefers-reduced-motion: reduce) {
   .transcript-hit { animation-duration: 0.01ms; box-shadow: 0 0 0 2px rgb(var(--c-brand)); }
 }
+
+/* The exact phrase a summary line came from, marked inside its block. Sits on
+   top of the whole-block flash, so it uses a stronger fill plus an underline
+   bar to stay legible against it and pull the eye to the precise words. */
+.transcript-mark {
+  background-color: rgb(var(--c-brand) / 0.34);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0.5px 2px;
+  margin: 0 -1px;
+  box-shadow: inset 0 -2px 0 rgb(var(--c-brand));
+  animation: transcript-mark-in 3.2s ease-out forwards;
+}
+@keyframes transcript-mark-in {
+  0%   { background-color: rgb(var(--c-brand) / 0.5); }
+  80%  { background-color: rgb(var(--c-brand) / 0.34); }
+  100% { background-color: rgb(var(--c-brand) / 0.16); box-shadow: inset 0 -2px 0 rgb(var(--c-brand) / 0.4); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .transcript-mark { animation: none; }
+}
+
+/* A citable chat line reveals its jump arrow on hover / keyboard focus, so the
+   answer reads as prose until you reach for the moment behind a point. */
+.chat-cite:hover .chat-jump-icon,
+.chat-cite:focus-visible .chat-jump-icon { opacity: 0.7; }
+.chat-cite { text-underline-offset: 3px; }
+.chat-cite:hover { text-decoration: underline; text-decoration-color: rgb(var(--c-brand) / 0.4); }
+.chat-cite:focus-visible { outline: none; text-decoration: underline; text-decoration-color: rgb(var(--c-brand) / 0.6); }
 
 /* ── Safe area bottom ── */
 .pb-safe { padding-bottom: max(1.5rem, env(safe-area-inset-bottom)); }

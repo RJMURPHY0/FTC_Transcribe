@@ -5,12 +5,14 @@ import { createPortal } from 'react-dom';
 import { formatDue, dueStatus } from '@/lib/action-items';
 import { useActionItems } from './ActionItemsContext';
 import { useTranscriptFocus } from './TranscriptFocusContext';
+import { ChatMarkdown } from './ChatMarkdown';
 
 const DEFAULT_HEIGHT = 520;
 const MIN_HEIGHT = 300;
 const MAX_HEIGHT = 1100;
 const MIN_WIDTH = 300;
 const MAX_WIDTH = 1000;
+const MAX_MESSAGE_LEN = 2000; // mirrors the chat route's cap
 
 interface Message {
   role: 'user' | 'assistant';
@@ -25,20 +27,6 @@ const SUGGESTIONS = [
 ];
 
 const CHECKLIST_RE = /\[\[CHECKLIST:(open|done|all)\]\]/i;
-
-// The chat model is told never to use markdown, but strip the common symbols
-// just in case so replies always read as plain text.
-function stripMarkdown(text: string): string {
-  return text
-    .replace(CHECKLIST_RE, '')
-    .replace(/\*\*(.+?)\*\*/g, '$1')   // **bold**
-    .replace(/__(.+?)__/g, '$1')       // __bold__
-    .replace(/(?<!\w)[*_](.+?)[*_](?!\w)/g, '$1') // *italic* / _italic_
-    .replace(/`([^`]+)`/g, '$1')       // `code`
-    .replace(/^#{1,6}\s+/gm, '')       // # headings
-    .replace(/^\s*[*+]\s+/gm, '- ')    // normalise bullets to "- "
-    .trim();
-}
 
 // Live, tickable checklist rendered inside a chat reply. Shares the same store
 // as the Action Items panel, so ticking here updates there instantly too.
@@ -110,6 +98,7 @@ function ChatChecklist({ filter }: { filter: 'open' | 'done' | 'all' }) {
 }
 
 export default function ChatPanel({ recordingId, userId }: { recordingId: string; userId?: string | null }) {
+  const focus = useTranscriptFocus();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -117,9 +106,13 @@ export default function ChatPanel({ recordingId, userId }: { recordingId: string
   const [mounted, setMounted] = useState(false);
   const [height, setHeight] = useState(DEFAULT_HEIGHT);
   const [width, setWidth] = useState<number | null>(null); // null → fill the column
+  const [listening, setListening] = useState(false);
+  const [micSupported, setMicSupported] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const recognitionRef = useRef<any>(null);
   // axis: 'xl' = left edge, 'y' = bottom edge, 'both' = left + bottom (corner).
   // No right-edge handle — the card's right edge is pinned to the column's
   // resize rail (margin-left: auto), so only the left edge is free to move.
@@ -226,9 +219,47 @@ export default function ChatPanel({ recordingId, userId }: { recordingId: string
     el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
   }, [input]);
 
+  // Browser dictation into the input, matching the app chatbot's mic. Self-
+  // contained Web Speech API; the button is hidden entirely where it is absent.
+  useEffect(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    setMicSupported(!!SR);
+  }, []);
+
+  const stopVoice = useCallback(() => {
+    try { recognitionRef.current?.stop(); } catch { /* not running */ }
+  }, []);
+
+  const toggleVoice = useCallback(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) return;
+    if (recognitionRef.current) { stopVoice(); return; }
+    const rec = new SR();
+    rec.lang = 'en-GB';
+    rec.interimResults = true;
+    rec.continuous = false;
+    let base = '';
+    rec.onstart = () => { base = input.trim() ? input.trim() + ' ' : ''; setListening(true); };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    rec.onresult = (e: any) => {
+      let heard = '';
+      for (let i = 0; i < e.results.length; i++) heard += e.results[i][0].transcript;
+      setInput((base + heard).slice(0, MAX_MESSAGE_LEN));
+    };
+    rec.onerror = () => setListening(false);
+    rec.onend = () => { setListening(false); recognitionRef.current = null; textareaRef.current?.focus(); };
+    recognitionRef.current = rec;
+    try { rec.start(); } catch { setListening(false); recognitionRef.current = null; }
+  }, [input, stopVoice]);
+
+  useEffect(() => () => { stopVoice(); }, [stopVoice]);
+
   const send = async (text = input) => {
     const trimmed = text.trim();
     if (!trimmed || loading) return;
+    stopVoice();
 
     const userMsg: Message = { role: 'user', content: trimmed };
     const nextHistory = [...messages, userMsg];
@@ -341,22 +372,27 @@ export default function ChatPanel({ recordingId, userId }: { recordingId: string
         )}
 
         {messages.map((msg, i) => {
-          const checklist = msg.role === 'assistant' ? CHECKLIST_RE.exec(msg.content) : null;
+          const isAssistant = msg.role === 'assistant';
+          const checklist = isAssistant ? CHECKLIST_RE.exec(msg.content) : null;
           const filter = checklist ? (checklist[1].toLowerCase() as 'open' | 'done' | 'all') : null;
-          const text = msg.role === 'assistant' ? stripMarkdown(msg.content) : msg.content;
+          // Assistant text keeps its list/bold markup for ChatMarkdown; only the
+          // checklist marker is stripped. User text renders verbatim.
+          const assistantText = isAssistant ? msg.content.replace(CHECKLIST_RE, '').trim() : '';
           return (
             <div key={i} className={`flex items-end gap-2 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              {msg.role === 'assistant' && (
+              {isAssistant && (
                 <div className="w-6 h-6 rounded-full bg-brand/15 border border-brand/20 flex items-center justify-center flex-shrink-0 mb-0.5">
                   <span className="text-[9px] font-bold text-brand">AI</span>
                 </div>
               )}
-              <div className={`max-w-[78%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap ${
+              <div className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${
                 msg.role === 'user'
-                  ? 'btn-brand text-white rounded-br-sm'
+                  ? 'btn-brand text-white rounded-br-sm whitespace-pre-wrap'
                   : 'bg-surface-raised text-ftc-gray rounded-bl-sm border border-surface-border'
               }`}>
-                {text && <span>{text}</span>}
+                {isAssistant
+                  ? assistantText && <ChatMarkdown content={assistantText} onCite={focus.enabled ? focus.focusText : undefined} />
+                  : <span>{msg.content}</span>}
                 {filter && <ChatChecklist filter={filter} />}
               </div>
             </div>
@@ -378,34 +414,56 @@ export default function ChatPanel({ recordingId, userId }: { recordingId: string
         <div ref={bottomRef} />
       </div>
 
-      {/* Input */}
+      {/* Input — pill: search glyph, textarea, mic, round send (matches the app chatbot) */}
       <div className="px-4 py-3 border-t border-surface-border flex-shrink-0">
-        <div className="flex items-end gap-2">
+        <div className="flex items-end gap-1.5 bg-surface-raised border border-surface-border rounded-2xl pl-3 pr-1.5 py-1.5 focus-within:border-brand transition-colors">
+          <svg className="w-4 h-4 text-ftc-mid shrink-0 mb-2" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" aria-hidden="true">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+          </svg>
           <textarea
             ref={textareaRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={onKeyDown}
-            placeholder="Ask about this meeting…"
+            placeholder={listening ? 'Listening…' : 'Ask about this meeting…'}
             rows={1}
             disabled={loading}
-            className="flex-1 bg-surface-raised border border-surface-border rounded-xl px-3 py-2.5 text-sm text-ftc-gray placeholder:text-ftc-mid outline-none focus:border-brand resize-none transition-colors disabled:opacity-50 leading-relaxed"
+            className="flex-1 min-w-0 bg-transparent border-none outline-none text-sm text-ftc-gray placeholder:text-ftc-mid resize-none disabled:opacity-50 leading-relaxed py-1.5"
           />
+          {micSupported && (
+            <button
+              type="button"
+              onClick={() => { toggleVoice(); textareaRef.current?.focus(); }}
+              disabled={loading}
+              aria-label={listening ? 'Stop dictation' : 'Dictate your question'}
+              title={listening ? 'Stop dictation' : 'Dictate your question'}
+              className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 transition-colors touch-manipulation disabled:opacity-40 ${
+                listening
+                  ? 'bg-red-500 text-white shadow-lg shadow-red-500/30'
+                  : 'bg-surface-card border border-surface-border text-ftc-mid hover:text-ftc-gray'
+              }`}
+            >
+              {listening ? (
+                <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
+              ) : (
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z" />
+                </svg>
+              )}
+            </button>
+          )}
           <button
             type="button"
             onClick={() => send()}
             disabled={!input.trim() || loading}
-            className="btn-brand p-2.5 rounded-xl text-white disabled:opacity-40 flex-shrink-0 transition-opacity"
+            className="btn-brand w-8 h-8 rounded-full text-white disabled:opacity-40 flex items-center justify-center shrink-0 transition-opacity"
             aria-label="Send message"
           >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
             </svg>
           </button>
         </div>
-        <p className="text-[10px] text-ftc-mid mt-1.5 text-center">
-          Enter to send · Shift+Enter for new line
-        </p>
       </div>
     </>
   );

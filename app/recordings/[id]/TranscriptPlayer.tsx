@@ -42,6 +42,21 @@ function fmt(s: number): string {
   return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 }
 
+/** Block text with the matched phrase wrapped in a highlight. Rendered only for
+ *  the focused block; every other block gets the plain string back. */
+function renderBlockText(text: string, span: [number, number] | null) {
+  if (!span) return text;
+  const [start, end] = span;
+  if (start < 0 || end > text.length || start >= end) return text;
+  return (
+    <>
+      {text.slice(0, start)}
+      <mark className="transcript-mark">{text.slice(start, end)}</mark>
+      {text.slice(end)}
+    </>
+  );
+}
+
 function mergeSegments(segs: RawSegment[]): MergedGroup[] {
   return segs.reduce<MergedGroup[]>((acc, seg, i) => {
     const last = acc[acc.length - 1];
@@ -67,6 +82,7 @@ export default function TranscriptPlayer({ recordingId, rawSegments, speakerOrde
   const flashTimer   = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [activeIdx,  setActiveIdx]  = useState<number>(-1);
   const [focusedIdx, setFocusedIdx] = useState<number>(-1); // block flashed from a notes click
+  const [focusSpan,  setFocusSpan]  = useState<[number, number] | null>(null); // exact phrase within it
   const [menuOpen,   setMenuOpen]   = useState<number | null>(null); // group index
   // Menu renders in a body portal (the transcript panel's overflow clips
   // anything absolutely positioned near its bottom edge), anchored to the
@@ -89,29 +105,35 @@ export default function TranscriptPlayer({ recordingId, rawSegments, speakerOrde
   const groups = useMemo(() => mergeSegments(rawSegments), [rawSegments]);
 
   // Text matcher over the merged blocks — rebuilt only when the blocks change,
-  // then reused for every notes click.
-  const matcher = useMemo(() => createSegmentMatcher(groups.map(g => g.text)), [groups]);
+  // then reused for every notes click. Built from the SAME trimmed text the
+  // block renders, so a highlight span's offsets line up with the DOM.
+  const matcher = useMemo(() => createSegmentMatcher(groups.map(g => g.text.trim())), [groups]);
 
   // A focus request from a notes/chat line → find its block, scroll it into
-  // view and flash it. Time requests (topics) use the real timestamp; text
-  // requests (key points / action items / decisions) fall back to word match.
+  // view, flash the whole block and mark the exact phrase it came from. Time
+  // requests (topics) use the real timestamp and mark nothing; text requests
+  // (key points / action items / decisions / chat) word-match and highlight.
   useEffect(() => {
     const req = focus.request;
     if (!req || groups.length === 0) return;
 
     let idx = -1;
+    let span: [number, number] | null = null;
     if (req.kind === 'time') {
       idx = groups.findLastIndex(g => g.start <= req.value);
       if (idx < 0) idx = 0;
     } else {
-      idx = matcher.match(req.value);
+      const loc = matcher.locate(req.value);
+      idx = loc.index;
+      span = loc.span;
     }
     if (idx < 0) return;
 
     groupRefs.current[idx]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     setFocusedIdx(idx);
+    setFocusSpan(span);
     if (flashTimer.current) clearTimeout(flashTimer.current);
-    flashTimer.current = setTimeout(() => setFocusedIdx(-1), 2400);
+    flashTimer.current = setTimeout(() => { setFocusedIdx(-1); setFocusSpan(null); }, 3200);
   // Fire on each new request (nonce guarantees a fresh object per click).
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focus.request]);
@@ -229,7 +251,7 @@ export default function TranscriptPlayer({ recordingId, rawSegments, speakerOrde
                 className={`text-sm text-ftc-gray leading-relaxed ${hasAudio ? 'cursor-pointer' : ''}`}
                 onClick={() => hasAudio && handleGroupClick(group.start)}
               >
-                {group.text.trim()}
+                {renderBlockText(group.text.trim(), focused ? focusSpan : null)}
               </p>
             </div>
           );
