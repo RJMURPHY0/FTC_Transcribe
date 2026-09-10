@@ -19,7 +19,8 @@ import { Search, SlidersHorizontal, Sparkles, Loader2, X } from 'lucide-react';
 import {
   parseFilters, filtersToParams, describeFilters, hasAnyFilter,
   FILTER_KEYS, MEETING_TYPES, MEETING_TYPE_LABELS, DATE_LABELS,
-  type RecordingFilters, type DateFilter, type MeetingTypeFilter, type SortFilter,
+  STATUS_FILTERS, STATUS_LABELS,
+  type RecordingFilters, type DateFilter, type MeetingTypeFilter, type SortFilter, type StatusFilter,
 } from '@/lib/recording-filters';
 
 interface Result {
@@ -313,6 +314,24 @@ export default function SearchBar({ canSeeAll = false }: { canSeeAll?: boolean }
                   className={chipClass(filters.type === t)}
                 >
                   {MEETING_TYPE_LABELS[t]}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Status */}
+          <div>
+            <p className="text-xs font-medium text-ftc-gray mb-1.5">Status</p>
+            <div className="flex flex-wrap gap-1.5">
+              <button type="button" onClick={() => applyFilters({ status: undefined, label: undefined })} className={chipClass(!filters.status)}>All</button>
+              {STATUS_FILTERS.map(s => (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => applyFilters({ status: s as StatusFilter, label: undefined })}
+                  className={chipClass(filters.status === s)}
+                >
+                  {STATUS_LABELS[s]}
                 </button>
               ))}
             </div>

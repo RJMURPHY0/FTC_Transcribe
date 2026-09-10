@@ -28,16 +28,35 @@ export async function middleware(request: NextRequest) {
     },
   );
 
-  // Cookie-only session read — fast (no network call). This is a UX redirect,
-  // NOT the auth boundary: every data access verifies the JWT server-side via
-  // getAuthUser() (supabase.auth.getUser()), so a forged cookie gets past this
-  // redirect but can never read data.
+  // getUser() (verifies the JWT with the Auth server) rather than getSession()
+  // (a bare cookie decode). The distinction is what fixes the cross-app SSO
+  // bounce: when the access token has expired — which the token handed over
+  // from BrightLink usually is within the hour — getUser() uses the refresh
+  // token to mint a new session and writes the rotated cookies back via the
+  // setAll() callback above. getSession() never did that, so the FIRST
+  // navigation that needed a refresh (e.g. clicking a meeting after landing on
+  // the list) found an expired cookie, read null, and got redirected to /login
+  // even though the session was still renewable. This is the Supabase-
+  // recommended SSR middleware pattern. It is still only a UX redirect — the
+  // real boundary is getAuthUser() on every data access.
+  //
+  // Prefetch requests are skipped entirely: they are speculative, they must not
+  // drive a redirect, and refreshing on a burst of parallel prefetches is what
+  // races the refresh-token rotation. The page each one targets runs its own
+  // getAuthUser() check, so nothing is left unguarded.
+  const isPrefetch =
+    request.headers.get('next-router-prefetch') === '1' ||
+    request.headers.get('purpose') === 'prefetch' ||
+    request.headers.get('sec-purpose')?.includes('prefetch');
+  if (isPrefetch) return supabaseResponse;
+
   let user = null;
   try {
-    const { data } = await supabase.auth.getSession();
-    user = data.session?.user ?? null;
+    const { data } = await supabase.auth.getUser();
+    user = data.user ?? null;
   } catch {
-    // Cookie parse error — treat as unauthenticated
+    // Auth server unreachable / cookie parse error — treat as unauthenticated
+    // for the redirect only.
   }
 
   const { pathname } = request.nextUrl;
@@ -64,7 +83,11 @@ export async function middleware(request: NextRequest) {
   if (!user && !isPublic) {
     const url = request.nextUrl.clone();
     url.pathname = '/login';
-    return NextResponse.redirect(url);
+    const redirect = NextResponse.redirect(url);
+    // Preserve any cookies getUser() just refreshed, so a session caught
+    // mid-rotation isn't thrown away by the redirect itself.
+    supabaseResponse.cookies.getAll().forEach((c) => redirect.cookies.set(c));
+    return redirect;
   }
 
   return supabaseResponse;

@@ -27,10 +27,28 @@ interface StatusPayload {
  *    so it feels alive, and a fresh server estimate that is LONGER than what is
  *    on screen is adopted gradually rather than jumping up.
  */
-export default function ProcessingPoller({ id }: { id: string }) {
+export default function ProcessingPoller({
+  id,
+  initialStatus,
+  initialHasTranscript = false,
+}: {
+  id: string;
+  // The status the page was server-rendered with. Seeding the poller with it
+  // is what fixes the "stuck at 70%" freeze: if the recording finishes in the
+  // gap between the server render and the first poll, the first poll now sees a
+  // status that differs from this seed and triggers the refresh that swaps the
+  // frozen progress view for the finished transcript. Without the seed the
+  // first poll had nothing to compare against, skipped the refresh, then
+  // stopped polling because the status was already terminal — so the page sat
+  // on the processing view until a manual reload.
+  initialStatus?: string;
+  initialHasTranscript?: boolean;
+}) {
   const router = useRouter();
   const triggerRef = useRef(false);
-  const lastRef = useRef<string>('');
+  const lastRef = useRef<string>(
+    initialStatus ? `${initialStatus}|${initialHasTranscript}` : '',
+  );
   const [state, setState] = useState<{ label: string; progress: number; etaS: number } | null>(null);
   const shownRef = useRef<{ progress: number; etaS: number }>({ progress: 0, etaS: 0 });
 

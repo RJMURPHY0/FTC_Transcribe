@@ -150,7 +150,13 @@ export default async function RecordingPage({ params }: { params: { id: string }
 
       <main className="detail-main max-w-[1800px] mx-auto w-full px-4 py-6 flex-1">
         {/* Auto-retry + auto-refresh when queued or processing */}
-        {(isUploading || isProcessing) && <ProcessingPoller id={recording.id} />}
+        {(isUploading || isProcessing) && (
+          <ProcessingPoller
+            id={recording.id}
+            initialStatus={recording.status}
+            initialHasTranscript={!!recording.transcript}
+          />
+        )}
 
         {/* Status banners */}
         {isFailed && (

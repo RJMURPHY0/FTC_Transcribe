@@ -17,6 +17,18 @@ export type SortFilter   = 'newest' | 'oldest' | 'longest' | 'shortest';
 export const MEETING_TYPES = ['general', 'standup', 'sales', 'interview', 'review'] as const;
 export type MeetingTypeFilter = (typeof MEETING_TYPES)[number];
 
+// A recording's lifecycle state, narrowed to the two a viewer actually wants to
+// filter by. Drives the clickable "Complete" stat tile and a Status row in the
+// filter panel. Kept exact (a single DB status each) so the where clause is a
+// plain equality — "in progress" spans uploading/queued/processing and is left
+// out rather than mapped imprecisely.
+export const STATUS_FILTERS = ['completed', 'failed'] as const;
+export type StatusFilter = (typeof STATUS_FILTERS)[number];
+
+export const STATUS_LABELS: Record<StatusFilter, string> = {
+  completed: 'Completed', failed: 'Failed',
+};
+
 export const MEETING_TYPE_LABELS: Record<MeetingTypeFilter, string> = {
   general: 'General', standup: 'Standup', sales: 'Sales', interview: 'Interview', review: 'Review',
 };
@@ -42,6 +54,7 @@ export interface RecordingFilters {
   source?:   SourceFilter;
   provider?: ProviderFilter;
   type?:     MeetingTypeFilter;
+  status?:   StatusFilter;
   date?:     DateFilter;
   /** Explicit bounds, used by the AI filter for things like "in August". */
   from?:     string;   // ISO
@@ -62,7 +75,7 @@ export const EMPTY_FILTERS: RecordingFilters = { terms: [], hasActions: false, s
 /** Every URL key this module owns. Used when rebuilding links so a filtered
  *  view survives paging, folder navigation and the source tabs. */
 export const FILTER_KEYS = [
-  'source', 'provider', 'type', 'date', 'from', 'to', 'terms', 'has', 'minMin', 'maxMin', 'sort', 'label',
+  'source', 'provider', 'type', 'status', 'date', 'from', 'to', 'terms', 'has', 'minMin', 'maxMin', 'sort', 'label',
 ] as const;
 
 type Params = { get(key: string): string | null };
@@ -107,6 +120,7 @@ export function parseFilters(input: Params | Record<string, string | string[] | 
     source:     oneOf(params.get('source'), ['web', 'teams'] as const),
     provider:   oneOf(params.get('provider'), MEETING_PROVIDERS),
     type:       oneOf(params.get('type'), MEETING_TYPES),
+    status:     oneOf(params.get('status'), STATUS_FILTERS),
     date:       oneOf(params.get('date'), ['today', 'week', 'month', 'quarter', 'year'] as const),
     from:       isoOrUndefined(params.get('from')),
     to:         isoOrUndefined(params.get('to'), true),
@@ -126,6 +140,7 @@ export function filtersToParams(f: RecordingFilters): Record<string, string> {
   if (f.source)     out.source   = f.source;
   if (f.provider)   out.provider = f.provider;
   if (f.type)       out.type     = f.type;
+  if (f.status)     out.status   = f.status;
   if (f.date)       out.date     = f.date;
   if (f.from)       out.from     = f.from;
   if (f.to)         out.to       = f.to;
@@ -157,6 +172,7 @@ export function filtersToWhere(f: RecordingFilters, now: Date = new Date()): Rec
   if (f.source)   where.source = f.source;
   if (f.provider) where.meetingProvider = f.provider;
   if (f.type)     where.meetingType = f.type;
+  if (f.status)   where.status = f.status;
 
   // `date` is the panel's rolling window; `from`/`to` are explicit bounds the
   // AI filter produces. Both can be present — the tighter floor wins.
@@ -223,6 +239,7 @@ export function describeFilters(f: RecordingFilters): FilterChip[] {
   if (f.source)   chips.push({ key: 'source', keys: ['source'], label: f.source === 'web' ? 'In person' : 'Online' });
   if (f.provider) chips.push({ key: 'provider', keys: ['provider'], label: PROVIDER_LABELS[f.provider] });
   if (f.type)     chips.push({ key: 'type', keys: ['type'], label: MEETING_TYPE_LABELS[f.type] });
+  if (f.status)   chips.push({ key: 'status', keys: ['status'], label: STATUS_LABELS[f.status] });
   if (f.date)     chips.push({ key: 'date', keys: ['date'], label: DATE_LABELS[f.date] });
   if (!f.date && (f.from || f.to)) {
     const fmt = (iso: string) => new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });

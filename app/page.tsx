@@ -22,7 +22,7 @@ import {
   getMemberUserIds,
   getMemberNames,
 } from '@/lib/contacts-db';
-import { Settings, ChevronLeft, ChevronRight, Folder, Users, AlertTriangle, Mic } from 'lucide-react';
+import { Settings, ChevronLeft, ChevronRight, Folder, Users, AlertTriangle, Mic, CircleCheck, CalendarClock } from 'lucide-react';
 
 export const dynamic = 'force-dynamic';
 
@@ -294,6 +294,22 @@ export default async function Home({
     return qs ? `/?${qs}` : '/';
   };
 
+  // The stat tiles are shortcuts, not just numbers: each one links to the list
+  // filtered to what it counts, keeping only the current scope (folder / org /
+  // team / assignee) and dropping every other search-bar filter — so tapping a
+  // tile is always a clean jump to that slice, never a compound of whatever was
+  // already applied.
+  const statHref = (extra: Record<string, string>) => {
+    const sp = new URLSearchParams();
+    if (activeFolderId)               sp.set('folder', activeFolderId);
+    if (activeOrgId)                  sp.set('org', activeOrgId);
+    if (activeTeamId)                 sp.set('team', activeTeamId);
+    if (canSeeAll && activeAssigneeId) sp.set('assignee', activeAssigneeId);
+    for (const [k, v] of Object.entries(extra)) if (v) sp.set(k, v);
+    const qs = sp.toString();
+    return qs ? `/?${qs}` : '/';
+  };
+
   const showMoreParams = new URLSearchParams(filterParams);
   if (activeFolderId)   showMoreParams.set('folder', activeFolderId);
   if (activeOrgId)      showMoreParams.set('org', activeOrgId);
@@ -341,18 +357,39 @@ export default async function Home({
 
       <main className="max-w-5xl mx-auto w-full px-4 py-8 flex-1">
 
-        {/* Stats */}
+        {/* Stats — each tile is a shortcut to the list filtered to what it
+            counts (see statHref). The active tile is ringed so the tiles double
+            as a view switcher. */}
         {allCount > 0 && (
           <div className="grid grid-cols-3 gap-3 mb-8">
             {[
-              { label: filtered ? 'Matching' : 'Total', value: matchCount },
-              { label: 'Complete', value: completed },
-              { label: 'This week', value: thisWeek },
-            ].map(({ label, value }) => (
-              <GlowCard key={label} backdrop="rgb(var(--c-surface-card))" className="p-4 text-center ring-1 ring-surface-border">
-                <p className="text-2xl font-bold text-ftc-gray">{value}</p>
-                <p className="text-xs mt-0.5 text-ftc-mid">{label}</p>
-              </GlowCard>
+              { key: 'total',    label: filtered ? 'Matching' : 'Total', value: matchCount, Icon: Mic,          href: statHref({}),                     active: !filters.status && !filters.date },
+              { key: 'complete', label: 'Complete',                       value: completed,  Icon: CircleCheck,  href: statHref({ status: 'completed' }), active: filters.status === 'completed' },
+              { key: 'week',     label: 'This week',                      value: thisWeek,   Icon: CalendarClock, href: statHref({ date: 'week' }),       active: filters.date === 'week' },
+            ].map(({ key, label, value, Icon, href, active }) => (
+              <Link
+                key={key}
+                href={href}
+                scroll={false}
+                prefetch={false}
+                aria-label={`Show ${label.toLowerCase()} recordings`}
+                aria-current={active ? 'true' : undefined}
+                className="group rounded-2xl focus:outline-none focus-visible:ring-2 focus-visible:ring-brand/60 touch-manipulation"
+              >
+                <GlowCard
+                  backdrop="rgb(var(--c-surface-card))"
+                  className={`p-4 text-center ring-1 transition-colors ${
+                    active ? 'ring-brand/50' : 'ring-surface-border group-hover:ring-brand/40'
+                  }`}
+                >
+                  <Icon
+                    className={`w-4 h-4 mx-auto mb-1.5 transition-colors ${active ? 'text-brand' : 'text-ftc-mid group-hover:text-ftc-gray'}`}
+                    strokeWidth={1.9}
+                  />
+                  <p className="text-2xl font-bold text-ftc-gray leading-none">{value}</p>
+                  <p className="text-xs mt-1 text-ftc-mid">{label}</p>
+                </GlowCard>
+              </Link>
             ))}
           </div>
         )}
