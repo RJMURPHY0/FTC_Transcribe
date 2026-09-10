@@ -187,9 +187,8 @@ export default async function Home({
     // can never collide with the scope conditions above.
     AND: [filterWhere],
   };
-  const filtered = Object.keys(filterParams).length > 0;
 
-  const [folderResult, recordingResult, countsRows, filteredCounts] = await Promise.all([
+  const [folderResult, recordingResult, countsRows] = await Promise.all([
     withDbRetry(() => prisma.folder.findMany({
       where: folderScope,
       orderBy: { createdAt: 'asc' },
@@ -206,8 +205,10 @@ export default async function Home({
       orderBy: filtersToOrderBy(filters),
       take: limit + 1,
     })).catch(() => { recordingsFailed = true; return []; }),
-    // All four stat tiles in one round-trip instead of four parallel counts —
-    // one pooled connection instead of four per home render.
+    // The stat tiles are a stable overview of the current scope (my meetings /
+    // org / team / assignee). They count the true totals and DO NOT move when a
+    // tile is clicked or a search filter is applied — clicking a tile filters the
+    // LIST below, the numbers above it stay correct. One round-trip, all tiles.
     withDbRetry(() => prisma.$queryRaw<{ all: number; completed: number; week: number; teams: number }[]>`
       SELECT
         COUNT(*)::int                                                         AS "all",
@@ -219,27 +220,17 @@ export default async function Home({
         AND (${statsUserId}::text IS NULL OR "userId" = ${statsUserId}::text)
         AND (${statsOrgId}::text IS NULL OR "orgId" = ${statsOrgId}::text)
     `).catch(() => []),
-    // Only when something is actually filtered — an unfiltered dashboard still
-    // costs exactly the queries it did before.
-    filtered
-      ? withDbRetry(() => Promise.all([
-          prisma.recording.count({ where: listWhere }),
-          prisma.recording.count({ where: { ...listWhere, status: 'completed' } }),
-          prisma.recording.count({
-            where: { ...listWhere, AND: [filterWhere, { createdAt: { gte: new Date(Date.now() - 7 * 86_400_000) } }] },
-          }),
-        ])).catch(() => null)
-      : Promise.resolve(null),
   ]);
   folders = folderResult;
   recordings = recordingResult;
   const { all: rawAll = 0, completed: rawCompleted = 0, week: rawWeek = 0, teams: teamsCount = 0 } = countsRows[0] ?? {};
 
-  // `allCount` gates the stats block and the search bar, so it stays the
-  // unfiltered total — a filter that matches nothing must not hide the control
-  // you need in order to clear it.
-  const allCount = rawAll;
-  const [matchCount, completed, thisWeek] = filteredCounts ?? [rawAll, rawCompleted, rawWeek];
+  // Tiles always show the true scope totals. `allCount` also gates the stats
+  // block and the search bar, so it must stay the unfiltered total — a filter
+  // that matches nothing must not hide the control you need in order to clear it.
+  const allCount  = rawAll;
+  const completed = rawCompleted;
+  const thisWeek  = rawWeek;
 
   // Trim the sentinel extra row and decide whether to offer "Show more".
   const hasMore = recordings.length > limit;
@@ -363,9 +354,11 @@ export default async function Home({
         {allCount > 0 && (
           <div className="grid grid-cols-3 gap-3 mb-8">
             {[
-              { key: 'total',    label: filtered ? 'Matching' : 'Total', value: matchCount, Icon: Mic,          href: statHref({}),                     active: !filters.status && !filters.date },
-              { key: 'complete', label: 'Complete',                       value: completed,  Icon: CircleCheck,  href: statHref({ status: 'completed' }), active: filters.status === 'completed' },
-              { key: 'week',     label: 'This week',                      value: thisWeek,   Icon: CalendarClock, href: statHref({ date: 'week' }),       active: filters.date === 'week' },
+              // Total is the neutral "everything" view — clicking it clears the
+              // status/date filter, so it carries no active ring of its own.
+              { key: 'total',    label: 'Total',     value: allCount,  Icon: Mic,           href: statHref({}),                      active: false },
+              { key: 'complete', label: 'Complete',  value: completed, Icon: CircleCheck,   href: statHref({ status: 'completed' }), active: filters.status === 'completed' },
+              { key: 'week',     label: 'This week', value: thisWeek,  Icon: CalendarClock, href: statHref({ date: 'week' }),        active: filters.date === 'week' },
             ].map(({ key, label, value, Icon, href, active }) => (
               <Link
                 key={key}
