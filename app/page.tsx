@@ -22,7 +22,7 @@ import {
   getMemberUserIds,
   getMemberNames,
 } from '@/lib/contacts-db';
-import { Settings, ChevronLeft, ChevronRight, Folder, Users, AlertTriangle, Mic, CircleCheck, CalendarClock } from 'lucide-react';
+import { Settings, ChevronLeft, ChevronRight, Folder, Users, AlertTriangle, Mic, CircleCheck, CalendarClock, X } from 'lucide-react';
 
 export const dynamic = 'force-dynamic';
 
@@ -354,35 +354,51 @@ export default async function Home({
         {allCount > 0 && (
           <div className="grid grid-cols-3 gap-3 mb-8">
             {[
-              // Total is the neutral "everything" view — clicking it clears the
-              // status/date filter, so it carries no active ring of its own.
-              { key: 'total',    label: 'Total',     value: allCount,  Icon: Mic,           href: statHref({}),                      active: false },
-              { key: 'complete', label: 'Complete',  value: completed, Icon: CircleCheck,   href: statHref({ status: 'completed' }), active: filters.status === 'completed' },
-              { key: 'week',     label: 'This week', value: thisWeek,  Icon: CalendarClock, href: statHref({ date: 'week' }),        active: filters.date === 'week' },
-            ].map(({ key, label, value, Icon, href, active }) => (
-              <Link
-                key={key}
-                href={href}
-                scroll={false}
-                prefetch={false}
-                aria-label={`Show ${label.toLowerCase()} recordings`}
-                aria-current={active ? 'true' : undefined}
-                className="group rounded-2xl focus:outline-none focus-visible:ring-2 focus-visible:ring-brand/60 touch-manipulation"
-              >
-                <GlowCard
-                  backdrop="rgb(var(--c-surface-card))"
-                  className={`p-4 text-center ring-1 transition-colors ${
-                    active ? 'ring-brand/50' : 'ring-surface-border group-hover:ring-brand/40'
-                  }`}
+              // Total is the neutral "everything" view — its ring shows when no
+              // status/date filter is applied. Clicking it (or the × on an active
+              // filter tile) clears back to it. Only the filter tiles carry an ×.
+              { key: 'total',    label: 'Total',     value: allCount,  Icon: Mic,           href: statHref({}),                      active: !filters.status && !filters.date, clearable: false },
+              { key: 'complete', label: 'Complete',  value: completed, Icon: CircleCheck,   href: statHref({ status: 'completed' }), active: filters.status === 'completed',    clearable: filters.status === 'completed' },
+              { key: 'week',     label: 'This week', value: thisWeek,  Icon: CalendarClock, href: statHref({ date: 'week' }),        active: filters.date === 'week',           clearable: filters.date === 'week' },
+            ].map(({ key, label, value, Icon, href, active, clearable }) => (
+              <div key={key} className="group relative">
+                <Link
+                  href={href}
+                  scroll={false}
+                  prefetch={false}
+                  aria-label={`Show ${label.toLowerCase()} recordings`}
+                  aria-current={active ? 'true' : undefined}
+                  className="block rounded-2xl focus:outline-none focus-visible:ring-2 focus-visible:ring-brand/60 touch-manipulation"
                 >
-                  <Icon
-                    className={`w-4 h-4 mx-auto mb-1.5 transition-colors ${active ? 'text-brand' : 'text-ftc-mid group-hover:text-ftc-gray'}`}
-                    strokeWidth={1.9}
-                  />
-                  <p className="text-2xl font-bold text-ftc-gray leading-none">{value}</p>
-                  <p className="text-xs mt-1 text-ftc-mid">{label}</p>
-                </GlowCard>
-              </Link>
+                  <GlowCard
+                    backdrop="rgb(var(--c-surface-card))"
+                    className={`p-4 text-center ring-1 transition-colors ${
+                      active ? 'ring-brand/50' : 'ring-surface-border group-hover:ring-brand/40'
+                    }`}
+                  >
+                    <Icon
+                      className={`w-4 h-4 mx-auto mb-1.5 transition-colors ${active ? 'text-brand' : 'text-ftc-mid group-hover:text-ftc-gray'}`}
+                      strokeWidth={1.9}
+                    />
+                    <p className="text-2xl font-bold text-ftc-gray leading-none">{value}</p>
+                    <p className="text-xs mt-1 text-ftc-mid">{label}</p>
+                  </GlowCard>
+                </Link>
+                {/* Clear button — only on the active filter tile, mirrors the
+                    dismiss × on the CRM cards. Sibling anchor (not nested) so the
+                    markup stays valid; sits above the card link via z-10. */}
+                {clearable && (
+                  <Link
+                    href={statHref({})}
+                    scroll={false}
+                    prefetch={false}
+                    aria-label="Clear filter, show all recordings"
+                    className="absolute top-1.5 right-1.5 z-10 flex h-6 w-6 items-center justify-center rounded-full text-ftc-mid hover:text-ftc-gray hover:bg-surface-raised transition-colors touch-manipulation"
+                  >
+                    <X className="w-3.5 h-3.5" strokeWidth={2.25} />
+                  </Link>
+                )}
+              </div>
             ))}
           </div>
         )}
