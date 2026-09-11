@@ -86,6 +86,9 @@ export default async function Home({
   const filterParams = filtersToParams(filters);
 
   const activeFolderId   = one('folder');
+  // Total tile is "selected" only when explicitly chosen (view=all), so it stays
+  // un-ringed on the default landing view — see the Stats grid below.
+  const totalSelected    = one('view') === 'all';
   const activeSource     = filters.source ?? null;
   const activeOrgId      = one('org');
   const activeTeamId     = one('team');
@@ -354,10 +357,10 @@ export default async function Home({
         {allCount > 0 && (
           <div className="grid grid-cols-3 gap-3 mb-8">
             {[
-              // Total is the neutral "everything" view — its ring shows when no
-              // status/date filter is applied. Clicking it (or the × on an active
-              // filter tile) clears back to it. Only the filter tiles carry an ×.
-              { key: 'total',    label: 'Total',     value: allCount,  Icon: Mic,           href: statHref({}),                      active: !filters.status && !filters.date, clearable: false },
+              // Total is the neutral "everything" view. It only rings/×'s when the
+              // user explicitly picks it (view=all in the URL) — the default landing
+              // view leaves every tile un-ringed. The × clears back to that default.
+              { key: 'total',    label: 'Total',     value: allCount,  Icon: Mic,           href: statHref({ view: 'all' }),         active: totalSelected,                    clearable: totalSelected },
               { key: 'complete', label: 'Complete',  value: completed, Icon: CircleCheck,   href: statHref({ status: 'completed' }), active: filters.status === 'completed',    clearable: filters.status === 'completed' },
               { key: 'week',     label: 'This week', value: thisWeek,  Icon: CalendarClock, href: statHref({ date: 'week' }),        active: filters.date === 'week',           clearable: filters.date === 'week' },
             ].map(({ key, label, value, Icon, href, active, clearable }) => (
