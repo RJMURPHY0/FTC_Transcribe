@@ -7,9 +7,9 @@ import { createClient } from '@/lib/supabase/client';
 // Product value points for the brand panel. Brand-neutral wording so the
 // imminent rebrand doesn't leave stale copy behind.
 const HIGHLIGHTS = [
-  { icon: Mic,      title: 'Record anywhere',          body: 'Capture meetings in the browser or on your phone — survives dropped connections.' },
+  { icon: Mic,      title: 'Record anywhere',          body: 'Capture meetings in the browser or on your phone, even if the connection drops.' },
   { icon: Users,    title: 'Diarised transcripts',     body: 'Speaker-labelled transcripts with names, not just walls of text.' },
-  { icon: FileText, title: 'AI summaries & exports',   body: 'Overview, key points, action items and decisions — exported to PDF or Word.' },
+  { icon: FileText, title: 'AI summaries & exports',   body: 'Overview, key points, action items and decisions, exported to PDF or Word.' },
 ];
 
 export default function LoginPage() {
@@ -60,14 +60,14 @@ export default function LoginPage() {
       <div className="relative z-10 grid min-h-screen lg:grid-cols-2">
         {/* Brand / hero panel — desktop only */}
         <aside className="hidden flex-col justify-between border-r border-surface-border p-12 lg:flex">
-          <img src="/logo.png" alt="FTC Transcribe" className="h-10 w-auto self-start object-contain" />
+          <img src="/logo.png" alt="FTC Transcribe" className="h-14 w-auto self-start object-contain" />
 
           <div className="max-w-md">
             <h1 className="text-3xl font-semibold leading-tight tracking-tight text-ftc-gray xl:text-4xl">
               Every meeting, captured and searchable.
             </h1>
             <p className="mt-4 text-base text-ftc-mid">
-              Record in the browser or on your phone, get diarised transcripts and AI summaries, and export in a click — no note-taker required.
+              Record in the browser or on your phone, get diarised transcripts and AI summaries, and export in a click. No note-taker required.
             </p>
 
             <ul className="mt-10 space-y-5">
@@ -94,7 +94,7 @@ export default function LoginPage() {
         <main className="flex items-center justify-center px-6 py-12 sm:px-12">
           <div className="w-full max-w-sm">
             {/* Mobile logo — hero panel is hidden below lg */}
-            <img src="/logo.png" alt="FTC Transcribe" className="mx-auto mb-8 h-10 w-auto object-contain lg:hidden" />
+            <img src="/logo.png" alt="FTC Transcribe" className="mx-auto mb-8 h-14 w-auto object-contain lg:hidden" />
 
             <div className="rounded-2xl border border-surface-border bg-surface-card p-6 shadow-2xl shadow-black/30 sm:p-8">
               <div className="mb-6 text-center">
@@ -168,7 +168,7 @@ export default function LoginPage() {
             </div>
 
             <p className="mt-6 text-center text-xs text-ftc-mid">
-              FTC Transcribe — meeting notes, secured.
+              FTC Transcribe. Meeting notes, secured.
             </p>
           </div>
         </main>
