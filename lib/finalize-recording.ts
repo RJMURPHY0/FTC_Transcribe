@@ -485,6 +485,21 @@ async function analyzeAndCompleteRecording(recordingId: string): Promise<Finaliz
     return { ok: false, reason: 'AI analysis returned empty or mock content — check ANTHROPIC_API_KEY.' };
   }
 
+  // B2b: Reject an overview that is actually unparsed model output. The guard
+  // above only caught an *empty* analysis, so when the analysis JSON failed to
+  // parse and the raw ```json fragment landed in `overview`, the recording
+  // completed looking fine and shipped a wall of syntax to the user with three
+  // empty sections beneath it. Anything shaped like JSON is a parse failure,
+  // not a summary — fail it so the retry path gets a chance.
+  const looksLikeRawJson =
+    analysis.overview.trimStart().startsWith('```') ||
+    analysis.overview.trimStart().startsWith('{') ||
+    /"(overview|keyPoints|actionItems|decisions)"\s*:/.test(analysis.overview);
+  if (looksLikeRawJson) {
+    await prisma.recording.update({ where: { id: recordingId }, data: { status: 'failed' } }).catch(() => {});
+    return { ok: false, reason: 'AI analysis returned unparsed JSON — the model response was malformed or truncated.' };
+  }
+
   // B3: Wrap summary upsert + status update atomically so a mid-flight crash
   // can't leave the recording stuck in 'processing' with no summary.
   const completedRecording = await prisma.$transaction(async (tx) => {

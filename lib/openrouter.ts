@@ -38,11 +38,31 @@ export const STABLE_MODEL = 'openai/gpt-oss-120b';
  *   429 under load, so the ladder silently changes which model answers, and two
  *   models will not classify a borderline case the same way.
  */
+export interface LlmResult {
+  text: string;
+  /** The model hit its output ceiling mid-answer, so `text` is a fragment. */
+  truncated: boolean;
+}
+
 export async function openRouterComplete(
   prompt: string,
   maxTokens: number,
   models: readonly string[] = modelLadder,
 ): Promise<string | null> {
+  return (await openRouterCompleteDetailed(prompt, maxTokens, models))?.text ?? null;
+}
+
+/**
+ * As `openRouterComplete`, but reports whether the answer was cut off at the
+ * token ceiling. Callers that parse structured output need to know: a truncated
+ * response is not a bad answer, it is half an answer, and retrying with a
+ * bigger budget fixes it where re-prompting would not.
+ */
+export async function openRouterCompleteDetailed(
+  prompt: string,
+  maxTokens: number,
+  models: readonly string[] = modelLadder,
+): Promise<LlmResult | null> {
   if (!OPENROUTER_KEY) return null;
 
   for (const model of models) {
@@ -76,9 +96,14 @@ export async function openRouterComplete(
         continue;
       }
 
-      const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
-      const text = data.choices?.[0]?.message?.content;
-      if (typeof text === 'string' && text.trim()) return text;
+      const data = await res.json() as {
+        choices?: Array<{ message?: { content?: string }; finish_reason?: string }>;
+      };
+      const choice = data.choices?.[0];
+      const text = choice?.message?.content;
+      if (typeof text === 'string' && text.trim()) {
+        return { text, truncated: choice?.finish_reason === 'length' };
+      }
     } catch {
       // timeout / network — try next model
     } finally {

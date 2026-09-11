@@ -2,7 +2,7 @@ import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
 import fs from 'fs';
 import { normaliseDue } from './action-items';
-import { openRouterComplete, isOpenRouterReady, STABLE_MODEL } from './openrouter';
+import { openRouterCompleteDetailed, isOpenRouterReady, STABLE_MODEL, type LlmResult } from './openrouter';
 
 // ── Transcription: Groq (free Whisper) preferred, OpenAI Whisper as fallback ──
 const GROQ_KEY = process.env.GROQ_API_KEY;
@@ -31,14 +31,14 @@ const isLlmReady = isOpenRouterReady || !isMockAnthropic;
 // Unified text completion. Cheap tasks go OpenRouter-first (free/cheap models);
 // the main analysis goes Anthropic-first for reliability. Each side falls back
 // to the other, so a dead key or saturated free model never kills the pipeline.
-async function llmComplete(
+async function llmCompleteDetailed(
   prompt: string,
   maxTokens: number,
   // `stableModel` pins the OpenRouter side to one model instead of the ladder,
   // for callers whose answer must not change between runs.
   opts?: { preferAnthropic?: boolean; stableModel?: boolean },
-): Promise<string | null> {
-  const viaAnthropic = async (): Promise<string | null> => {
+): Promise<LlmResult | null> {
+  const viaAnthropic = async (): Promise<LlmResult | null> => {
     if (isMockAnthropic || !anthropic) return null;
     try {
       const message = await anthropic.messages.create({
@@ -47,19 +47,29 @@ async function llmComplete(
         messages: [{ role: 'user', content: prompt }],
       });
       const content = message.content[0];
-      return content?.type === 'text' ? content.text : null;
+      if (content?.type !== 'text') return null;
+      return { text: content.text, truncated: message.stop_reason === 'max_tokens' };
     } catch {
       return null;
     }
   };
-  const viaOpenRouter = () => openRouterComplete(prompt, maxTokens, opts?.stableModel ? [STABLE_MODEL] : undefined);
+  const viaOpenRouter = () =>
+    openRouterCompleteDetailed(prompt, maxTokens, opts?.stableModel ? [STABLE_MODEL] : undefined);
 
   const order = opts?.preferAnthropic ? [viaAnthropic, viaOpenRouter] : [viaOpenRouter, viaAnthropic];
   for (const attempt of order) {
-    const text = await attempt();
-    if (text?.trim()) return text;
+    const result = await attempt();
+    if (result?.text.trim()) return result;
   }
   return null;
+}
+
+async function llmComplete(
+  prompt: string,
+  maxTokens: number,
+  opts?: { preferAnthropic?: boolean; stableModel?: boolean },
+): Promise<string | null> {
+  return (await llmCompleteDetailed(prompt, maxTokens, opts))?.text ?? null;
 }
 
 export interface RawSegment {
@@ -510,7 +520,7 @@ function meetingTypePrompt(type: MeetingType): string {
 
 Format:
 {
-  "overview": "2-3 sentence summary of the meeting's purpose and outcomes",
+  "overview": "at most 2 short sentences, under 40 words — what the meeting was about and what came out of it",
   "keyPoints": ["important context, background, or discussion highlight"],
   "actionItems": ["Person to do specific task"],
   "actionItemDates": ["YYYY-MM-DD or null — one entry per action item, in the same order"],
@@ -518,7 +528,7 @@ Format:
 }
 
 Rules:
-- overview: 2-3 sentences covering the meeting purpose and main outcomes
+- overview: at most 2 short sentences and under 40 words total — what the meeting was about and what came out of it, in plain English a reader takes in at a glance. Do not list the topics covered, do not restate the title, do not pad with "the team discussed". Detail belongs in keyPoints
 - keyPoints: 3-7 items — important context, background info, or notable discussion points only. Do NOT include tasks or decisions here
 - actionItems: every distinct task, commitment, or request made in the meeting. Format as "Name to do X". Capture ALL of them — do not silently drop any that someone agreed to do. But keep each task listed ONCE: do not split a single instruction into several near-identical items, and when several statements are steps toward the SAME goal (e.g. contacting several possible suppliers for one purchase), combine them into one action item that names the options rather than one item per option. Empty array if none. Do NOT repeat anything already in keyPoints or decisions
 - actionItemDates: MUST be the same length as actionItems and in the same order. For each action item, if a deadline or due date was stated in the meeting (including relative ones like "by Friday", "tomorrow", "next week", "end of month"), resolve it to an absolute date in YYYY-MM-DD form. If NO deadline was mentioned for that item, use null. Never invent a date that was not discussed.
@@ -527,8 +537,117 @@ Rules:
   }
 }
 
+// ── Structured-output parsing ────────────────────────────────────────────────
+//
+// Models wrap JSON in ```json fences and, when they run out of output budget,
+// stop mid-token. The old `/\{[\s\S]*\}/` regex handled neither: with no
+// closing brace it matched nothing, the parse threw, and the caller pasted the
+// raw fenced fragment into `overview` — which is exactly how a 2-hour meeting
+// ended up with a "```json {" summary and three empty sections.
+
+/** Strip ```json fences and any prose either side of the JSON object. */
+function stripFences(raw: string): string {
+  return raw
+    .trim()
+    .replace(/^```(?:json)?[^\S\r\n]*\r?\n?/i, '')
+    .replace(/\r?\n?```[^\S\r\n]*$/, '')
+    .trim();
+}
+
+/**
+ * Close a JSON object that was cut off mid-generation, keeping every element
+ * that did arrive. Walks the text tracking string/escape state and the open
+ * bracket stack, rewinds to the last point where a value was complete, then
+ * appends the closers that are still outstanding.
+ */
+function repairTruncatedJson(s: string): string | null {
+  let inString = false;
+  let escaped = false;
+  const stack: string[] = [];
+  let cut = -1;
+  let closers = '';
+
+  // Record a point where everything so far forms a complete value.
+  const mark = (i: number) => {
+    cut = i;
+    closers = stack
+      .slice()
+      .reverse()
+      .map((c) => (c === '{' ? '}' : ']'))
+      .join('');
+  };
+
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === '{' || ch === '[') stack.push(ch);
+    else if (ch === '}' || ch === ']') {
+      stack.pop();
+      // A nested value just closed — safe to cut straight after it.
+      if (stack.length > 0) mark(i + 1);
+    } else if (ch === ',' && stack.length > 0) {
+      // Safe to cut *before* the comma: the value preceding it is whole.
+      mark(i);
+    }
+  }
+
+  if (cut === -1) return null;
+  return s.slice(0, cut) + closers;
+}
+
+/** Parse a JSON object out of an LLM response, salvaging a truncated one. */
+export function parseJsonObject(raw: string): Record<string, unknown> | null {
+  const body = stripFences(raw);
+  const start = body.indexOf('{');
+  if (start === -1) return null;
+  const candidate = body.slice(start);
+
+  const end = candidate.lastIndexOf('}');
+  if (end > 0) {
+    try {
+      return JSON.parse(candidate.slice(0, end + 1)) as Record<string, unknown>;
+    } catch {
+      // Malformed or truncated — fall through to the repair path.
+    }
+  }
+
+  const repaired = repairTruncatedJson(candidate);
+  if (!repaired) return null;
+  try {
+    return JSON.parse(repaired) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+const asStrings = (v: unknown): string[] =>
+  Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.trim().length > 0) : [];
+
 // ~48 000 words — enough for a 4-6 hour meeting; well within Haiku's 200k token context window
 const MAX_TRANSCRIPT_CHARS = 200_000;
+
+// Output budget for the analysis. The old flat 1024 was ~3x short for a long
+// meeting: a measured 2-hour transcript (94 660 chars) needs 3 254 tokens to
+// emit 10 key points, 34 action items and 6 decisions, so the JSON was cut off
+// mid-string and nothing parsed. Tokens are billed on what is generated, not
+// on the ceiling, so a generous budget costs nothing on a short meeting and is
+// the difference between a summary and a fragment on a long one.
+const MIN_ANALYSIS_TOKENS = 2_048;
+const MAX_ANALYSIS_TOKENS = 16_384;
+
+/** Scale the output budget with transcript length, within sane bounds. */
+function analysisTokenBudget(transcriptChars: number): number {
+  // ~1 output token per 29 input chars on the measured meeting, doubled for
+  // headroom on unusually action-item-dense calls.
+  const scaled = Math.ceil((transcriptChars / 29) * 2);
+  return Math.min(MAX_ANALYSIS_TOKENS, Math.max(MIN_ANALYSIS_TOKENS, scaled));
+}
 
 export async function analyzeTranscript(
   transcript: string,
@@ -558,8 +677,7 @@ export async function analyzeTranscript(
   try {
     // Anthropic first for the main analysis (most reliable JSON); OpenRouter
     // ladder as automatic fallback if the key is missing/dead or rate-limited.
-    const responseText = await llmComplete(
-      `${systemPrompt}${isGeneral ? '' : `
+    const prompt = `${systemPrompt}${isGeneral ? '' : `
 
 Return ONLY valid JSON in this exact format:
 {
@@ -578,37 +696,38 @@ Rules:
 ${dateAnchor}
 
 TRANSCRIPT:
-${truncated}`,
-      1024,
+${truncated}`;
+
+    let result = await llmCompleteDetailed(
+      prompt,
+      analysisTokenBudget(truncated.length),
       { preferAnthropic: true },
     );
 
-    if (!responseText) throw new Error('No LLM response');
+    if (!result) throw new Error('No LLM response');
 
-    try {
-      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) throw new Error('No JSON in response');
-      const r = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
-      const actionItems = Array.isArray(r.actionItems) ? (r.actionItems as string[]) : [];
-      const rawDates    = Array.isArray(r.actionItemDates) ? (r.actionItemDates as unknown[]) : [];
-      // Align dates to the action-item count: one ISO date or null per item.
-      const actionItemsDue = actionItems.map((_, i) => normaliseDue(rawDates[i]));
-      return {
-        overview:    typeof r.overview === 'string' ? r.overview : '',
-        keyPoints:   Array.isArray(r.keyPoints)   ? (r.keyPoints   as string[]) : [],
-        actionItems,
-        actionItemsDue,
-        decisions:   Array.isArray(r.decisions)   ? (r.decisions   as string[]) : [],
-      };
-    } catch {
-      return {
-        overview: responseText.slice(0, 500),
-        keyPoints: [],
-        actionItems: [],
-        actionItemsDue: [],
-        decisions: [],
-      };
+    // A long meeting can still outrun the budget. Retrying at the ceiling is
+    // cheaper than shipping half a summary, and costs nothing on the
+    // overwhelming majority of meetings that never truncate in the first place.
+    if (result.truncated) {
+      const retry = await llmCompleteDetailed(prompt, MAX_ANALYSIS_TOKENS, { preferAnthropic: true });
+      if (retry?.text.trim()) result = retry;
     }
+
+    const r = parseJsonObject(result.text);
+    if (!r) throw new Error('No JSON in response');
+
+    const actionItems = asStrings(r.actionItems);
+    const rawDates    = Array.isArray(r.actionItemDates) ? (r.actionItemDates as unknown[]) : [];
+    // Align dates to the action-item count: one ISO date or null per item.
+    const actionItemsDue = actionItems.map((_, i) => normaliseDue(rawDates[i]));
+    return {
+      overview:  typeof r.overview === 'string' ? r.overview.trim() : '',
+      keyPoints: asStrings(r.keyPoints),
+      actionItems,
+      actionItemsDue,
+      decisions: asStrings(r.decisions),
+    };
   } catch {
     return {
       overview: 'Analysis could not be completed — retry the recording to regenerate.',

@@ -15,9 +15,12 @@ prisma/migrations/
 .env
 .env.local
 .env*.local
-# `.env*.local` does NOT match this one, so it needs its own line: it is what
-# `vercel env pull` writes and it holds production secrets.
-.env.pulled
+# `.env*.local` does NOT match these: any local dump of real secrets — what
+# `vercel env pull` writes under whatever name it is given — must be ignored by
+# default, or one `git add -A` publishes production keys. Allowlist the one
+# env file that is meant to be committed rather than naming each dump.
+.env.*
+!.env.example
 
 # Uploads
 uploads/
